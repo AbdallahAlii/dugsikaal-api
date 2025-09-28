@@ -1,0 +1,98 @@
+# -----------------------
+# Core Flask & DB
+# -----------------------
+Flask==3.0.0
+Flask-SQLAlchemy==3.1.1
+Flask-Migrate==4.0.5
+SQLAlchemy==2.0.21
+psycopg2-binary==2.9.9
+
+# -----------------------
+# Sessions, CORS, Limits
+# -----------------------
+Flask-Session==0.8.0
+Flask-Cors==3.0.10          # conservative, widely used
+Flask-Limiter==3.5.0
+
+# -----------------------
+# Serialization / Validation
+# -----------------------
+marshmallow==3.20.2
+marshmallow-sqlalchemy==0.28.0
+
+# -----------------------
+# Auth / Security (sessions now; JWT optional)
+# -----------------------
+# Flask-JWT-Extended==4.5.2  # <- keep commented for now (you said no JWT yet)
+bcrypt==4.1.2
+Flask-Bcrypt==1.0.1
+itsdangerous==2.1.2
+cryptography==42.0.7
+
+# -----------------------
+# WebSocket (optional)
+# Choose ONE worker path:
+#  - eventlet + socketio  OR
+#  - gevent + gevent-websocket
+# -----------------------
+flask-socketio==5.3.6
+eventlet==0.33.3
+# gevent==24.2.1
+# gevent-websocket==0.10.1
+
+# -----------------------
+# Redis & Queues (pick ONE)
+# -----------------------
+redis==5.0.3
+rq==1.15.0
+aioredis==2.0.1                # Async Redis client
+celery==5.3.6
+flower==2.0.1              # Celery dashboard
+
+# -----------------------
+# Scheduling / Background
+# -----------------------
+APScheduler==3.10.4
+
+# -----------------------
+# Utilities
+# -----------------------
+python-dotenv==1.0.1
+requests==2.31.0
+urllib3==2.2.1
+python-dateutil==2.9.0
+pytz==2024.1
+six==1.16.0
+more-itertools==10.5.0
+typeguard==4.4.1
+blinker==1.7.0
+
+# -----------------------
+# Mail & Caching (optional)
+# -----------------------
+Flask-Mailman==0.3.0
+Flask-Caching==2.1.0
+cachetools==5.3.2
+
+# -----------------------
+# Data (optional)
+# -----------------------
+pandas==2.2.1
+
+# -----------------------
+# Production WSGI
+# -----------------------
+gunicorn==22.0.0
+
+
+
+# ========================
+# ✅ VALIDATION & SETTINGS
+# ========================
+pydantic==2.6.4
+pydantic-settings==2.2.1
+email-validator==2.1.0.post1   # Email validation for schemas
+# -----------------------
+# Media / Storage
+# -----------------------
+boto3==1.34.113              # AWS SDK for Python (includes botocore)
