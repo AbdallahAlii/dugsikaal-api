@@ -12,6 +12,7 @@ from app.application_org.models.company import Company, Branch, Department
 
 # Users / affiliations
 from app.auth.models.users import User, UserAffiliation, UserType
+from ...application_rbac.rbac_models import Role, UserRole
 
 # Password hashing
 try:
@@ -132,10 +133,12 @@ def _seed_departments_for_company(db: Session, company: Company) -> None:
     logger.info("✅ Departments seeded for %s.", company.name)
 
 
+
 def _seed_owner_user_and_affiliation(db: Session, company: Company, owner_spec: dict) -> User:
     """
     Create the company owner user + affiliation (company-level, no branch).
     Uses UserType = 'Owner' (as requested).
+    Assign 'Super Admin' role scoped to the company.
     """
     username = owner_spec["username"].strip()
     password = owner_spec["password"]
@@ -148,7 +151,7 @@ def _seed_owner_user_and_affiliation(db: Session, company: Company, owner_spec: 
         defaults={"password_hash": _safe_hash(password)},
     )
     if not created:
-        # don't rotate password if user already exists
+        # Don't rotate password if user already exists
         pass
 
     # UserType: Owner
@@ -165,6 +168,26 @@ def _seed_owner_user_and_affiliation(db: Session, company: Company, owner_spec: 
         linked_entity_id=None,
         defaults={"is_primary": True},
     )
+
+    # Assign 'Super Admin' role scoped to the company
+    super_admin_role = db.scalar(select(Role).filter_by(name="Super Admin"))
+    if super_admin_role:
+        _get_or_create(
+            db,
+            UserRole,
+            user_id=user.id,
+            role_id=super_admin_role.id,
+            company_id=company.id,  # Company-level role
+            branch_id=None,  # No branch assignment for company-level roles
+            defaults={
+                "user_affiliation_id": None,  # Global role (no affiliation)
+                "is_active": True,  # Ensure that the role is active
+                "assigned_by": None,  # System-seeded
+            },
+        )
+    else:
+        logger.warning("Role 'Super Admin' not found. Skipping assignment for user %s.", user.username)
+
     return user
 
 
@@ -173,19 +196,36 @@ def _seed_system_owner_users(db: Session) -> None:
     Create two global “system owner” logins:
       - sys_owner1
       - sys_owner2
-    NOTE: Your UserAffiliation requires company_id NOT NULL, so we do NOT
-    create affiliations for these users. If you want affiliations with no company,
-    either relax the model (company_id nullable) or introduce a dedicated
-    “Platform” company and affiliate them there.
+    NOTE: We do NOT create affiliations for these users as they're global system admins.
     """
     logger.info("Seeding global system owner users (no affiliations)...")
+    system_admin_role = db.scalar(select(Role).filter_by(name="System Admin"))
+    if not system_admin_role:
+        logger.error("Critical: 'System Admin' role not found. Cannot seed system owners correctly.")
+        return
+
     for spec in SYSTEM_OWNER_USERS:
-        _get_or_create(
+        user, _ = _get_or_create(
             db, User,
             username=spec["username"].strip(),
-            defaults={"password_hash": _safe_hash(spec["password"])},
+            defaults={"password_hash": _safe_hash(spec["password"])}
         )
+        # Assign 'System Admin' role (SYSTEM scope)
+        _get_or_create(
+            db, UserRole,
+            user_id=user.id,
+            role_id=system_admin_role.id,
+            company_id=None,  # System-level role (no company affiliation)
+            branch_id=None,  # System-level role (no branch affiliation)
+            user_affiliation_id=None,  # No affiliation for system users
+            defaults={
+                "is_active": True,  # Ensure the role is active
+                "assigned_by": None,  # System-seeded
+            },
+        )
+
     logger.info("✅ System owner users created.")
+
 
 
 def seed_initial_organization(db: Session) -> None:
@@ -197,6 +237,7 @@ def seed_initial_organization(db: Session) -> None:
       - HQ Branch for each
       - Default Departments per company
       - Company owner user for each + company-level affiliation using UserType 'Owner'
+      - Roles assigned (Super Admin to owner user, System Admin to system users)
     """
     logger.info("🏢 Seeding initial organization data...")
 

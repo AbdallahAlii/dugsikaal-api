@@ -3,7 +3,7 @@ from app.common.cache.cache import bump_version
 from app.common.cache.cache_keys import detail_version_key
 import sys
 
-DEFAULT_PREFIXES = ("WH", "JE")
+DEFAULT_PREFIXES = ("uoms", "JE")
 
 def invalidate(*prefixes: str):
     for p in prefixes:

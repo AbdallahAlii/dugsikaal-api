@@ -12,28 +12,22 @@ WORKSPACES: list[dict] = [
 
         # Transactions as root links for quick access
         "root_links": [
-            {"label": "Sales Quotation", "path": "/selling/sales-quotation/list", "icon": "file-badge",
+            {
+              "label": "Customer", "path": "/selling/customer/list", "icon": "user",
+                 "perm": "Customer:READ"},
+            {"label": "Quotation", "path": "/selling/sales-quotation/list", "icon": "file-badge",
              "perm": "Sales Quotation:READ"},
-            {"label": "Sales Order", "path": "/selling/sales-order/list", "icon": "file-digit",
-             "perm": "Sales Order:READ"},
+
+
+
             {"label": "Delivery Note", "path": "/selling/delivery-note/list", "icon": "truck",
              "perm": "Delivery Note:READ"},
             {"label": "Sales Invoice", "path": "/selling/sales-invoice/list", "icon": "receipt",
-             "perm": "Sales Invoice:READ"},
-            {"label": "Sales Return", "path": "/selling/sales-return/list", "icon": "undo",
-             "perm": "Sales Return:READ"},
+             "perm": "Sales Invoice:READ"}
+
         ],
 
-        "sections": [
-            {
-                "label": "Masters",
-                "order_index": 10,
-                "links": [
-                    {"label": "Customer", "path": "/selling/customer/list", "icon": "user",
-                     "perm": "Customer:READ"},
-                ],
-            },
-        ],
+        "sections": [],
     },
 
     # === BUYING ===
@@ -45,28 +39,19 @@ WORKSPACES: list[dict] = [
         "order_index": 20,
 
         "root_links": [
-            {"label": "Purchase Quotation", "path": "/buying/purchase-quotation/list", "icon": "quote",
+            {"label": "Supplier", "path": "/buying/supplier/list", "icon": "user-round",
+             "perm": "Supplier:READ"},
+            {"label": "Quotation", "path": "/buying/purchase-quotation/list", "icon": "quote",
              "perm": "Purchase Quotation:READ"},
-            {"label": "Purchase Order", "path": "/buying/purchase-order/list", "icon": "file-plus-2",
-             "perm": "Purchase Order:READ"},
+
             {"label": "Purchase Receipt", "path": "/buying/purchase-receipt/list", "icon": "package",
              "perm": "Purchase Receipt:READ"},
             {"label": "Purchase Invoice", "path": "/buying/purchase-invoice/list", "icon": "receipt",
              "perm": "Purchase Invoice:READ"},
-            {"label": "Purchase Return", "path": "/buying/purchase-return/list", "icon": "undo-2",
-             "perm": "Purchase Return:READ"},
+
         ],
 
-        "sections": [
-            {
-                "label": "Masters",
-                "order_index": 10,
-                "links": [
-                    {"label": "Supplier", "path": "/buying/supplier/list", "icon": "user-round",
-                     "perm": "Supplier:READ"},
-                ],
-            },
-        ],
+        "sections": [],
     },
 
     # === INVENTORY ===
@@ -106,8 +91,8 @@ WORKSPACES: list[dict] = [
 
     # === ACCOUNTS ===
     {
-        "slug": "accounts",
-        "title": "Accounts",
+        "slug": "accounting",
+        "title": "Accounting",
         "icon": "banknote",
         "description": "Finance, accounting & reports",
         "order_index": 40,
@@ -171,17 +156,17 @@ WORKSPACES: list[dict] = [
     },
 
     # === PARTIES ===
-    {
-        "slug": "parties",
-        "title": "Parties",
-        "icon": "users",
-        "description": "Shared customers/suppliers/partners",
-        "order_index": 50,
-        "root_links": [
-            {"label": "Party", "path": "/parties/party/list", "icon": "users", "perm": "Party:READ"},
-        ],
-        "sections": [],
-    },
+    # {
+    #     "slug": "parties",
+    #     "title": "Parties",
+    #     "icon": "users",
+    #     "description": "Shared customers/suppliers/partners",
+    #     "order_index": 50,
+    #     "root_links": [
+    #         {"label": "Party", "path": "/parties/party/list", "icon": "users", "perm": "Party:READ"},
+    #     ],
+    #     "sections": [],
+    # },
 
     # === HR ===
     {
@@ -237,21 +222,21 @@ WORKSPACES: list[dict] = [
     },
 
     # === SYSTEM ===
-    {
-        "slug": "system",
-        "title": "System",
-        "icon": "settings",
-        "description": "Company setup & system configuration",
-        "order_index": 90,
-        "root_links": [
-            {"label": "Organization", "path": "/system/organization/list", "icon": "building",
-             "perm": "Organization:READ"},
-            {"label": "Branch", "path": "/system/branch/list", "icon": "git-branch", "perm": "Branch:READ"},
-            {"label": "System Settings", "path": "/system/system-settings/list", "icon": "settings-2",
-             "perm": "System Settings:READ"},
-        ],
-        "sections": [],
-    },
+    # {
+    #     "slug": "system",
+    #     "title": "System",
+    #     "icon": "settings",
+    #     "description": "Company setup & system configuration",
+    #     "order_index": 90,
+    #     "root_links": [
+    #         {"label": "Organization", "path": "/system/organization/list", "icon": "building",
+    #          "perm": "Organization:READ"},
+    #         {"label": "Branch", "path": "/system/branch/list", "icon": "git-branch", "perm": "Branch:READ"},
+    #         {"label": "System Settings", "path": "/system/system-settings/list", "icon": "settings-2",
+    #          "perm": "System Settings:READ"},
+    #     ],
+    #     "sections": [],
+    # },
 
     # === PLATFORM HOST ADMIN (SYSTEM ADMIN ONLY) ===
     {
@@ -318,7 +303,27 @@ WORKSPACES: list[dict] = [
         "sections": [],
 
     },
-
+    {
+        "slug": "doctype-directory",
+        "title": "DocType Directory",
+        "icon": "files",  # any lucide name you already use
+        "description": "Browse all document types and entry points",
+        "order_index": 94,  # place it where you want in the menu
+        "admin_only": False,  # set True if only System Admin must see the module
+        "root_links": [
+            {
+                "label": "Open Directory",
+                "path": "/system/doctype-directory",
+                "icon": "files",
+                # Permission that gates the module (choose one):
+                # Show to anyone who can READ any doctype:
+                "perm": "DocType:READ",
+                # OR use a custom, narrow permission you assign to select roles:
+                # "perm": "Directory:VIEW",
+            },
+        ],
+        "sections": [],
+    },
     # === ACCESS CONTROL ===
     {
         "slug": "access-control",
