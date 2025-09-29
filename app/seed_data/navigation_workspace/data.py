@@ -129,7 +129,7 @@ WORKSPACES: list[dict] = [
     # === REPORTS ===
     {
         "slug": "reports",
-        "title": "Financial Reports",
+        "title": "Reports",
         "icon": "trending-up",
         "description": "Financial statements & reports",
         "order_index": 45,
@@ -305,7 +305,7 @@ WORKSPACES: list[dict] = [
     },
     {
         "slug": "doctype-directory",
-        "title": "DocType Directory",
+        "title": "DocTypes",
         "icon": "files",  # any lucide name you already use
         "description": "Browse all document types and entry points",
         "order_index": 94,  # place it where you want in the menu
