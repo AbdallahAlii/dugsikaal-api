@@ -36,7 +36,7 @@ from app.common.generate_code.service import (
 from app.common.cache.cache_invalidator import (
     bump_list_cache_company,
     bump_list_cache_branch,
-    bump_detail,
+    bump_detail, bump_stock_dropdowns,
     # bump_list_cache_with_context,  # keep handy if your list read uses extra params
 )
 log = logging.getLogger(__name__)
@@ -177,7 +177,7 @@ class WarehouseService:
             # If the UI also shows a branch-filtered list anywhere, bump branch scope too
             if branch_id is not None:
                 bump_list_cache_branch("stock", "warehouses", company_id, int(branch_id))
-
+            bump_stock_dropdowns("stock", "warehouses", company_id)
             # If your list read path keys the cache with params/context, mirror it:
             # bump_list_cache_with_context("stock", "warehouses", context, params={})
         except Exception:
@@ -235,11 +235,12 @@ class WarehouseService:
         try:
             # Invalidate the detail view (if you cache docdetail)
             bump_detail("stock", "warehouses", wh.id)
-
+            bump_stock_dropdowns("stock", "warehouses", wh.company_id)
             # And the list page(s)
             bump_list_cache_company("stock", "warehouses", wh.company_id)
             if wh.branch_id is not None:
                 bump_list_cache_branch("stock", "warehouses", wh.company_id, int(wh.branch_id))
+
         except Exception:
             log.exception("[cache] failed to bump warehouses caches after update")
 
@@ -273,6 +274,7 @@ class WarehouseService:
 
             # If you cache docdetail, bump its version so stale details disappear immediately
             bump_detail("stock", "warehouses", warehouse_id)
+            bump_stock_dropdowns("stock", "warehouses", wh.company_id)
         except Exception:
             log.exception("[cache] failed to bump warehouses caches after delete")
 

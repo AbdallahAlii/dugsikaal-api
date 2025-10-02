@@ -79,7 +79,46 @@ def bump_list_cache(module_name: str, entity_name: str, context: AffiliationCont
         return 0
 
 
+def bump_stock_dropdowns(module_name: str, entity_name: str, company_id: int) -> None:
+    """
+    Bump all related dropdown caches for stock entities.
+    This handles both main dropdowns and active_* dropdowns.
+    """
+    # Always bump the main dropdown
+    bump_dropdown_company(module_name, entity_name, company_id)
 
+    # Also bump active_* dropdown if it exists for stock entities
+    if entity_name in ["warehouses"]:
+        active_entity = f"active_{entity_name}"
+        try:
+            # Attempt to bump the 'active' list
+            bump_dropdown_company(module_name, active_entity, company_id)
+            log.debug("[cache] Also bumped %s:%s", module_name, active_entity)
+        except Exception as e:
+            # Log a warning but DO NOT FAIL the entire process if the secondary bump fails
+            log.warning("[cache] Failed to bump %s:%s: %s", module_name, active_entity, e)
+
+    log.info("[cache] BUMPED STOCK DROPDOWNS %s:%s -> company:%s", module_name, entity_name, company_id)
+def bump_inventory_dropdowns(module_name: str, entity_name: str, company_id: int) -> None:
+    """
+    Bump all related dropdown caches for inventory entities.
+    This handles both main dropdowns and active_* dropdowns.
+    """
+    # Always bump the main dropdown
+    bump_dropdown_company(module_name, entity_name, company_id)
+
+    # Also bump active_* dropdown if it exists for inventory entities
+    if entity_name in ["items", "brands", "uoms"]:
+        active_entity = f"active_{entity_name}"
+        try:
+            # Attempt to bump the 'active' list, which may not always exist or be strictly required
+            bump_dropdown_company(module_name, active_entity, company_id)
+            log.debug("[cache] Also bumped %s:%s", module_name, active_entity)
+        except Exception as e:
+            # Log a warning but DO NOT FAIL the entire process if the secondary bump fails
+            log.warning("[cache] Failed to bump %s:%s: %s", module_name, active_entity, e)
+
+    log.info("[cache] BUMPED INVENTORY DROPDOWNS %s:%s -> company:%s", module_name, entity_name, company_id)
 # --- Dropdown invalidators (reuse list versioning) -----------------------------
 def _bump_dropdown(module_name: str, name: str, scope_key: str) -> int:
     ve = f"{module_name}:{name}:scope:{scope_key}"

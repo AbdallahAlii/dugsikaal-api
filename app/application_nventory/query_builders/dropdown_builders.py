@@ -1,90 +1,267 @@
-# app/application_inventory/dropdown_builders.py
 from __future__ import annotations
-from sqlalchemy import select, literal, union_all, case
-from sqlalchemy.orm import Session
+from sqlalchemy import select, literal, union_all, case, or_, and_, func
+from sqlalchemy.orm import Session, aliased
 from typing import Mapping, Any
 
 from app.application_nventory.inventory_models import Item, UnitOfMeasure, Brand, BranchItemPricing, UOMConversion
+from app.common.models.base import StatusEnum
 from app.security.rbac_effective import AffiliationContext
+from config.database import db
 
 
 # --- Common scoping helpers ---
 def _co(ctx: AffiliationContext) -> int | None:
     return getattr(ctx, "company_id", None)
 
+
 def _br(ctx: AffiliationContext) -> int | None:
     return getattr(ctx, "branch_id", None)
 
-# Items (company-scoped): value=item.id label=item.name meta: sku, base uom
+
+def _build_meta_description(**fields) -> str:
+    """Build meta description from non-empty field values (Frappe-style)"""
+    parts = [str(v) for v in fields.values() if v is not None and v != '']
+    return ' • '.join(parts) if parts else ''
+
+
+# --- ITEMS DROPDOWNS ---
+
 def build_items_dropdown(session: Session, ctx: AffiliationContext, params: Mapping[str, Any]):
+    """
+    All items for company (including inactive) - for admin views
+    """
     co_id = _co(ctx)
     if not co_id:
-        # empty select
+        return select(Item.id.label("value")).where(Item.id == -1)
+
+    # Base query with all relevant fields for meta
+    q = (
+        select(
+            Item.id.label("value"),
+            Item.name.label("label"),
+            # Meta fields
+            Item.sku.label("sku"),
+            Item.item_type.label("item_type"),
+            Item.status.label("status"),
+            UnitOfMeasure.symbol.label("uom_symbol"),
+            Brand.name.label("brand_name"),
+            Item.created_at.label("created_at"),
+        )
+        .select_from(Item)
+        .outerjoin(UnitOfMeasure, UnitOfMeasure.id == Item.base_uom_id)
+        .outerjoin(Brand, Brand.id == Item.brand_id)
+        .where(Item.company_id == co_id)
+    )
+
+    # Apply filters
+    it = params.get("item_type")
+    if it:
+        q = q.where(Item.item_type == it)
+
+    st = params.get("status")
+    if st:
+        q = q.where(Item.status == st)
+    else:
+        # Default to active only if no status filter
+        q = q.where(Item.status == StatusEnum.ACTIVE)
+
+    # Order by: active first, then newest first, then name
+    q = q.order_by(
+        case((Item.status == StatusEnum.ACTIVE, 0), else_=1),  # Active first
+        Item.created_at.desc(),  # Newest first (Frappe pattern)
+        Item.name.asc()  # Then alphabetically
+    )
+
+    return q
+
+
+def build_active_items_dropdown(session: Session, ctx: AffiliationContext, params: Mapping[str, Any]):
+    """
+    Active items only - for transactions (sales/purchases)
+    Optimized for performance with minimal joins
+    """
+    co_id = _co(ctx)
+    if not co_id:
         return select(Item.id.label("value")).where(Item.id == -1)
 
     q = (
         select(
             Item.id.label("value"),
             Item.name.label("label"),
+            # Essential meta only for performance
             Item.sku.label("sku"),
-            UnitOfMeasure.name.label("base_uom_name"),
-            UnitOfMeasure.symbol.label("base_uom_symbol"),
+            Item.item_type.label("item_type"),
+            UnitOfMeasure.symbol.label("uom_symbol"),
         )
         .select_from(Item)
-        .join(UnitOfMeasure, UnitOfMeasure.id == Item.base_uom_id)
-        .where(Item.company_id == co_id)
-        .order_by(Item.name.asc())
+        .outerjoin(UnitOfMeasure, UnitOfMeasure.id == Item.base_uom_id)
+        .where(
+            Item.company_id == co_id,
+            Item.status == StatusEnum.ACTIVE  # Only active items
+        )
     )
-    # optional filter by item_type/status passed via params
+
+    # Filter by item_type if provided (common in transactions)
     it = params.get("item_type")
     if it:
         q = q.where(Item.item_type == it)
-    st = params.get("status")
-    if st:
-        q = q.where(Item.status == st)
+
+    # Order by: newest first, then name (transaction pattern)
+    q = q.order_by(
+        Item.created_at.desc(),  # Newest items first
+        Item.name.asc()
+    )
+
     return q
 
-# UOMs (company-scoped)
+
+# --- UOMS DROPDOWNS ---
+
 def build_uoms_dropdown(session: Session, ctx: AffiliationContext, params: Mapping[str, Any]):
+    """
+    All UOMs for company (including inactive) - for admin views
+    """
     co_id = _co(ctx)
     if not co_id:
         return select(UnitOfMeasure.id.label("value")).where(UnitOfMeasure.id == -1)
-    return (
+
+    q = (
         select(
             UnitOfMeasure.id.label("value"),
             UnitOfMeasure.name.label("label"),
             UnitOfMeasure.symbol.label("symbol"),
+            UnitOfMeasure.status.label("status"),
+            UnitOfMeasure.created_at.label("created_at"),
         )
         .where(UnitOfMeasure.company_id == co_id)
-        .order_by(UnitOfMeasure.name.asc())
     )
 
-# Brands (company-scoped)
+    st = params.get("status")
+    if st:
+        q = q.where(UnitOfMeasure.status == st)
+    else:
+        q = q.where(UnitOfMeasure.status == StatusEnum.ACTIVE)
+
+    # Order by: active first, then newest, then name
+    q = q.order_by(
+        case((UnitOfMeasure.status == StatusEnum.ACTIVE, 0), else_=1),
+        UnitOfMeasure.created_at.desc(),
+        UnitOfMeasure.name.asc()
+    )
+
+    return q
+
+
+def build_active_uoms_dropdown(session: Session, ctx: AffiliationContext, params: Mapping[str, Any]):
+    """
+    Active UOMs only - for transactions and forms
+    """
+    co_id = _co(ctx)
+    if not co_id:
+        return select(UnitOfMeasure.id.label("value")).where(UnitOfMeasure.id == -1)
+
+    return (
+        select(
+            UnitOfMeasure.id.label("value"),
+            # Show symbol with name for better UX (Frappe style)
+            (UnitOfMeasure.name + " (" + UnitOfMeasure.symbol + ")").label("label"),
+            UnitOfMeasure.symbol.label("symbol"),
+        )
+        .where(
+            UnitOfMeasure.company_id == co_id,
+            UnitOfMeasure.status == StatusEnum.ACTIVE
+        )
+        .order_by(
+            UnitOfMeasure.created_at.desc(),  # Newest first
+            UnitOfMeasure.name.asc()
+        )
+    )
+
+
+# --- BRANDS DROPDOWNS ---
+
 def build_brands_dropdown(session: Session, ctx: AffiliationContext, params: Mapping[str, Any]):
+    """
+    All brands for company (including inactive) - for admin views
+    """
     co_id = _co(ctx)
     if not co_id:
         return select(Brand.id.label("value")).where(Brand.id == -1)
+
+    q = (
+        select(
+            Brand.id.label("value"),
+            Brand.name.label("label"),
+            Brand.status.label("status"),
+            Brand.created_at.label("created_at"),
+        )
+        .where(Brand.company_id == co_id)
+    )
+
+    st = params.get("status")
+    if st:
+        q = q.where(Brand.status == st)
+    else:
+        q = q.where(Brand.status == StatusEnum.ACTIVE)
+
+    # Order by: active first, then newest, then name
+    q = q.order_by(
+        case((Brand.status == StatusEnum.ACTIVE, 0), else_=1),
+        Brand.created_at.desc(),
+        Brand.name.asc()
+    )
+
+    return q
+
+
+def build_active_brands_dropdown(session: Session, ctx: AffiliationContext, params: Mapping[str, Any]):
+    """
+    Active brands only - for transactions and forms
+    """
+    co_id = _co(ctx)
+    if not co_id:
+        return select(Brand.id.label("value")).where(Brand.id == -1)
+
     return (
         select(
             Brand.id.label("value"),
             Brand.name.label("label"),
         )
-        .where(Brand.company_id == co_id)
-        .order_by(Brand.name.asc())
+        .where(
+            Brand.company_id == co_id,
+            Brand.status == StatusEnum.ACTIVE
+        )
+        .order_by(
+            Brand.created_at.desc(),  # Newest first
+            Brand.name.asc()
+        )
     )
 
-# Prices (dependent on branch & item_id) – used for “choose price for item” kind of dropdowns
+
+# --- SPECIALIZED DROPDOWNS ---
+
 def build_branch_prices_dropdown(session: Session, ctx: AffiliationContext, params: Mapping[str, Any]):
+    """
+    Prices for specific branch & item - for price selection
+    """
     co_id = _co(ctx)
     br_id = _br(ctx)
     item_id = params.get("item_id")
+
     if not (co_id and br_id and item_id):
         return select(BranchItemPricing.id.label("value")).where(BranchItemPricing.id == -1)
 
     return (
         select(
             BranchItemPricing.id.label("value"),
-            BranchItemPricing.standard_rate.label("label"),  # label shows the rate
+            # Format: "Rate: $10.00 | Cost: $8.00"
+            (
+                    "Rate: " +
+                    func.cast(BranchItemPricing.standard_rate, db.String) +
+                    " | Cost: " +
+                    func.cast(BranchItemPricing.cost, db.String)
+            ).label("label"),
+            BranchItemPricing.standard_rate.label("rate"),
             BranchItemPricing.cost.label("cost"),
         )
         .where(
@@ -95,54 +272,68 @@ def build_branch_prices_dropdown(session: Session, ctx: AffiliationContext, para
         .order_by(BranchItemPricing.standard_rate.asc())
     )
 
+
 def build_item_uoms_dropdown(session: Session, ctx: AffiliationContext, params: Mapping[str, Any]):
     """
-    Returns only the UOMs valid for a given item:
-      - the base UOM
-      - all UOMs that have a conversion mapping for that item
-    Expects: params['item_id'] (required)
+    Returns UOMs valid for a given item: base UOM + conversion UOMs
+    Optimized for transaction forms
     """
     item_id = params.get("item_id")
     if not item_id:
-        # empty select (enforce dependency)
         return select(UnitOfMeasure.id.label("value")).where(literal(False))
 
-    # base UOM row
+    co_id = _co(ctx)
+    if not co_id:
+        return select(UnitOfMeasure.id.label("value")).where(literal(False))
+
+    # Base UOM (always available)
     base_q = (
         select(
             UnitOfMeasure.id.label("value"),
-            UnitOfMeasure.name.label("label"),
-            literal(1.0).label("factor"),             # base factor = 1
+            # Label: "Base UOM Name (symbol)"
+            (UnitOfMeasure.name + " (Base - " + UnitOfMeasure.symbol + ")").label("label"),
+            literal(1.0).label("factor"),
             literal(True).label("is_base"),
             UnitOfMeasure.symbol.label("symbol"),
         )
         .select_from(Item)
         .join(UnitOfMeasure, UnitOfMeasure.id == Item.base_uom_id)
-        .where(Item.id == int(item_id))
+        .where(
+            Item.id == int(item_id),
+            Item.company_id == co_id,
+            UnitOfMeasure.status == StatusEnum.ACTIVE
+        )
     )
 
-    # conversion UOM rows (to_uom_id is the target “buy/sell” UOM)
+    # Conversion UOMs (active only)
     conv_q = (
         select(
             UnitOfMeasure.id.label("value"),
-            UnitOfMeasure.name.label("label"),
+            # Label: "UOM Name (symbol) - Factor: X"
+            (
+                    UnitOfMeasure.name + " (" + UnitOfMeasure.symbol +
+                    ") - Factor: " + func.cast(UOMConversion.conversion_factor, db.String)
+            ).label("label"),
             UOMConversion.conversion_factor.label("factor"),
             literal(False).label("is_base"),
             UnitOfMeasure.symbol.label("symbol"),
         )
         .select_from(UOMConversion)
         .join(UnitOfMeasure, UnitOfMeasure.id == UOMConversion.to_uom_id)
-        .where(UOMConversion.item_id == int(item_id))
+        .where(
+            UOMConversion.item_id == int(item_id),
+            UOMConversion.company_id == co_id,
+            UnitOfMeasure.status == StatusEnum.ACTIVE
+        )
     )
 
     u = union_all(base_q, conv_q).subquery()
 
-    # show base first, then alphabetical by label
+    # Order: base first, then alphabetical
     return (
         select(u.c.value, u.c.label, u.c.factor, u.c.is_base, u.c.symbol)
         .order_by(
-            # base first
-            case((u.c.is_base.is_(True), 0), else_=1),
-            u.c.label.asc(),
+            u.c.is_base.desc(),  # Base UOM first
+            u.c.label.asc()  # Then alphabetically
         )
     )

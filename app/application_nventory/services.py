@@ -15,11 +15,15 @@ from app.application_nventory.repo import InventoryRepository
 from app.application_nventory.schemas import BrandCreate, BrandOut, UOMCreate, ItemCreate, UOMOut, ItemMinimalOut, \
     UOMConversionCreate, UOMConversionOut, BranchItemPricingCreate, BranchItemPricingOut, BranchItemPricingUpdate, \
     ItemUpdate
-from app.common.cache.cache_invalidator import bump_list_cache_company, bump_list_cache_branch
+from app.common.cache.cache_invalidator import bump_list_cache_company, bump_list_cache_branch, bump_inventory_dropdowns
 from config.database import db
 from app.security.rbac_effective import AffiliationContext
 from app.security.rbac_guards import ensure_scope_by_ids
-
+from app.common.cache.cache_invalidator import (
+    bump_list_cache_company,
+    bump_list_cache_branch,
+    bump_dropdown_company  # ADD THIS IMPORT
+)
 log = logging.getLogger(__name__)
 
 
@@ -72,7 +76,10 @@ class InventoryService:
             brand = Brand(company_id=context.company_id, name=payload.name)
             self.repo.create_brand(brand)
             self.s.commit()
-            bump_list_cache_company("inventory", "brands", context.company_id)
+            # ✅ INVALIDATE BOTH LIST AND DROPDOWN CACHES
+            bump_list_cache_company("inventory", "items", context.company_id)
+            bump_inventory_dropdowns("inventory", "items", context.company_id)
+
             return BrandOut.model_validate(brand)
         except IntegrityError:
             self.s.rollback()
@@ -94,7 +101,10 @@ class InventoryService:
             uom = UnitOfMeasure(company_id=context.company_id, name=payload.name, symbol=payload.symbol)
             self.repo.create_uom(uom)
             self.s.commit()
-            bump_list_cache_company("inventory", "uoms", context.company_id)
+            # ✅ INVALIDATE BOTH LIST AND DROPDOWN CACHES
+            bump_list_cache_company("inventory", "items", context.company_id)
+            bump_inventory_dropdowns("inventory", "items", context.company_id)
+
             return UOMOut.model_validate(uom)
         except IntegrityError:
             self.s.rollback()
@@ -166,8 +176,10 @@ class InventoryService:
             try:
                 self.repo.create_item(item)
                 self.s.commit()
-                # ✅ Add cache invalidation for successful manual SKU creation
+
+                # ✅ USE THE HELPER FUNCTION
                 bump_list_cache_company("inventory", "items", context.company_id)
+                bump_inventory_dropdowns("inventory", "items", context.company_id)
 
                 return ItemMinimalOut.model_validate(item)
             except IntegrityError:
@@ -183,8 +195,12 @@ class InventoryService:
                 try:
                     self.repo.create_item(item)
                     self.s.commit()
-                    # ✅ Add cache invalidation for successful auto-generated SKU creation
+
+                    # ✅ INVALIDATE BOTH LIST AND DROPDOWN CACHES
+                    # ✅ USE THE HELPER FUNCTION
                     bump_list_cache_company("inventory", "items", context.company_id)
+                    bump_inventory_dropdowns("inventory", "items", context.company_id)
+
                     return ItemMinimalOut.model_validate(item)
                 except IntegrityError:
                     self.s.rollback()
@@ -212,7 +228,12 @@ class InventoryService:
 
             self.repo.update_item(item, updates)
             self.s.commit()
+
+            # ✅ INVALIDATE BOTH LIST AND DROPDOWN CACHES
             bump_list_cache_company("inventory", "items", context.company_id)
+            bump_dropdown_company("inventory", "items", context.company_id)  # ADD THIS LINE
+            bump_dropdown_company("inventory", "active_items", context.company_id)  # ADD THIS LINE
+
             return ItemMinimalOut.model_validate(item)
         except IntegrityError:
             self.s.rollback()
