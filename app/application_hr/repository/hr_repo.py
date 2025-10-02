@@ -108,3 +108,29 @@ class HrRepository:
         self.s.add(aff)
         self.s.flush([aff])
         return u
+        # ---- Fetch employee ----
+
+    def get_employee_by_id(self, employee_id: int) -> Optional[Employee]:
+        """ Fetches an Employee by its primary key ID. """
+        return self.s.query(Employee).filter(Employee.id == employee_id).first()
+
+        # ---- Update Employee ----
+
+    def update_employee(self, emp: Employee, update_data: dict) -> None:
+        """ Update employee fields based on the provided data """
+        for field, value in update_data.items():
+            if hasattr(emp, field):
+                setattr(emp, field, value)
+        self.s.flush([emp])
+
+        # ---- Update assignments ----
+
+    def update_assignments(self, employee_id: int, rows: List[dict]) -> None:
+        # Update only the provided assignments
+        pass  # You can follow a similar pattern as creating assignments but with `UPDATE` operations.
+
+        # ---- Update emergency contacts ----
+
+    def update_emergency_contacts(self, employee_id: int, rows: List[dict]) -> None:
+        # Update only the provided emergency contacts
+        pass  # Follow a similar pattern for updating the emergency contacts.

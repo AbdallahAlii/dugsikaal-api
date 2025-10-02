@@ -10,5 +10,5 @@ def register_module_details() -> None:
     register_parties_detail_configs()
 
 def register_module_dropdowns() -> None:
-    # none for parties yet
-    pass
+    from app.application_parties.dropdown_configs import register_parties_dropdowns
+    register_parties_dropdowns()

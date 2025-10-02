@@ -1,0 +1,99 @@
+# -------------------------
+# PYTHON / FLASK BASICS
+# -------------------------
+# Compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.env_bak/
+
+# Byte-compiled / build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+.wheels/
+pip-wheel-metadata/
+
+# Dependency Lock Files (If not using Pipfile.lock)
+# requirements.txt.lock
+
+# -------------------------
+# IDE / OS / LOGS
+# -------------------------
+# OS Files
+.DS_Store
+Thumbs.db
+
+# IDE Folders (Visual Studio Code, PyCharm, etc.)
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs / Temporary Files
+logs/
+*.log
+*.pid
+*.seed
+*.out
+*.tmp
+tmp/
+.cache/
+
+# -------------------------
+# FLASK / DATABASE
+# -------------------------
+# The Flask instance folder (often contains config, development SQLite DBs)
+instance/
+
+# Local dev databases
+*.sqlite
+*.sqlite3
+*.db
+
+# User-uploaded media (Adjust paths as needed for your project)
+media/
+uploads/
+static/uploads/
+storage/
+
+# -------------------------
+# SECRETS / ENVIRONMENT
+# -------------------------
+# Environment variables (Crucial to IGNORE)
+.env
+.env.*
+!.env.example          # Keep this template in Git for collaborators
+!.env.schema           # Keep this optional schema in Git
+
+# Security artifacts
+*.key
+*.pem
+*.enc
+
+# -------------------------
+# TESTING / TOOLING CACHES
+# -------------------------
+.coverage* # Coverage reports
+htmlcov/
+.tox/                  # Tox testing environment
+.nox/
+.pytest_cache/         # Pytest cache
+.mypy_cache/           # MyPy type checker cache
+.pyre/
+.pytype/
+.ruff_cache/           # Ruff linter cache
+
+# -------------------------
+# ALEMBIC (MIGRATIONS)
+# -------------------------
+# We DO NOT ignore 'migrations/' or 'migrations/versions/' because
+# the history MUST be committed. We only ignore generated files inside it.
+migrations/*/__pycache__/

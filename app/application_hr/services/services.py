@@ -19,7 +19,7 @@ from app.application_hr.schemas.schemas import (
     EmployeeCreate,
     EmployeeCreateResponse,
 
-    CreatedUserOut, EmployeeMinimalOut,
+    CreatedUserOut, EmployeeMinimalOut, EmployeeUpdate,
 )
 from app.common.models.base import GenderEnum, StatusEnum
 from app.common.security.password_generator import generate_random_password
@@ -37,6 +37,12 @@ from app.common.generate_code.service import (
 from app.common.generate_code.service import (
     preview_next_username_for_company,
     bump_username_counter_for_company,
+)
+from app.common.cache.cache_invalidator import (
+    bump_list_cache_company,
+    bump_list_cache_branch,
+    bump_list_cache_with_context,  # optional, if you want param-aware bumps
+    bump_detail,                   # optional (use on updates; not needed on create)
 )
 
 from app.application_org.models.company import Company
@@ -219,6 +225,20 @@ class HrService:
             # ---- Commit & response ----
             self.s.commit()
             log.info("Successfully created employee %s for company %s.", emp.id, company_id)
+            # -------------- CACHE BUMPS (best-effort) --------------
+            try:
+                # Company-scoped employees list (your HR list uses cache_scope=COMPANY)
+                bump_list_cache_company("hr", "employees", company_id)
+
+                # If you ever change the list scope to BRANCH or your UI keeps a branch-filtered list,
+                # also bump the branch scope version to be extra safe:
+                if primary_assignment and getattr(primary_assignment, "branch_id", None):
+                    bump_list_cache_branch("hr", "employees", company_id, int(primary_assignment.branch_id))
+
+                # If your list read path computes scope based on params/context, you can mirror it:
+                # bump_list_cache_with_context("hr", "employees", context, params={})
+            except Exception:
+                log.exception("[cache] failed to bump employees list cache after create")
 
             resp = EmployeeCreateResponse(
                 employee=EmployeeMinimalOut(  # <-- Change this line to use EmployeeMinimalOut
@@ -264,3 +284,88 @@ class HrService:
             log.exception("Unexpected error creating employee: %s", e)
             self.s.rollback()
             return False, "Unexpected server error while creating employee.", None
+
+    def update_employee(
+            self,
+            *,
+            employee_id: int,
+            payload: EmployeeUpdate,
+            context: AffiliationContext,
+            file_storage=None,
+            bytes_: Optional[bytes] = None,
+            filename: Optional[str] = None,
+            content_type: Optional[str] = None,
+    ) -> Tuple[bool, str, Optional[EmployeeCreateResponse]]:
+        log.info(f"User {getattr(context, 'user_id', '?')} attempting employee update for employee {employee_id}")
+
+        try:
+            # Fetch existing employee record
+            emp = self.repo.get_employee_by_id(employee_id)
+            if not emp:
+                return False, "Employee not found.", None
+
+            # Validate ownership or permissions (this would need to be based on roles)
+            # This can be expanded to check if the user has permission to edit this employee.
+
+            # ---- Update only the fields provided in the payload ----
+            update_fields = ["full_name", "personal_email", "phone_number", "dob", "status", "img_key"]
+
+            # Loop through the provided payload and update the respective fields
+            for field, value in payload.dict(exclude_unset=True).items():
+                if field in update_fields:
+                    setattr(emp, field, value)
+
+            # ---- Handle assignments ----
+            if payload.assignments:
+                self.repo.update_assignments(
+                    employee_id=emp.id,
+                    company_id=emp.company_id,
+                    rows=[a.dict() for a in payload.assignments]
+                )
+
+            # ---- Handle emergency contacts ----
+            if payload.emergency_contacts:
+                self.repo.update_emergency_contacts(emp.id, [e.dict() for e in payload.emergency_contacts])
+
+            # ---- Optional encrypted image ----
+            if file_storage:
+                new_key = save_image_for(
+                    folder=MediaFolder.EMPLOYEES,
+                    item_id=emp.id,
+                    file=file_storage,
+                    bytes_=bytes_,
+                    filename=filename,
+                    content_type=content_type,
+                    old_img_key=emp.img_key,
+                )
+                if new_key:
+                    self.repo.update_employee_img_key(emp, new_key)
+
+            # ---- Commit the changes ----
+            self.s.commit()
+            log.info(f"Successfully updated employee {emp.id}.")
+
+            # -------------- CACHE BUMPS (best-effort) --------------
+            try:
+                bump_list_cache_company("hr", "employees", emp.company_id)
+                if emp.primary_assignment and getattr(emp.primary_assignment, "branch_id", None):
+                    bump_list_cache_branch("hr", "employees", emp.company_id, int(emp.primary_assignment.branch_id))
+            except Exception:
+                log.exception("[cache] failed to bump employees list cache after update")
+
+            # ---- Response ----
+            resp = EmployeeCreateResponse(
+                employee=EmployeeMinimalOut(
+                    id=emp.id,
+                    code=emp.code,
+                )
+            )
+
+            return True, "Employee updated", resp
+
+        except Exception as e:
+            log.exception(f"Error during employee update for employee {employee_id}: {e}")
+            self.s.rollback()
+            return False, "Unexpected error while updating employee.", None
+
+

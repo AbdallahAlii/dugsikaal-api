@@ -137,6 +137,9 @@ def create_app() -> Flask:
     from app.application_rbac.endpoints import bp as rbac_bp
     app.register_blueprint(rbac_bp, url_prefix="/api/rbac")
 
+    from app.application_media.endpoint import media_bp
+    app.register_blueprint(media_bp)  # This will register at /api/media
+
     from app.application_nventory.endpoints import bp as inventory_bp
     app.register_blueprint(inventory_bp, url_prefix="/api/inventory")
 

@@ -55,7 +55,7 @@ def create_warehouse():
 
 
 @bp.patch("/warehouses/<int:warehouse_id>/update")
-@require_permission("Warehouse", "EDIT")
+@require_permission("Warehouse", "UPDATE")
 def update_warehouse(warehouse_id: int):
     try:
         ctx = _ctx()

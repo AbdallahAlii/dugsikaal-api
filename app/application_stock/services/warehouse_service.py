@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+import logging
 from typing import Optional
 from decimal import Decimal
 
@@ -31,7 +33,13 @@ from app.common.generate_code.service import (
     generate_next_code,
     ensure_manual_code_is_next_and_bump,
 )
-
+from app.common.cache.cache_invalidator import (
+    bump_list_cache_company,
+    bump_list_cache_branch,
+    bump_detail,
+    # bump_list_cache_with_context,  # keep handy if your list read uses extra params
+)
+log = logging.getLogger(__name__)
 WH_PREFIX = "WH"
 GLOBAL_STOCK_ROLES = {"Super Admin", "Operations Manager", "Stock Manager"}
 
@@ -161,6 +169,20 @@ class WarehouseService:
         )
         self.repo.create(wh)
         self.s.commit()
+        # -------------- CACHE BUMPS (best-effort) --------------
+        try:
+            # Your warehouses list logs show scope=COMPANY
+            bump_list_cache_company("stock", "warehouses", company_id)
+
+            # If the UI also shows a branch-filtered list anywhere, bump branch scope too
+            if branch_id is not None:
+                bump_list_cache_branch("stock", "warehouses", company_id, int(branch_id))
+
+            # If your list read path keys the cache with params/context, mirror it:
+            # bump_list_cache_with_context("stock", "warehouses", context, params={})
+        except Exception:
+            log.exception("[cache] failed to bump warehouses list cache after create")
+
         return wh
 
     # ---------- update ----------
@@ -209,6 +231,18 @@ class WarehouseService:
 
         self.repo.save(wh)
         self.s.commit()
+        # -------------- CACHE BUMPS (best-effort) --------------
+        try:
+            # Invalidate the detail view (if you cache docdetail)
+            bump_detail("stock", "warehouses", wh.id)
+
+            # And the list page(s)
+            bump_list_cache_company("stock", "warehouses", wh.company_id)
+            if wh.branch_id is not None:
+                bump_list_cache_branch("stock", "warehouses", wh.company_id, int(wh.branch_id))
+        except Exception:
+            log.exception("[cache] failed to bump warehouses caches after update")
+
         return wh
 
     # ---------- delete ----------
@@ -231,3 +265,14 @@ class WarehouseService:
 
         self.repo.delete(wh)
         self.s.commit()
+        # -------------- CACHE BUMPS (best-effort) --------------
+        try:
+            bump_list_cache_company("stock", "warehouses", wh.company_id)
+            if wh.branch_id is not None:
+                bump_list_cache_branch("stock", "warehouses", wh.company_id, int(wh.branch_id))
+
+            # If you cache docdetail, bump its version so stale details disappear immediately
+            bump_detail("stock", "warehouses", warehouse_id)
+        except Exception:
+            log.exception("[cache] failed to bump warehouses caches after delete")
+

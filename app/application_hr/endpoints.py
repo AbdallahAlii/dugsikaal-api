@@ -4,7 +4,7 @@ import json
 from typing import Optional
 from flask import Blueprint, request, g
 
-from app.application_hr.schemas.schemas import EmployeeCreate
+from app.application_hr.schemas.schemas import EmployeeCreate, EmployeeUpdate
 from app.application_hr.services.services import HrService
 from app.common.api_response import api_success, api_error
 from app.security.rbac_guards import require_permission
@@ -60,3 +60,47 @@ def create_employee():
         return api_error(msg, status_code=400)
 
     return api_success(message=resp.message, data={"employee": resp.employee}, status_code=201)
+
+
+@bp.put("/employees/update/<int:employee_id>")
+@require_permission("Employee", "UPDATE")
+def update_employee(employee_id: int):
+    """
+    Update employee details.
+
+    Rules:
+      - Only fields like full_name, status, phone_number, img_key, dob, etc., can be updated.
+      - Code, ID, and Username cannot be updated.
+    """
+    _ = get_current_user()  # ensures session/profile and sets g.current_user
+    ctx: AffiliationContext = getattr(g, "auth", None)
+    if not ctx:
+        return api_error("Unauthorized", status_code=401)
+
+    # Parse body
+    file_storage = None
+    if request.content_type and "multipart/form-data" in request.content_type:
+        payload_raw = request.form.get("payload")
+        if not payload_raw:
+            return api_error("Missing 'payload' JSON in form-data.", status_code=422)
+        try:
+            payload = EmployeeUpdate.model_validate(json.loads(payload_raw))
+        except Exception as e:
+            return api_error(f"Invalid 'payload' JSON: {e}", status_code=422)
+        file_storage = request.files.get("file")
+    else:
+        try:
+            payload = EmployeeUpdate.model_validate(request.get_json(silent=True) or {})
+        except Exception as e:
+            return api_error(f"Invalid JSON body: {e}", status_code=422)
+
+    ok, msg, resp = svc.update_employee(
+        employee_id=employee_id,
+        payload=payload,
+        context=ctx,
+        file_storage=file_storage,
+    )
+    if not ok or not resp:
+        return api_error(msg, status_code=400)
+
+    return api_success(message=resp.message, data={"employee": resp.employee}, status_code=200)
