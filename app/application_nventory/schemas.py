@@ -1,6 +1,8 @@
 # app/inventory/schemas.py
 
 from __future__ import annotations
+
+from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel, Field, validator
 
@@ -94,6 +96,7 @@ class ItemCreate(BaseModel):
     sku: Optional[str] = None
     item_type: ItemTypeEnum
     description: Optional[str] = None
+    item_group_id: int
     brand_id: Optional[int] = None
     base_uom_id: Optional[int] = None
     status: StatusEnum = StatusEnum.ACTIVE
@@ -124,3 +127,35 @@ class ItemMinimalOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# --- Pricing (Price Discovery) Schemas ---------------------------------------
+class PriceLookupRequest(BaseModel):
+    item_id: int
+    txn_uom_id: int
+    qty: Optional[float] = Field(None, ge=0)
+    posting_date: Optional[datetime] = None
+    price_list_id: Optional[int] = None
+
+class PriceLookupOut(BaseModel):
+    item_id: int
+    txn_uom_id: int
+    rate: float
+    stock_factor: float
+    used_price_list_id: int
+    used_branch_id: Optional[int] = None
+    line_amount: Optional[float] = None
+    stock_qty_change: Optional[float] = None
+
+class PriceBatchItemIn(BaseModel):
+    item_id: int
+    txn_uom_id: int
+    qty: Optional[float] = Field(None, ge=0)
+
+class PriceBatchLookupRequest(BaseModel):
+    items: List[PriceBatchItemIn] = Field(..., min_items=1)
+    posting_date: Optional[datetime] = None
+    price_list_id: Optional[int] = None
+
+class PriceBatchLookupOut(BaseModel):
+    results: List[PriceLookupOut]

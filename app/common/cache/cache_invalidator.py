@@ -7,7 +7,8 @@ from typing import Any, Optional
 
 from .cache import get_version
 from .core_cache import bump_version
-from .cache_keys import detail_version_key, list_version_key, user_profile_version_key, build_detail_cache_key
+from .cache_keys import detail_version_key, list_version_key, user_profile_version_key, build_detail_cache_key, \
+    price_list_version_key
 from app.application_doctypes.core_lists.config import CacheScope, get_list_config
 from app.application_doctypes.core_lists.cache import build_list_scope_key
 from app.security.rbac_effective import AffiliationContext
@@ -134,3 +135,12 @@ def bump_dropdown_company(module_name: str, name: str, company_id: int) -> int:
 
 def bump_dropdown_branch(module_name: str, name: str, company_id: int, branch_id: int) -> int:
     return _bump_dropdown(module_name, name, f"br:{int(company_id)}-{int(branch_id)}")
+
+def bump_price_list(company_id: int, price_list_id: int) -> int:
+    """
+    Bump version on any ItemPrice write for this company/price list.
+    Readers will rebuild the per-day snapshot lazily on next access.
+    """
+    v = bump_version(price_list_version_key(company_id, price_list_id))
+    log.info("[cache] BUMP PRICE LIST co=%s pl=%s -> v%s", company_id, price_list_id, v)
+    return v

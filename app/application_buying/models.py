@@ -44,7 +44,8 @@ class PurchaseQuotation(BaseModel):
     items: Mapped[List["PurchaseQuotationItem"]] = relationship(
         back_populates="quotation", cascade="all, delete-orphan"
     )
-
+    branch: Mapped["Branch"] = relationship("Branch", back_populates="purchase_quotations")
+    company: Mapped["Company"] = relationship("Company", back_populates="purchase_quotations")
     # Table Constraints & Indices
     __table_args__ = (
         UniqueConstraint("company_id", "branch_id", "code", name="uq_pq_branch_code"),
@@ -98,13 +99,16 @@ class PurchaseQuotationItem(BaseModel):
         return f"<PurchaseQuotationItem id={self.id} item={self.item_id} qty={self.quantity}>"
 
 
+
+
+
 # ──────────────────────────────────────────────────────────────────────────────
-# 2) PURCHASE RECEIPT (Stock only)
+# PURCHASE RECEIPT (Stock only) - TRUE ERPNext Style
 # ──────────────────────────────────────────────────────────────────────────────
 class PurchaseReceipt(BaseModel):
     """
-    A document that records the physical receipt of goods from a supplier.
-    This document affects inventory stock but not the general ledger.
+    A document that records the physical receipt/return of goods from/to a supplier.
+    TRUE ERPNext Style: Return documents store NEGATIVE quantities.
     """
     __tablename__ = "purchase_receipts"
 
@@ -120,19 +124,59 @@ class PurchaseReceipt(BaseModel):
     warehouse_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("warehouses.id"),
                                               nullable=False, index=True)
 
+    # Return against reference (ERPNext style)
+    return_against_id: Mapped[Optional[int]] = mapped_column(
+        db.BigInteger, db.ForeignKey("purchase_receipts.id"), nullable=True, index=True
+    )
+
     # Document Fields
     code: Mapped[str] = mapped_column(db.String(100), nullable=False, index=True)
-    posting_date: Mapped[datetime] = mapped_column(db.DateTime(timezone=True), nullable=False, index=True)
+
+    # User-facing date (like ERPNext 'Dated')
+    dated: Mapped[Optional[datetime]] = mapped_column(
+        db.DateTime(timezone=True), nullable=True, index=True,
+        comment="User-selected date for display (like ERPNext 'Dated' field)"
+    )
+
+    # System-effective date (like ERPNext 'Date') - for stock/accounting
+    posting_date: Mapped[datetime] = mapped_column(
+        db.DateTime(timezone=True), nullable=False, index=True,
+        comment="System-determined date for stock/accounting (like ERPNext 'Date')"
+    )
+
+
     doc_status: Mapped[DocStatusEnum] = mapped_column(db.Enum(DocStatusEnum),
                                                       nullable=False, default=DocStatusEnum.DRAFT, index=True)
+
+    # Return Management (ERPNext style)
+    is_return: Mapped[bool] = mapped_column(db.Boolean, nullable=False, default=False, index=True)
+
     remarks: Mapped[Optional[str]] = mapped_column(db.Text)
     total_amount: Mapped[float] = mapped_column(db.Numeric(14, 4), nullable=False, default=0.0000)
 
     # Relationships
-    supplier: Mapped["Party"] = relationship()
-    warehouse: Mapped["Warehouse"] = relationship()
+    branch: Mapped["Branch"] = relationship("Branch", back_populates="purchase_receipts")
+    company: Mapped["Company"] = relationship("Company", back_populates="purchase_receipts")
+    supplier: Mapped["Party"] = relationship("Party", back_populates="purchase_receipts")
+    warehouse: Mapped["Warehouse"] = relationship("Warehouse", back_populates="purchase_receipts")
+    created_by: Mapped["User"] = relationship(back_populates="created_purchase_receipts")
     items: Mapped[List["PurchaseReceiptItem"]] = relationship(
         back_populates="receipt", cascade="all, delete-orphan"
+    )
+    invoices: Mapped[List["PurchaseInvoice"]] = relationship(
+        back_populates="receipt",  # Links back to the 'receipt' property on PurchaseInvoice
+        foreign_keys="PurchaseInvoice.receipt_id",
+        cascade="all, delete-orphan",  # Optional, but common for collections
+    )
+
+    # Self-referential relationship for returns (ERPNext style)
+    return_against: Mapped[Optional["PurchaseReceipt"]] = relationship(
+        remote_side="PurchaseReceipt.id", back_populates="returns",
+        foreign_keys=[return_against_id]
+    )
+    returns: Mapped[List["PurchaseReceipt"]] = relationship(
+        back_populates="return_against",
+        foreign_keys="PurchaseReceipt.return_against_id"
     )
 
     # Table Constraints & Indices
@@ -141,15 +185,23 @@ class PurchaseReceipt(BaseModel):
         Index("ix_pr_company_branch_status", "company_id", "branch_id", "doc_status"),
         Index("ix_pr_company_supplier", "company_id", "supplier_id"),
         Index("ix_pr_company_posting_date", "company_id", "posting_date"),
+        Index("ix_pr_is_return", "is_return"),
+
+        # ERPNext-style constraints
+        CheckConstraint(
+            "(is_return = true AND return_against_id IS NOT NULL) OR (is_return = false)",
+            name="ck_pr_return_requires_original"
+        ),
     )
 
     def __repr__(self) -> str:
-        return f"<PurchaseReceipt code={self.code!r} supplier={self.supplier_id} status={self.doc_status}>"
+        return f"<PurchaseReceipt {self.code} supplier={self.supplier_id} return={self.is_return}>"
 
 
 class PurchaseReceiptItem(BaseModel):
     """
     Represents an item line within a Purchase Receipt document.
+    TRUE ERPNext Style: Return items store NEGATIVE quantities.
     """
     __tablename__ = "purchase_receipt_items"
 
@@ -163,42 +215,77 @@ class PurchaseReceiptItem(BaseModel):
     uom_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("units_of_measure.id"),
                                         nullable=True, index=True)
 
-    # Item Line Fields
+    # Return against item reference
+    return_against_item_id: Mapped[Optional[int]] = mapped_column(
+        db.BigInteger, db.ForeignKey("purchase_receipt_items.id"), nullable=True, index=True
+    )
+
+    # Item Line Fields (NEGATIVE for returns, POSITIVE for receipts)
     received_qty: Mapped[float] = mapped_column(db.Numeric(12, 3), nullable=False)
     accepted_qty: Mapped[float] = mapped_column(db.Numeric(12, 3), nullable=False)
     unit_price: Mapped[Optional[float]] = mapped_column(db.Numeric(12, 4), nullable=True)
     amount: Mapped[Optional[float]] = mapped_column(
         db.Numeric(14, 4),
-        db.Computed("CASE WHEN unit_price IS NULL THEN NULL ELSE accepted_qty * unit_price END", persisted=True),
+        db.Computed("accepted_qty * unit_price", persisted=True),
         nullable=True
     )
-
     remarks: Mapped[Optional[str]] = mapped_column(db.String(255))
+    # ✅ SIMPLE FIELD: Returned quantity tracking
+    returned_qty: Mapped[float] = mapped_column(
+        db.Numeric(12, 3), nullable=False, default=0.000,
+        comment="Total quantity returned against this item line"
+    )
 
     # Relationships
     receipt: Mapped["PurchaseReceipt"] = relationship(back_populates="items")
-    item: Mapped["Item"] = relationship()
-    uom: Mapped["UnitOfMeasure"] = relationship()
+    item: Mapped["Item"] = relationship(back_populates="purchase_receipt_items")
+    uom: Mapped["UnitOfMeasure"] = relationship(back_populates="purchase_receipt_items")
+    return_against_item: Mapped[Optional["PurchaseReceiptItem"]] = relationship(
+        remote_side="PurchaseReceiptItem.id", back_populates="return_items",
+        foreign_keys=[return_against_item_id]
+    )
+    return_items: Mapped[List["PurchaseReceiptItem"]] = relationship(
+        back_populates="return_against_item",
+        foreign_keys="PurchaseReceiptItem.return_against_item_id"
+    )
+
+    # Link to invoice items
+    invoice_items: Mapped[List["PurchaseInvoiceItem"]] = relationship(
+        back_populates="receipt_item"
+    )
 
     # Table Constraints & Indices
     __table_args__ = (
-        CheckConstraint("received_qty > 0", name="ck_pri_received_pos"),
-        CheckConstraint("accepted_qty >= 0 AND accepted_qty <= received_qty", name="ck_pri_accepted_valid"),
-
+        # ✅ IMPROVED: Allow UOM to be NULL for service items
+        CheckConstraint(
+            "(receipt_id IN (SELECT id FROM purchase_receipts WHERE is_return = false) AND received_qty > 0 AND accepted_qty > 0) OR "
+            "(receipt_id IN (SELECT id FROM purchase_receipts WHERE is_return = true) AND received_qty < 0 AND accepted_qty < 0)",
+            name="ck_pri_qty_direction"
+        ),
+        CheckConstraint(
+            "ABS(accepted_qty) <= ABS(received_qty)",
+            name="ck_pri_accepted_leq_received"
+        ),
+        CheckConstraint(
+            "returned_qty >= 0 AND returned_qty <= accepted_qty",
+            name="ck_pri_returned_qty_range"
+        ),
         Index("ix_pri_item", "item_id"),
+        Index("ix_pri_return_against", "return_against_item_id"),
     )
 
     def __repr__(self) -> str:
-        return f"<PurchaseReceiptItem id={self.id} item={self.item_id} acc={self.accepted_qty}>"
+        return f"<PurchaseReceiptItem item={self.item_id} qty={self.accepted_qty} return={self.receipt.is_return}>"
+
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 3) PURCHASE INVOICE (Finance-only or Direct-with-stock)
+# PURCHASE INVOICE (Finance + Optional Stock) - TRUE ERPNext Style (FIXED)
 # ──────────────────────────────────────────────────────────────────────────────
 class PurchaseInvoice(BaseModel):
     """
-    The supplier's financial invoice.
-    It can either bill a prior receipt or act as a single document for both stock and finance.
+    The supplier's financial invoice or Debit Note.
+    TRUE ERPNext Style: Debit notes store NEGATIVE amounts and quantities.
     """
     __tablename__ = "purchase_invoices"
 
@@ -211,29 +298,104 @@ class PurchaseInvoice(BaseModel):
                                                nullable=False, index=True)
     supplier_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("parties.id"),
                                              nullable=False, index=True)
-    # This is required if `update_stock` is True
     warehouse_id: Mapped[Optional[int]] = mapped_column(db.BigInteger, db.ForeignKey("warehouses.id"),
                                                         nullable=True, index=True)
 
+    # Return against reference (ERPNext style)
+    return_against_id: Mapped[Optional[int]] = mapped_column(
+        db.BigInteger, db.ForeignKey("purchase_invoices.id"), nullable=True, index=True
+    )
+    receipt_id: Mapped[Optional[int]] = mapped_column(
+        db.BigInteger, db.ForeignKey("purchase_receipts.id"),
+        nullable=True, index=True,
+        comment="The Purchase Receipt this invoice is generated from (clears GRNI)."
+    )
+    # 🔗 CORE ACCOUNTING LINKS (Mandatory Liability Link Restored)
+    # 1. The GL Account for the primary Liability (Credit for PI)
+    payable_account_id: Mapped[int] = mapped_column(
+        db.BigInteger, db.ForeignKey("accounts.id"), nullable=True, index=True,
+        comment="The Accounts Payable (Liability) account used for the Credit posting."
+    )
+
+
+    # Payment Fields (ERPNext Style - Direct on Invoice)
+    mode_of_payment_id: Mapped[Optional[int]] = mapped_column(
+        db.BigInteger, db.ForeignKey("modes_of_payment.id"), nullable=True, index=True
+    )
+    cash_bank_account_id: Mapped[Optional[int]] = mapped_column(
+        db.BigInteger, db.ForeignKey("accounts.id"), nullable=True, index=True
+    )
+
     # Document Fields
     code: Mapped[str] = mapped_column(db.String(100), nullable=False, index=True)
-    posting_date: Mapped[datetime] = mapped_column(db.DateTime(timezone=True), nullable=False, index=True)
+    # User-facing date (like ERPNext 'Dated')
+    dated: Mapped[Optional[datetime]] = mapped_column(
+        db.DateTime(timezone=True), nullable=True, index=True,
+        comment="User-selected date for display (like ERPNext 'Dated' field)"
+    )
+
+    # System-effective date (like ERPNext 'Date') - for stock/accounting
+    posting_date: Mapped[datetime] = mapped_column(
+        db.DateTime(timezone=True), nullable=False, index=True,
+        comment="System-determined date for stock/accounting (like ERPNext 'Date')"
+    )
+
+
     doc_status: Mapped[DocStatusEnum] = mapped_column(db.Enum(DocStatusEnum),
                                                       nullable=False, default=DocStatusEnum.DRAFT, index=True)
+
+
+
+
     update_stock: Mapped[bool] = mapped_column(db.Boolean, nullable=False, default=False, index=True)
 
-    # Finance Fields
+    # Return Management (ERPNext style)
+    is_return: Mapped[bool] = mapped_column(db.Boolean, nullable=False, default=False, index=True)
+    is_debit_note: Mapped[bool] = mapped_column(db.Boolean, nullable=False, default=False, index=True)
+
+    # Finance Fields (NEGATIVE for debit notes)
     total_amount: Mapped[float] = mapped_column(db.Numeric(14, 4), nullable=False, default=0.0000)
-    amount_paid: Mapped[float] = mapped_column(db.Numeric(14, 4), nullable=False, default=0.0000)
-    balance_due: Mapped[float] = mapped_column(db.Numeric(14, 4), nullable=False, default=0.0000)
+    paid_amount: Mapped[float] = mapped_column(db.Numeric(14, 4), nullable=False, default=0.0000)
+    outstanding_amount: Mapped[float] = mapped_column(db.Numeric(14, 4), nullable=False, default=0.0000)
     due_date: Mapped[Optional[datetime]] = mapped_column(db.DateTime(timezone=True), nullable=True, index=True)
     remarks: Mapped[Optional[str]] = mapped_column(db.Text)
 
     # Relationships
-    supplier: Mapped["Party"] = relationship()
-    warehouse: Mapped[Optional["Warehouse"]] = relationship()
+    company: Mapped["Company"] = relationship(back_populates="purchase_invoices")
+    branch: Mapped["Branch"] = relationship(back_populates="purchase_invoices")
+    created_by: Mapped["User"] = relationship(back_populates="created_purchase_invoices")
+    supplier: Mapped["Party"] = relationship(back_populates="purchase_invoices")
+    warehouse: Mapped[Optional["Warehouse"]] = relationship(back_populates="purchase_invoices")
     items: Mapped[List["PurchaseInvoiceItem"]] = relationship(
         back_populates="invoice", cascade="all, delete-orphan"
+    )
+    receipt: Mapped[Optional["PurchaseReceipt"]] = relationship(
+        back_populates="invoices",  # Assuming PurchaseReceipt has an 'invoices' backref
+        foreign_keys=[receipt_id]
+    )
+
+    # Core Accounting Relationships (Restored)
+    payable_account: Mapped["Account"] = relationship(
+        foreign_keys=[payable_account_id], back_populates="purchase_invoices_payable"
+    )
+
+    # Payment Relationships (ERPNext Style)
+    mode_of_payment: Mapped[Optional["ModeOfPayment"]] = relationship(back_populates="purchase_invoices")
+    cash_bank_account: Mapped[Optional["Account"]] = relationship(
+        foreign_keys=[cash_bank_account_id], back_populates="purchase_invoices_cash_bank"
+    )
+
+    # Self-referential relationship for returns (ERPNext style)
+    return_against: Mapped[Optional["PurchaseInvoice"]] = relationship(
+        remote_side="PurchaseInvoice.id", back_populates="debit_notes",
+        foreign_keys=[return_against_id]
+    )
+    debit_notes: Mapped[List["PurchaseInvoice"]] = relationship(
+        back_populates="return_against",
+        foreign_keys="PurchaseInvoice.return_against_id"
+    )
+    assets: Mapped[List["Asset"]] = relationship(
+        "Asset", back_populates="purchase_invoice"
     )
 
     # Table Constraints & Indices
@@ -243,15 +405,42 @@ class PurchaseInvoice(BaseModel):
         Index("ix_pin_company_supplier", "company_id", "supplier_id"),
         Index("ix_pin_company_posting_date", "company_id", "posting_date"),
         Index("ix_pin_company_update_stock", "company_id", "update_stock"),
+        Index("ix_pin_is_return", "is_return"),
+    Index("ix_pin_receipt_id", "receipt_id"),
+        # Accounting Index (Restored)
+        Index("ix_pin_payable_account", "payable_account_id"),
+
+        Index("ix_pin_mode_of_payment", "mode_of_payment_id"),
+        Index("ix_pin_cash_bank_account", "cash_bank_account_id"),
+
+        # ERPNext-style constraints
+        CheckConstraint(
+            "(is_return = true AND return_against_id IS NOT NULL) OR (is_return = false)",
+            name="ck_pin_return_requires_original"
+        ),
+        CheckConstraint(
+            "paid_amount >= 0 AND outstanding_amount >= 0",
+            name="ck_pin_amounts_non_negative"
+        ),
+        CheckConstraint(
+            "total_amount = paid_amount + outstanding_amount",
+            name="ck_pin_amount_consistency"
+        ),
+        # Payment validation
+        CheckConstraint(
+            "(paid_amount = 0 AND mode_of_payment_id IS NULL AND cash_bank_account_id IS NULL) OR "
+            "(paid_amount > 0 AND mode_of_payment_id IS NOT NULL AND cash_bank_account_id IS NOT NULL)",
+            name="ck_pin_payment_consistency"
+        ),
     )
 
     def __repr__(self) -> str:
-        return f"<PurchaseInvoice code={self.code!r} supplier={self.supplier_id} stock={self.update_stock}>"
-
+        return f"<PurchaseInvoice {self.code} supplier={self.supplier_id} paid={self.paid_amount}/{self.total_amount}>"
 
 class PurchaseInvoiceItem(BaseModel):
     """
-    Represents an item line within a Purchase Invoice document.
+    Represents an item line within a Purchase Invoice or Debit Note.
+    TRUE ERPNext Style: Debit note items store NEGATIVE quantities and amounts.
     """
     __tablename__ = "purchase_invoice_items"
 
@@ -262,16 +451,19 @@ class PurchaseInvoiceItem(BaseModel):
     )
     item_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("items.id", ondelete="RESTRICT"),
                                          nullable=False, index=True)
-    # This is optional and can default to Item.base_uom in service logic if not provided
     uom_id: Mapped[Optional[int]] = mapped_column(db.BigInteger, db.ForeignKey("units_of_measure.id"),
                                                   nullable=True, index=True)
-    # Link to a previous PurchaseReceiptItem if this invoice is billing for a receipt
     receipt_item_id: Mapped[Optional[int]] = mapped_column(
         db.BigInteger, db.ForeignKey("purchase_receipt_items.id"),
         nullable=True, index=True
     )
 
-    # Item Line Fields
+    # Return against item reference
+    return_against_item_id: Mapped[Optional[int]] = mapped_column(
+        db.BigInteger, db.ForeignKey("purchase_invoice_items.id"), nullable=True, index=True
+    )
+
+    # Item Line Fields (NEGATIVE for debit notes, POSITIVE for invoices)
     quantity: Mapped[float] = mapped_column(db.Numeric(12, 3), nullable=False)
     rate: Mapped[float] = mapped_column(db.Numeric(12, 4), nullable=False)
     amount: Mapped[float] = mapped_column(
@@ -280,137 +472,44 @@ class PurchaseInvoiceItem(BaseModel):
         nullable=False
     )
     remarks: Mapped[Optional[str]] = mapped_column(db.String(255))
-
+    # ✅ DENORMALIZED FIELD: Tracks quantity returned via subsequent Debit Notes
+    # This is only updated if the parent document (PurchaseInvoice) is NOT a return.
+    returned_qty: Mapped[float] = mapped_column(
+        db.Numeric(12, 3), nullable=False, default=0.000,
+        comment="Total quantity returned against this standard Invoice Item (via linked Debit Notes)."
+    )
     # Relationships
     invoice: Mapped["PurchaseInvoice"] = relationship(back_populates="items")
-    item: Mapped["Item"] = relationship()
-    uom: Mapped[Optional["UnitOfMeasure"]] = relationship()
-    receipt_item: Mapped[Optional["PurchaseReceiptItem"]] = relationship()
+    item: Mapped["Item"] = relationship(back_populates="purchase_invoice_items")
+    uom: Mapped[Optional["UnitOfMeasure"]] = relationship(back_populates="purchase_invoice_items")
+    receipt_item: Mapped[Optional["PurchaseReceiptItem"]] = relationship(back_populates="invoice_items")
+    return_against_item: Mapped[Optional["PurchaseInvoiceItem"]] = relationship(
+        remote_side="PurchaseInvoiceItem.id", back_populates="debit_note_items",
+        foreign_keys=[return_against_item_id]
+    )
+    debit_note_items: Mapped[List["PurchaseInvoiceItem"]] = relationship(
+        back_populates="return_against_item",
+        foreign_keys="PurchaseInvoiceItem.return_against_item_id"
+    )
 
     # Table Constraints & Indices
     __table_args__ = (
-        CheckConstraint("quantity > 0", name="ck_pii_qty_pos"),
-        CheckConstraint("rate >= 0", name="ck_pii_rate_nonneg"),
+        # Quantity and rate constraints that allow negative values for debit notes
+        CheckConstraint(
+            "(invoice_id IN (SELECT id FROM purchase_invoices WHERE is_return = false) AND quantity > 0) OR "
+            "(invoice_id IN (SELECT id FROM purchase_invoices WHERE is_return = true) AND quantity < 0)",
+            name="ck_pii_quantity_direction"
+        ),
+
+        CheckConstraint("rate >= 0", name="ck_pii_rate_non_negative"),
+
         Index("ix_pii_item", "item_id"),
+        Index("ix_pii_return_against", "return_against_item_id"),
     )
 
     def __repr__(self) -> str:
-        return f"<PurchaseInvoiceItem id={self.id} item={self.item_id} qty={self.quantity}>"
+        return f"<PurchaseInvoiceItem item={self.item_id} qty={self.quantity} amount={self.amount} debit_note={self.invoice.is_return}>"
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 4) PURCHASE RETURN (Stock out)
-# ──────────────────────────────────────────────────────────────────────────────
-class PurchaseReturn(BaseModel):
-    """
-    A document that records the physical return of goods to a supplier.
-    This reduces inventory stock and may be linked to a prior receipt or invoice.
-    """
-    __tablename__ = "purchase_returns"
-
-    # Foreign Keys
-    company_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("companies.id"),
-                                            nullable=False, index=True)
-    branch_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("branches.id"),
-                                           nullable=False, index=True)
-    created_by_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("users.id"),
-                                               nullable=False, index=True)
-    supplier_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("parties.id"),
-                                             nullable=False, index=True)
-    warehouse_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("warehouses.id"),
-                                              nullable=False, index=True)
-
-    # Optional references to the original documents being returned against
-    receipt_id: Mapped[Optional[int]] = mapped_column(
-        db.BigInteger, db.ForeignKey("purchase_receipts.id"),
-        nullable=True, index=True
-    )
-    invoice_id: Mapped[Optional[int]] = mapped_column(
-        db.BigInteger, db.ForeignKey("purchase_invoices.id"),
-        nullable=True, index=True
-    )
-
-    # Document Fields
-    code: Mapped[str] = mapped_column(db.String(100), nullable=False, index=True)
-    posting_date: Mapped[datetime] = mapped_column(db.DateTime(timezone=True), nullable=False, index=True)
-    doc_status: Mapped[DocStatusEnum] = mapped_column(db.Enum(DocStatusEnum),
-                                                      nullable=False, default=DocStatusEnum.DRAFT, index=True)
-    remarks: Mapped[Optional[str]] = mapped_column(db.Text)
-
-    # Relationships
-    supplier: Mapped["Party"] = relationship()
-    warehouse: Mapped["Warehouse"] = relationship()
-    receipt: Mapped[Optional["PurchaseReceipt"]] = relationship()
-    invoice: Mapped[Optional["PurchaseInvoice"]] = relationship()
-    items: Mapped[List["PurchaseReturnItem"]] = relationship(
-        back_populates="purchase_return", cascade="all, delete-orphan"
-    )
-
-    # Table Constraints & Indices
-    __table_args__ = (
-        UniqueConstraint("company_id", "branch_id", "code", name="uq_pret_branch_code"),
-        Index("ix_pret_company_branch_status", "company_id", "branch_id", "doc_status"),
-        Index("ix_pret_company_supplier", "company_id", "supplier_id"),
-        Index("ix_pret_company_posting_date", "company_id", "posting_date"),
-    )
-
-    def __repr__(self) -> str:
-        return f"<PurchaseReturn code={self.code!r} supplier={self.supplier_id} status={self.doc_status}>"
-
-
-class PurchaseReturnItem(BaseModel):
-    """
-    Represents an item line within a Purchase Return document.
-    """
-    __tablename__ = "purchase_return_items"
-
-    # Foreign Keys
-    purchase_return_id: Mapped[int] = mapped_column(
-        db.BigInteger, db.ForeignKey("purchase_returns.id", ondelete="CASCADE"),
-        nullable=False, index=True
-    )
-    item_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("items.id", ondelete="RESTRICT"),
-                                         nullable=False, index=True)
-    uom_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("units_of_measure.id"),
-                                        nullable=False, index=True)
-    # Optional links to the original item lines from either a receipt or an invoice
-    receipt_item_id: Mapped[Optional[int]] = mapped_column(
-        db.BigInteger, db.ForeignKey("purchase_receipt_items.id"),
-        nullable=True, index=True
-    )
-    invoice_item_id: Mapped[Optional[int]] = mapped_column(
-        db.BigInteger, db.ForeignKey("purchase_invoice_items.id"),
-        nullable=True, index=True
-    )
-
-    # Item Line Fields
-    quantity: Mapped[float] = mapped_column(db.Numeric(12, 3), nullable=False)
-    rate: Mapped[Optional[float]] = mapped_column(db.Numeric(12, 4), nullable=True)
-    amount: Mapped[Optional[float]] = mapped_column(
-        db.Numeric(14, 4),
-        db.Computed("CASE WHEN rate IS NULL THEN NULL ELSE quantity * rate END", persisted=True),
-        nullable=True
-    )
-    batch_number: Mapped[Optional[str]] = mapped_column(db.String(100), nullable=True, index=True)
-    remarks: Mapped[Optional[str]] = mapped_column(db.String(255))
-
-    # Relationships
-    purchase_return: Mapped["PurchaseReturn"] = relationship(back_populates="items")
-    item: Mapped["Item"] = relationship()
-    uom: Mapped["UnitOfMeasure"] = relationship()
-    receipt_item: Mapped[Optional["PurchaseReceiptItem"]] = relationship()
-    invoice_item: Mapped[Optional["PurchaseInvoiceItem"]] = relationship()
-
-    # Table Constraints & Indices
-    __table_args__ = (
-        CheckConstraint("quantity > 0", name="ck_pret_qty_pos"),
-        CheckConstraint("rate IS NULL OR rate >= 0", name="ck_pret_rate_nonneg"),
-        UniqueConstraint("purchase_return_id", "item_id", "batch_number", name="uq_pret_item_batch"),
-        Index("ix_pret_item", "item_id"),
-    )
-
-    def __repr__(self) -> str:
-        return f"<PurchaseReturnItem id={self.id} item={self.item_id} qty={self.quantity}>"
 # ──────────────────────────────────────────────────────────────────────────────
 # 5) LANDED COST VOUCHER
 # ──────────────────────────────────────────────────────────────────────────────

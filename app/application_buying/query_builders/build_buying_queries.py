@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.security.rbac_effective import AffiliationContext
 from app.application_buying.models import (
-    PurchaseQuotation, PurchaseReceipt, PurchaseInvoice, PurchaseReturn
+    PurchaseQuotation, PurchaseReceipt, PurchaseInvoice
 )
 from app.application_parties.parties_models import Party
 from app.application_org.models.company import Branch
@@ -168,42 +168,3 @@ def build_purchase_quotations_query(session: Session, context: AffiliationContex
     return q
 
 
-def build_purchase_returns_query(session: Session, context: AffiliationContext):
-    """
-    Company-scoped list of purchase returns with ERP-style presentation
-    """
-    co_id = getattr(context, "company_id", None)
-    if co_id is None:
-        return select(PurchaseReturn.id).where(false())
-
-    PRET = PurchaseReturn
-    P = Party
-    B = Branch
-
-    q = (
-        select(
-            PRET.id.label("id"),
-            PRET.code.label("document_number"),
-            P.name.label("supplier_name"),
-            PRET.doc_status.label("status"),
-            _ymd(PRET.posting_date).label("posting_date"),
-            B.name.label("branch_location"),
-            PRET.company_id.label("company_id"),
-            PRET.branch_id.label("branch_id"),
-            PRET.supplier_id.label("supplier_id"),
-        )
-        .select_from(PRET)
-        .join(P, P.id == PRET.supplier_id)
-        .join(B, B.id == PRET.branch_id)
-        .where(PRET.company_id == co_id)
-    )
-
-    # Apply branch restrictions only for non-company-wide users
-    if not _has_company_wide_access(context):
-        branch_ids = list(getattr(context, "branch_ids", []) or [])
-        if branch_ids:
-            q = q.where(PRET.branch_id.in_(branch_ids))
-        else:
-            q = q.where(false())
-
-    return q

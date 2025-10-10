@@ -2,10 +2,10 @@ from __future__ import annotations
 from app.application_doctypes.core_dropdowns.config import DropdownConfig, register_dropdown_configs
 from app.application_doctypes.core_lists.config import CacheScope
 
-from app.application_nventory.inventory_models import Item, UnitOfMeasure, Brand, BranchItemPricing, UOMConversion
+from app.application_nventory.inventory_models import Item, UnitOfMeasure, Brand, UOMConversion
 from app.application_nventory.query_builders.dropdown_builders import (
     build_items_dropdown, build_uoms_dropdown, build_brands_dropdown,
-    build_branch_prices_dropdown, build_item_uoms_dropdown,
+     build_item_uoms_dropdown,
     build_active_items_dropdown, build_active_uoms_dropdown, build_active_brands_dropdown
 )
 
@@ -62,13 +62,7 @@ INVENTORY_DROPDOWN_CONFIGS = {
     ),
 
     # Specialized dropdowns
-    "branch_item_prices": DropdownConfig(
-        permission_tag="BranchItemPricing",
-        query_builder=build_branch_prices_dropdown,
-        cache_enabled=False,  # volatile → no cache
-        cache_scope=CacheScope.BRANCH,
-        default_limit=20, max_limit=100,
-    ),
+
     "item_uoms": DropdownConfig(
         permission_tag="PUBLIC",  # reuse UOM read permission
         query_builder=build_item_uoms_dropdown,

@@ -3,7 +3,7 @@ from sqlalchemy import select, literal, union_all, case, or_, and_, func
 from sqlalchemy.orm import Session, aliased
 from typing import Mapping, Any
 
-from app.application_nventory.inventory_models import Item, UnitOfMeasure, Brand, BranchItemPricing, UOMConversion
+from app.application_nventory.inventory_models import Item, UnitOfMeasure, Brand, UOMConversion
 from app.common.models.base import StatusEnum
 from app.security.rbac_effective import AffiliationContext
 from config.database import db
@@ -240,37 +240,6 @@ def build_active_brands_dropdown(session: Session, ctx: AffiliationContext, para
 
 # --- SPECIALIZED DROPDOWNS ---
 
-def build_branch_prices_dropdown(session: Session, ctx: AffiliationContext, params: Mapping[str, Any]):
-    """
-    Prices for specific branch & item - for price selection
-    """
-    co_id = _co(ctx)
-    br_id = _br(ctx)
-    item_id = params.get("item_id")
-
-    if not (co_id and br_id and item_id):
-        return select(BranchItemPricing.id.label("value")).where(BranchItemPricing.id == -1)
-
-    return (
-        select(
-            BranchItemPricing.id.label("value"),
-            # Format: "Rate: $10.00 | Cost: $8.00"
-            (
-                    "Rate: " +
-                    func.cast(BranchItemPricing.standard_rate, db.String) +
-                    " | Cost: " +
-                    func.cast(BranchItemPricing.cost, db.String)
-            ).label("label"),
-            BranchItemPricing.standard_rate.label("rate"),
-            BranchItemPricing.cost.label("cost"),
-        )
-        .where(
-            BranchItemPricing.company_id == co_id,
-            BranchItemPricing.branch_id == br_id,
-            BranchItemPricing.item_id == int(item_id),
-        )
-        .order_by(BranchItemPricing.standard_rate.asc())
-    )
 
 
 def build_item_uoms_dropdown(session: Session, ctx: AffiliationContext, params: Mapping[str, Any]):

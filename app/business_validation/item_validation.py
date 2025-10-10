@@ -37,14 +37,21 @@ ERR_UOM_REQUIRED = "Unit of Measure is required for stock items"
 ERR_UOM_INCOMPATIBLE = "Unit of Measure is not valid for this item"
 ERR_SERVICE_ITEM_NOT_ALLOWED = "Only stock items are allowed in this document"
 ERR_QTY_MUST_BE_POSITIVE = "Quantity must be greater than zero"
+# ERR_ACCEPTED_QTY_RANGE = (
+#     "Accepted quantity must be positive and not exceed the received quantity"
+# )
 ERR_ACCEPTED_QTY_RANGE = (
-    "Accepted quantity must be positive and not exceed the received quantity"
+    "Accepted quantity must be > 0 and ≤ received for receipts, or < 0 and ≥ received for returns."
 )
 ERR_RATE_MUST_BE_NON_NEGATIVE = "Rate must be a non-negative value"
 ERR_PRICE_MUST_BE_POSITIVE = "Unit price must be a positive value"
 ERR_SUBMIT_EMPTY = "Cannot submit a document with no items"
 # add next to the other ERR_* messages
 ERR_INVALID_CUSTOMER = "Customer is invalid or inactive"
+
+ERR_RETURN_AGAINST_INVALID = "Return can only be made against a Submitted Purchase Receipt."
+ERR_RETURN_ITEM_NOT_FOUND = "Invalid item selected for return."
+ERR_RETURN_QTY_EXCEEDED = "Return quantity exceeds balance quantity for an item."
 
 
 # --- Document Status Guards ---
@@ -111,18 +118,38 @@ def validate_positive_quantity(quantity: Decimal) -> None:
         raise BizValidationError(ERR_QTY_MUST_BE_POSITIVE)
 
 
-def validate_accepted_quantity_logic(
-    received_qty: Decimal, accepted_qty: Decimal
-) -> None:
-    """Validates that accepted qty is > 0 and <= received qty."""
+# def validate_accepted_quantity_logic(
+#     received_qty: Decimal, accepted_qty: Decimal
+# ) -> None:
+#     """Validates that accepted qty is > 0 and <= received qty."""
+#     if not isinstance(received_qty, Decimal):
+#         received_qty = Decimal(str(received_qty))
+#     if not isinstance(accepted_qty, Decimal):
+#         accepted_qty = Decimal(str(accepted_qty))
+#
+#     if not (Decimal(0) < accepted_qty <= received_qty):
+#         raise BizValidationError(ERR_ACCEPTED_QTY_RANGE)
+def validate_accepted_quantity_logic(received_qty: Decimal, accepted_qty: Decimal) -> None:
+    """Receipts:   0 < accepted ≤ received  (both positive)
+       Returns:  received ≤ accepted < 0     (both negative)
+       If received = 0, only accepted = 0 is allowed (defensive)."""
     if not isinstance(received_qty, Decimal):
         received_qty = Decimal(str(received_qty))
     if not isinstance(accepted_qty, Decimal):
         accepted_qty = Decimal(str(accepted_qty))
 
-    if not (Decimal(0) < accepted_qty <= received_qty):
-        raise BizValidationError(ERR_ACCEPTED_QTY_RANGE)
+    zero = Decimal("0")
 
+    if received_qty > zero:
+        ok = zero < accepted_qty <= received_qty
+    elif received_qty < zero:
+        ok = received_qty <= accepted_qty < zero
+    else:
+        # received_qty == 0
+        ok = accepted_qty == zero
+
+    if not ok:
+        raise BizValidationError(ERR_ACCEPTED_QTY_RANGE)
 
 def validate_positive_price(unit_price: Optional[Decimal]) -> None:
     """Validates that the unit price, if provided, is a positive number."""

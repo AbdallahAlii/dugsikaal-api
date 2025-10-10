@@ -1,6 +1,8 @@
 # app/application_buying/receipt_repo.py
 
 from __future__ import annotations
+
+from decimal import Decimal
 from typing import Optional, List, Dict, Tuple, Set
 
 
@@ -8,7 +10,7 @@ from typing import Optional, List, Dict, Tuple, Set
 from app.application_buying.models import PurchaseReceipt, PurchaseReceiptItem
 from app.application_nventory.inventory_models import Item, ItemTypeEnum, UnitOfMeasure, UOMConversion
 from app.application_parties.parties_models import Party, PartyRoleEnum
-from app.application_stock.stock_models import Warehouse
+from app.application_stock.stock_models import Warehouse, DocStatusEnum
 from app.application_org.models.company import Branch
 
 from sqlalchemy import select, func, exists
@@ -39,6 +41,56 @@ class PurchaseReceiptRepository:
         if for_update:
             stmt = stmt.with_for_update()
         return self.s.execute(stmt).scalar_one_or_none()
+
+    def get_original_for_return(self, receipt_id: int) -> Optional[PurchaseReceipt]:
+        """
+        Fetches an original Purchase Receipt to validate it for a return.
+        - Eagerly loads items with their item codes for better error messages.
+        - Ensures the document is SUBMITTED and is NOT itself a return.
+        - Applies a pessimistic lock to prevent simultaneous returns against the same document.
+        """
+        stmt = (
+            select(PurchaseReceipt)
+            .options(
+                selectinload(PurchaseReceipt.items)
+                .selectinload(PurchaseReceiptItem.item)  # Eager load item for item_code
+            )
+            .where(
+                PurchaseReceipt.id == receipt_id,
+                PurchaseReceipt.doc_status == DocStatusEnum.SUBMITTED,
+                PurchaseReceipt.is_return == False,
+            )
+            .with_for_update()  # CRITICAL: Prevents race conditions
+        )
+        return self.s.execute(stmt).scalar_one_or_none()
+
+    def get_returned_quantities_for_items(self, original_item_ids: List[int]) -> Dict[int, Decimal]:
+        """
+        Calculates the total accepted quantity already returned for a set of original item lines.
+        Returns a dictionary: {original_item_id: total_returned_qty} (as a positive number).
+        """
+        if not original_item_ids:
+            return {}
+
+        ReturnItem = aliased(PurchaseReceiptItem)
+        ReturnDoc = aliased(PurchaseReceipt)
+
+        stmt = (
+            select(
+                ReturnItem.return_against_item_id,
+                func.sum(ReturnItem.accepted_qty).label("total_returned"),
+            )
+            .join(ReturnDoc, ReturnDoc.id == ReturnItem.receipt_id)
+            .where(
+                ReturnItem.return_against_item_id.in_(original_item_ids),
+                ReturnDoc.doc_status == DocStatusEnum.SUBMITTED,
+            )
+            .group_by(ReturnItem.return_against_item_id)
+        )
+
+        result = self.s.execute(stmt).all()
+        # The sum is negative; abs() makes it a positive value for easy subtraction.
+        return {row.return_against_item_id: abs(row.total_returned) for row in result}
 
     def code_exists(self, company_id: int, branch_id: int, code: str, exclude_id: Optional[int] = None) -> bool:
         """Checks if a document code already exists within a branch, case-insensitively."""
@@ -155,28 +207,45 @@ class PurchaseReceiptRepository:
         """
         stmt = select(Branch.company_id).where(Branch.id == branch_id)
         return self.s.execute(stmt).scalar_one_or_none()
+
     def get_compatible_uom_pairs(self, company_id: int, pairs: List[Tuple[int, int]]) -> Set[Tuple[int, int]]:
-        """Checks a batch of (item_id, uom_id) pairs for compatibility."""
-        if not pairs: return set()
+        """Checks a batch of (item_id, uom_id) pairs for compatibility using the new UOMConversion model."""
+        if not pairs:
+            return set()
+
         item_ids = {p[0] for p in pairs}
 
+        # Get base UOM for each item
         item_stmt = select(Item.id, Item.base_uom_id).where(Item.id.in_(item_ids))
         base_uom_map = dict(self.s.execute(item_stmt).all())
 
-        conv_stmt = select(UOMConversion.item_id, UOMConversion.from_uom_id, UOMConversion.to_uom_id).where(
-            UOMConversion.item_id.in_(item_ids)
+        # Get ALL active UOM conversions for these items
+        conv_stmt = select(
+            UOMConversion.item_id,
+            UOMConversion.uom_id,
+            UOMConversion.conversion_factor
+        ).where(
+            UOMConversion.item_id.in_(item_ids),
+            UOMConversion.is_active == True
         )
-        conversions = {(c.item_id, c.from_uom_id, c.to_uom_id) for c in self.s.execute(conv_stmt).all()}
+
+        # Create a set of all valid (item_id, uom_id) pairs that have conversions
+        valid_conversions = {(c.item_id, c.uom_id) for c in self.s.execute(conv_stmt).all()}
+
+        # Also create a map for conversion factors if needed later
+        conversion_factor_map = {(c.item_id, c.uom_id): c.conversion_factor for c in self.s.execute(conv_stmt).all()}
 
         compatible_pairs: Set[Tuple[int, int]] = set()
+
         for item_id, uom_id in pairs:
             base_uom_id = base_uom_map.get(item_id)
-            if not base_uom_id: continue
+            if not base_uom_id:
+                continue
 
-            if uom_id == base_uom_id or \
-               (item_id, base_uom_id, uom_id) in conversions or \
-               (item_id, uom_id, base_uom_id) in conversions:
+            # A UOM is compatible if:
+            # 1. It's the item's base UOM (always compatible), OR
+            # 2. There's an active conversion defined for this (item_id, uom_id) combination
+            if uom_id == base_uom_id or (item_id, uom_id) in valid_conversions:
                 compatible_pairs.add((item_id, uom_id))
 
         return compatible_pairs
-

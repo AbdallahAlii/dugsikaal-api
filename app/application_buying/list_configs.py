@@ -3,14 +3,14 @@ from __future__ import annotations
 
 from app.application_doctypes.core_lists.config import ListConfig, register_list_configs
 from app.application_buying.models import (
-    PurchaseQuotation, PurchaseReceipt, PurchaseInvoice, PurchaseReturn
+    PurchaseQuotation, PurchaseReceipt, PurchaseInvoice
 )
 from app.application_parties.parties_models import Party
 from app.application_buying.query_builders.build_buying_queries import (
     build_purchase_quotations_query,
     build_purchase_receipts_query,
     build_purchase_invoices_query,
-    build_purchase_returns_query,
+
 )
 
 BUYING_LIST_CONFIGS = {
@@ -59,8 +59,8 @@ BUYING_LIST_CONFIGS = {
             "posting_date": PurchaseInvoice.posting_date,
             "document_number": PurchaseInvoice.code,
             "total_amount": PurchaseInvoice.total_amount,
-            "amount_paid": PurchaseInvoice.amount_paid,
-            "balance_due": PurchaseInvoice.balance_due,
+            # "amount_paid": PurchaseInvoice.amount_paid,
+            # "balance_due": PurchaseInvoice.balance_due,
             "id": PurchaseInvoice.id,
         },
         filter_fields={
@@ -73,24 +73,7 @@ BUYING_LIST_CONFIGS = {
         },
         cache_enabled=False,
     ),
-    "purchase_returns": ListConfig(
-        permission_tag="Purchase Return",
-        query_builder=build_purchase_returns_query,
-        search_fields=[PurchaseReturn.code, Party.name],
-        sort_fields={
-            "posting_date": PurchaseReturn.posting_date,
-            "document_number": PurchaseReturn.code,
-            "id": PurchaseReturn.id,
-        },
-        filter_fields={
-            "company_id": PurchaseReturn.company_id,
-            "branch_id": PurchaseReturn.branch_id,
-            "supplier_id": PurchaseReturn.supplier_id,
-            "status": PurchaseReturn.doc_status,
-            "posting_date": PurchaseReturn.posting_date,
-        },
-        cache_enabled=False,
-    ),
+
 }
 
 def register_module_lists() -> None:

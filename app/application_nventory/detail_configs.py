@@ -6,7 +6,7 @@ from .query_builders.detail_builders import (
     resolve_brand_by_name, load_brand,
     resolve_uom_by_name, load_uom,
     resolve_item_by_sku, resolve_item_by_name, load_item,
-    load_uom_conversion, load_branch_price, resolve_id_strict,
+    load_uom_conversion, resolve_id_strict,
 )
 from ..application_doctypes.core_lists.config import DetailConfig, register_detail_configs
 
@@ -44,12 +44,7 @@ INVENTORY_DETAIL_CONFIGS = {
         resolver_map={"id": resolve_id_strict},
         cache_enabled=False,
     ),
-    "branch_item_pricing": DetailConfig(
-        permission_tag="BranchItemPricing",
-        loader=load_branch_price,
-        resolver_map={"id": resolve_id_strict},
-        cache_enabled=False,  # BRANCH-y data; keep fresh
-    ),
+
 }
 
 def register_inventory_detail_configs() -> None:

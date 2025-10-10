@@ -43,13 +43,14 @@ class JournalEntryTypeEnum(str, enum.Enum):
     ADJUSTMENT = "Adjustment"
     AUTO = "Auto"
     AUTO_REVERSAL = "Auto Reversal"
+    CLOSING = "Closing"  # Added for Period Closing Voucher
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 1) FISCAL YEAR
+# 1) FISCAL YEAR (Fixed with proper relationships)
 # ──────────────────────────────────────────────────────────────────────────────
 class FiscalYear(BaseModel):
     """
-    Defines the accounting period for financial reporting.
+    Defines the time period container for financial reporting.
     All journal entries must belong to an open fiscal year.
     """
     __tablename__ = "fiscal_years"
@@ -59,24 +60,124 @@ class FiscalYear(BaseModel):
                                             nullable=False, index=True)
 
     # Core Fields
-    year: Mapped[int] = mapped_column(db.Integer, nullable=False, index=True)
-    start_date: Mapped[datetime] = mapped_column(db.DateTime(timezone=True), nullable=False)
-    end_date: Mapped[datetime] = mapped_column(db.DateTime(timezone=True), nullable=False)
+    name: Mapped[str] = mapped_column(db.String(100), nullable=False, index=True,
+                                      comment="User-friendly name (e.g., 'FY 2024' or '2024-2025')")
+    start_date: Mapped[datetime] = mapped_column(db.DateTime(timezone=True), nullable=False, index=True)
+    end_date: Mapped[datetime] = mapped_column(db.DateTime(timezone=True), nullable=False, index=True)
     status: Mapped[FiscalYearStatusEnum] = mapped_column(
-        db.Enum(FiscalYearStatusEnum), nullable=False, default=FiscalYearStatusEnum.OPEN
+        db.Enum(FiscalYearStatusEnum), nullable=False, default=FiscalYearStatusEnum.OPEN, index=True
+    )
+    is_short_year: Mapped[bool] = mapped_column(db.Boolean, nullable=False, default=False,
+                                               comment="True if period is less than 12 months.")
+
+    # Relationships (FIXED: Added missing relationships)
+    period_closing_vouchers: Mapped[List["PeriodClosingVoucher"]] = relationship(
+        back_populates="closing_fiscal_year",
+        cascade="all, delete-orphan"
+    )
+    journal_entries: Mapped[List["JournalEntry"]] = relationship(
+        back_populates="fiscal_year",
+        cascade="all, delete-orphan"
+    )
+    general_ledger_entries: Mapped[List["GeneralLedgerEntry"]] = relationship(
+        back_populates="fiscal_year",
+        cascade="all, delete-orphan"
     )
 
-    # Table Constraints & Indices
+
+    # Table Constraints & Indices (ADDED performance indexes)
     __table_args__ = (
-        UniqueConstraint("company_id", "year", name="uq_fiscal_year_company"),
+        UniqueConstraint("company_id", "name", name="uq_fiscal_year_company_name"),
+        CheckConstraint("end_date > start_date", name="ck_fy_dates_valid"),
+        # Performance indexes
+        Index("ix_fy_company_status", "company_id", "status"),
+        Index("ix_fy_dates_range", "start_date", "end_date"),
+        Index("ix_fy_company_dates", "company_id", "start_date", "end_date"),
     )
 
     def __repr__(self) -> str:
-        return f"<FiscalYear year={self.year} status={self.status}>"
-
+        return f"<FiscalYear name={self.name} status={self.status}>"
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 2) COST CENTER
+# 2) PERIOD CLOSING VOUCHER (Fixed with proper constraints)
+# ──────────────────────────────────────────────────────────────────────────────
+class PeriodClosingVoucher(BaseModel):
+    """
+    The management document that initiates the financial year closing.
+    It triggers the final Journal Entry to transfer P/L to Retained Earnings.
+    System can auto-prepare drafts, but MUST be submitted by a User.
+    """
+    __tablename__ = "period_closing_vouchers"
+
+    # Foreign Keys
+    company_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("companies.id"),
+                                            nullable=False, index=True)
+    closing_fiscal_year_id: Mapped[int] = mapped_column(
+        db.BigInteger, db.ForeignKey("fiscal_years.id"), nullable=False, index=True,
+        comment="The Fiscal Year being closed."
+    )
+    closing_account_head_id: Mapped[int] = mapped_column(
+        db.BigInteger, db.ForeignKey("accounts.id"), nullable=False, index=True,
+        comment="The Equity account (Retained Earnings) to book P&L."
+    )
+    generated_journal_entry_id: Mapped[Optional[int]] = mapped_column(
+        db.BigInteger, db.ForeignKey("journal_entries.id"),
+        nullable=True, unique=True, index=True,
+        comment="The final Journal Entry for the closing process."
+    )
+    submitted_by_id: Mapped[Optional[int]] = mapped_column(
+        db.BigInteger, db.ForeignKey("users.id"), nullable=True, index=True,
+        comment="The User who submitted the voucher (required for SUBMITTED status)."
+    )
+
+    # Core Fields
+    code: Mapped[str] = mapped_column(db.String(100), nullable=False, index=True,
+                                      comment="Unique document identifier.")
+    posting_date: Mapped[datetime] = mapped_column(
+        db.DateTime(timezone=True), nullable=False, index=True,
+        comment="The effective date of the closing entry."
+    )
+    doc_status: Mapped[DocStatusEnum] = mapped_column(
+        db.Enum(DocStatusEnum), nullable=False, default=DocStatusEnum.DRAFT, index=True
+    )
+    remarks: Mapped[Optional[str]] = mapped_column(db.Text)
+    auto_prepared: Mapped[bool] = mapped_column(
+        db.Boolean, nullable=False, default=False, index=True,
+        comment="True if system created this document as a DRAFT for human review."
+    )
+    submitted_at: Mapped[Optional[datetime]] = mapped_column(
+        db.DateTime(timezone=True), nullable=True, index=True
+    )
+    total_profit_loss: Mapped[float] = mapped_column(db.Numeric(14, 4), nullable=False, default=0.0000,
+                                                    comment="Calculated Net P/L for the year.")
+
+    # Relationships
+    closing_fiscal_year: Mapped["FiscalYear"] = relationship(back_populates="period_closing_vouchers")
+    closing_account_head: Mapped["Account"] = relationship(foreign_keys=[closing_account_head_id])
+    generated_journal_entry: Mapped[Optional["JournalEntry"]] = relationship(
+        "JournalEntry", foreign_keys=[generated_journal_entry_id]
+    )
+    submitted_by: Mapped[Optional["User"]] = relationship(foreign_keys=[submitted_by_id])
+    company: Mapped["Company"] = relationship()
+
+    # Table Constraints & Indices (ADDED performance indexes)
+    __table_args__ = (
+        UniqueConstraint("company_id", "code", name="uq_pcv_company_code"),
+        UniqueConstraint("closing_fiscal_year_id", "company_id", name="uq_pcv_fiscal_year_company"),
+        CheckConstraint(
+            "NOT (doc_status = 'SUBMITTED' AND submitted_by_id IS NULL)",
+            name="ck_human_submission_required"
+        ),
+        # Performance indexes
+        Index("ix_pcv_company_status", "company_id", "doc_status"),
+        Index("ix_pcv_posted_date", "posting_date", "doc_status"),
+        Index("ix_pcv_auto_status", "auto_prepared", "doc_status"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<PeriodClosingVoucher code={self.code} year={self.closing_fiscal_year_id} status={self.doc_status}>"
+# ──────────────────────────────────────────────────────────────────────────────
+# 3) COST CENTER
 # ──────────────────────────────────────────────────────────────────────────────
 class CostCenter(BaseModel):
     """
@@ -98,6 +199,12 @@ class CostCenter(BaseModel):
         db.Enum(DocStatusEnum), nullable=False, default=DocStatusEnum.DRAFT, index=True
     )
 
+    journal_entry_items: Mapped[List["JournalEntryItem"]] = relationship(
+        back_populates="cost_center", cascade="all, delete-orphan"
+    )
+    general_ledger_entries: Mapped[List["GeneralLedgerEntry"]] = relationship(
+        back_populates="cost_center", cascade="all, delete-orphan"
+    )
     # Table Constraints & Indices
     __table_args__ = (
         UniqueConstraint("company_id", "branch_id", "code", name="uq_cost_center_company_branch_code"),
@@ -108,7 +215,7 @@ class CostCenter(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 3) CHART OF ACCOUNTS (The General Ledger)
+# 4) CHART OF ACCOUNTS (The General Ledger)
 # ──────────────────────────────────────────────────────────────────────────────
 class Account(BaseModel):
     """
@@ -136,13 +243,41 @@ class Account(BaseModel):
     )
 
     # Relationships
+    company: Mapped["Company"] = db.relationship(
+        "Company",  # String reference
+        back_populates="accounts",
+        foreign_keys=[company_id]
+    )
     parent_account: Mapped[Optional["Account"]] = relationship(
         remote_side="Account.id", back_populates="child_accounts"
     )
     child_accounts: Mapped[List["Account"]] = relationship(
         back_populates="parent_account", cascade="all, delete-orphan"
     )
+    purchase_invoices_payable: Mapped[List["PurchaseInvoice"]] = relationship(
+        "PurchaseInvoice", foreign_keys="[PurchaseInvoice.payable_account_id]", back_populates="payable_account"
+    )
+    purchase_invoices_cash_bank: Mapped[List["PurchaseInvoice"]] = relationship(
+        "PurchaseInvoice", foreign_keys="[PurchaseInvoice.cash_bank_account_id]", back_populates="cash_bank_account"
+    )
+    journal_entry_items: Mapped[List["JournalEntryItem"]] = relationship(
+        back_populates="account", cascade="all, delete-orphan"
+    )
+    general_ledger_entries: Mapped[List["GeneralLedgerEntry"]] = relationship(
+        back_populates="account", cascade="all, delete-orphan"
+    )
+    sales_invoices_vat: Mapped[List["SalesInvoice"]] = relationship(
+        "SalesInvoice",
+        foreign_keys="[SalesInvoice.vat_account_id]",
+        back_populates="vat_account"
+    )
 
+
+    sales_invoices_cash_bank: Mapped[List["SalesInvoice"]] = relationship(
+        "SalesInvoice",
+        foreign_keys="[SalesInvoice.cash_bank_account_id]",
+        back_populates="cash_bank_account"
+    )
     # Table Constraints & Indices
     __table_args__ = (
         UniqueConstraint("company_id", "code", name="uq_account_company_code"),
@@ -154,7 +289,7 @@ class Account(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 4) ACCOUNT BALANCE
+# 5) ACCOUNT BALANCE
 # ──────────────────────────────────────────────────────────────────────────────
 class AccountBalance(BaseModel):
     """
@@ -188,7 +323,7 @@ class AccountBalance(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 5) PARTY ACCOUNT BALANCE
+# 6) PARTY ACCOUNT BALANCE
 # ──────────────────────────────────────────────────────────────────────────────
 class PartyAccountBalance(BaseModel):
     """
@@ -221,7 +356,7 @@ class PartyAccountBalance(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 6) JOURNAL ENTRY
+# 7) JOURNAL ENTRY
 # ──────────────────────────────────────────────────────────────────────────────
 class JournalEntry(BaseModel):
     """
@@ -261,21 +396,31 @@ class JournalEntry(BaseModel):
     items: Mapped[List["JournalEntryItem"]] = relationship(
         back_populates="journal_entry", cascade="all, delete-orphan"
     )
-    fiscal_year: Mapped["FiscalYear"] = relationship()
+    general_ledger_entries: Mapped[List["GeneralLedgerEntry"]] = relationship(  # FIXED: Added
+        back_populates="journal_entry", cascade="all, delete-orphan"
+    )
+    fiscal_year: Mapped["FiscalYear"] = relationship(back_populates="journal_entries")
     source_doctype: Mapped["DocumentType"] = relationship()
+
+
 
     # Table Constraints & Indices
     __table_args__ = (
         UniqueConstraint("company_id", "branch_id", "code", name="uq_je_company_branch_code"),
         CheckConstraint("total_debit = total_credit", name="ck_je_balance"),
+        # Performance indexes
+        Index("ix_je_company_date", "company_id", "posting_date"),
+        Index("ix_je_fy_status", "fiscal_year_id", "doc_status"),
+        Index("ix_je_entry_type", "entry_type", "posting_date"),
     )
+
 
     def __repr__(self) -> str:
         return f"<JournalEntry code={self.code} status={self.doc_status}>"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 7) JOURNAL ENTRY ITEM (The Line)
+# 8) JOURNAL ENTRY ITEM (The Line)
 # ──────────────────────────────────────────────────────────────────────────────
 class JournalEntryItem(BaseModel):
     """
@@ -318,7 +463,7 @@ class JournalEntryItem(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 8) GENERAL LEDGER ENTRY (The final, immutable record for reporting)
+# 9) GENERAL LEDGER ENTRY (The final, immutable record for reporting)
 # ──────────────────────────────────────────────────────────────────────────────
 class GeneralLedgerEntry(BaseModel):
     """
@@ -336,6 +481,8 @@ class GeneralLedgerEntry(BaseModel):
                                             nullable=False, index=True)
     cost_center_id: Mapped[Optional[int]] = mapped_column(db.BigInteger, db.ForeignKey("cost_centers.id"),
                                                           nullable=True, index=True)
+    fiscal_year_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("fiscal_years.id"),
+                                                nullable=False, index=True)
     party_id: Mapped[Optional[int]] = mapped_column(db.BigInteger, nullable=True, index=True)
     party_type: Mapped[Optional[PartyTypeEnum]] = mapped_column(db.Enum(PartyTypeEnum), nullable=True)
     journal_entry_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("journal_entries.id"),
@@ -354,17 +501,21 @@ class GeneralLedgerEntry(BaseModel):
     entry_type: Mapped[str] = mapped_column(db.String(100), nullable=False, index=True)
 
     # Relationships
-    account: Mapped["Account"] = relationship()
-    cost_center: Mapped[Optional["CostCenter"]] = relationship()
-    journal_entry: Mapped["JournalEntry"] = relationship()
+    account: Mapped["Account"] = relationship(back_populates="general_ledger_entries")  # FIXED
+    cost_center: Mapped[Optional["CostCenter"]] = relationship(back_populates="general_ledger_entries")  # FIXED
+    journal_entry: Mapped["JournalEntry"] = relationship(back_populates="general_ledger_entries")  # FIXED
     source_doctype: Mapped["DocumentType"] = relationship()
+    fiscal_year: Mapped["FiscalYear"] = relationship(back_populates="general_ledger_entries")
 
     # Table Constraints & Indices
     __table_args__ = (
         Index("ix_gle_company_account", "company_id", "account_id"),
+        Index("ix_gle_company_account_fy_date", "company_id", "account_id", "fiscal_year_id", "posting_date"),
         Index("ix_gle_company_cc", "company_id", "cost_center_id"),
         Index("ix_gle_company_party", "company_id", "party_id"),
         Index("ix_gle_company_posting_date", "company_id", "posting_date"),
+        Index("ix_gle_fy_account", "fiscal_year_id", "account_id"),  # ADDED
+        Index("ix_gle_debit_credit", "debit", "credit"),  # ADDED
     )
 
     def __repr__(self) -> str:
@@ -372,7 +523,7 @@ class GeneralLedgerEntry(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 9) GENERAL LEDGER ENTRY TEMPLATE (The Accounting Rules)
+# 10) GENERAL LEDGER ENTRY TEMPLATE (The Accounting Rules)
 # ──────────────────────────────────────────────────────────────────────────────
 class GLEntryTemplate(BaseModel):
     """
@@ -441,7 +592,7 @@ class GLEntryTemplate(BaseModel):
         return f"<GLEntryTemplate code={self.code!r} doctype={self.source_doctype_id}>"
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 10) GL ENTRY TEMPLATE ITEM (The Rule Line)
+# 11) GL ENTRY TEMPLATE ITEM (The Rule Line)
 # ──────────────────────────────────────────────────────────────────────────────
 class  GLTemplateItem(BaseModel):
     """

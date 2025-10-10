@@ -38,6 +38,8 @@ class User(BaseModel):
         cascade="all, delete-orphan",
         lazy="selectin",
     )
+    created_purchase_receipts = db.relationship("PurchaseReceipt", back_populates="created_by")
+    created_purchase_invoices = db.relationship("PurchaseInvoice", back_populates="created_by")
 
     __table_args__ = (
         Index("ix_users_status", "status"),

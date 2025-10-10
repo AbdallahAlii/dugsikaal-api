@@ -52,7 +52,31 @@ class PurchaseReceiptCreate(BaseModel):
         if not v:
             raise ValueError("A purchase receipt must have at least one item.")
         return v
+# ==============================================================================
+# --- PURCHASE RETURN SCHEMAS (Final ERP-Style Version) ---
+# ==============================================================================
 
+class PurchaseReturnItemCreate(BaseModel):
+    """Specifies an original item line to return and the quantity."""
+    original_item_id: int = Field(..., description="The ID of the item line from the original Purchase Receipt.")
+    return_qty: Decimal = Field(..., gt=Decimal(0), description="The quantity to return (as a positive number).")
+    remarks: Optional[str] = None
+class PurchaseReturnCreate(BaseModel):
+    """
+    Payload for creating a Purchase Return.
+    Note: `return_against_id` is not included here; it comes from the URL for better REST design.
+    """
+    posting_date: datetime
+    branch_id: Optional[int] = Field(None, description="Branch ID. Required if user doesn't have a default branch.")
+    code: Optional[str] = Field(None, description="Manual code for the return document. Auto-generated if omitted.")
+    remarks: Optional[str] = None
+    items: List[PurchaseReturnItemCreate]
+
+    @field_validator("items")
+    def _validate_non_empty_return_items(cls, v):
+        if not v:
+            raise ValueError("A return must have at least one item.")
+        return v
 class PurchaseReceiptUpdate(BaseModel):
     """Payload for updating a draft Purchase Receipt."""
     posting_date: Optional[datetime] = None
@@ -130,10 +154,17 @@ class PurchaseInvoiceCreate(BaseModel):
     branch_id: Optional[int] = None
     supplier_id: int
     posting_date: datetime
+    payable_account_id: Optional[int] = Field(None,
+                                              description="The GL Liability Account ID to credit (e.g., Creditors).")
+
+
+    dated: Optional[datetime] = Field(None, description="User-facing date (like ERPNext 'Dated').")
+
     due_date: Optional[datetime] = None
     code: Optional[str] = Field(None, description="Manual code. Auto-generated if omitted.")
     remarks: Optional[str] = None
-
+    mode_of_payment_id: Optional[int] = None
+    cash_bank_account_id: Optional[int] = None
     # --- Conditional Logic Fields ---
     receipt_id: Optional[int] = Field(None, description="ID of the Purchase Receipt to bill against.")
     update_stock: bool = Field(False, description="If True, this invoice also acts as a stock receipt.")
@@ -210,3 +241,34 @@ class PurchaseInvoiceActionResponse(BaseModel):
 class IdCode(BaseModel):
     id: int
     code: str
+
+
+# ==============================================================================
+# --- Purchase Debit Note Schemas (Returns against Purchase Invoices) ---
+# ==============================================================================
+
+class PurchaseDebitNoteItemCreate(BaseModel):
+    """Specifies an original item line from a purchase invoice to return and the quantity."""
+    original_item_id: int = Field(..., description="The ID of the item line from the original Purchase Invoice.")
+    return_qty: Decimal = Field(..., gt=Decimal(0), description="The quantity to return (as a positive number).")
+    remarks: Optional[str] = None
+
+class PurchaseDebitNoteCreate(BaseModel):
+    """
+    Payload for creating a Purchase Debit Note (return against a purchase invoice).
+    Note: `return_against_id` is not included here; it comes from the URL for better REST design.
+    """
+    posting_date: datetime
+    dated: Optional[datetime] = Field(None, description="User-facing date (like ERPNext 'Dated').")  # ADD
+    branch_id: Optional[int] = Field(None, description="Branch ID. Required if user doesn't have a default branch.")
+    code: Optional[str] = Field(None, description="Manual code for the debit note. Auto-generated if omitted.")
+    due_date: Optional[datetime] = None
+    remarks: Optional[str] = None
+    update_stock: bool = Field(True, description="Whether this debit note should update stock levels.")
+    items: List[PurchaseDebitNoteItemCreate]
+
+    @field_validator("items")
+    def _validate_non_empty_debit_note_items(cls, v):
+        if not v:
+            raise ValueError("A debit note must have at least one item.")
+        return v

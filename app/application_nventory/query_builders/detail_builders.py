@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from werkzeug.exceptions import NotFound, Forbidden, BadRequest
 
 from app.application_nventory.inventory_models import (
-    Brand, UnitOfMeasure, Item, UOMConversion, BranchItemPricing
+    Brand, UnitOfMeasure, Item, UOMConversion
 )
 from app.security.rbac_effective import AffiliationContext
 
@@ -126,15 +126,5 @@ def load_uom_conversion(s: Session, ctx: AffiliationContext, conv_id: int) -> Di
     _ensure_company(ctx, data["company_id"])
     return data
 
-def load_branch_price(s: Session, ctx: AffiliationContext, price_id: int) -> Dict[str, Any]:
-    stmt = (
-        select(
-            BranchItemPricing.id, BranchItemPricing.item_id, BranchItemPricing.company_id,
-            BranchItemPricing.branch_id, BranchItemPricing.standard_rate, BranchItemPricing.cost
-        )
-        .where(BranchItemPricing.id == price_id)
-    )
-    data = _first_or_404(s, stmt, "Branch Item Pricing")
-    _ensure_branch(ctx, data["company_id"], data["branch_id"])
-    return data
+
 

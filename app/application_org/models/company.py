@@ -1,6 +1,6 @@
 # app/apps/application_org/models.py
 from __future__ import annotations
-from typing import Optional
+from typing import Optional, List
 
 from sqlalchemy import UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
@@ -61,6 +61,38 @@ class Company(BaseModel):
         lazy="selectin",
     )
 
+    accounts: Mapped[list["Account"]] = db.relationship(
+        "Account",  # Add the string class name
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+
+    # Also fix the other relationships that might have the same issue:
+    purchase_receipts: Mapped[list["PurchaseReceipt"]] = db.relationship(
+        "PurchaseReceipt",  # Add string class name
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+    purchase_quotations: Mapped[list["PurchaseQuotation"]] = db.relationship(
+        "PurchaseQuotation",
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+    purchase_invoices: Mapped[list["PurchaseInvoice"]] = db.relationship(
+        "PurchaseInvoice",  # Add string class name
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+    modes_of_payment: Mapped[list["ModeOfPayment"]] = db.relationship(
+        "ModeOfPayment",
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+    price_lists: Mapped[List["PriceList"]] = db.relationship(
+        "PriceList", back_populates="company", cascade="all, delete-orphan"
+    )
+
+
     def __repr__(self) -> str:
         return f"<Company id={self.id} name={self.name!r}>"
 
@@ -103,8 +135,28 @@ class Branch(BaseModel):
 
     # relationships
     company: Mapped["Company"] = db.relationship("Company", back_populates="branches")
+    purchase_receipts: Mapped[list["PurchaseReceipt"]] = db.relationship(
+        "PurchaseReceipt",
+        back_populates="branch"
+    )
 
+    purchase_invoices: Mapped[list["PurchaseInvoice"]] = db.relationship(
+        "PurchaseInvoice",
+        back_populates="branch"
+    )
 
+    purchase_quotations: Mapped[list["PurchaseQuotation"]] = db.relationship(
+        "PurchaseQuotation",
+        back_populates="branch"
+    )
+    modes_of_payment: Mapped[list["ModeOfPayment"]] = db.relationship(
+        "ModeOfPayment",
+        back_populates="branch"
+    )
+
+    item_prices: Mapped[List["ItemPrice"]] = db.relationship(
+        "ItemPrice", back_populates="branch", cascade="all, delete-orphan"
+    )
     def __repr__(self) -> str:
         return f"<Branch id={self.id} name={self.name!r} company_id={self.company_id}>"
 

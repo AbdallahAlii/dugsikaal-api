@@ -5,8 +5,10 @@ from pydantic import ValidationError
 from werkzeug.exceptions import HTTPException
 
 from app.application_nventory.schemas import BrandCreate, UOMCreate, ItemCreate, ItemUpdate, UOMConversionCreate, \
-    BranchItemPricingCreate, BranchItemPricingUpdate
-from app.application_nventory.services import InventoryLogicError, InventoryService
+    BranchItemPricingCreate, BranchItemPricingUpdate, PriceBatchLookupOut, PriceLookupOut, PriceBatchLookupRequest, \
+    PriceLookupRequest
+from app.application_nventory.inventory_services import InventoryLogicError, InventoryService
+from app.application_nventory.services.pricing_service import get_selling_rate_batch, get_selling_rate_basic
 from app.common.api_response import api_success, api_error
 from app.security.rbac_guards import require_permission
 from app.security.rbac_effective import AffiliationContext
@@ -112,37 +114,59 @@ def create_uom_conversion():
         return api_error(f"An unexpected server error occurred: {e}", status_code=500)
 
 
-@bp.post("/pricing/create")
-@require_permission("Item Price", "CREATE")
-def create_pricing():
+
+@bp.post("/pricing/resolve")
+@require_permission("Pricing", "READ")
+def resolve_item_price():
     _ = get_current_user()
     try:
         ctx: AffiliationContext = getattr(g, "auth")
-        payload = BranchItemPricingCreate.model_validate(request.get_json())
-        svc.create_branch_item_pricing(payload, ctx)
-        return api_success(message="Pricing created successfully.", data={}, status_code=201)
-    except (InventoryLogicError, ValidationError) as e:
-        if isinstance(e, InventoryLogicError):
-            return api_error(e.description, status_code=422)
+        payload = PriceLookupRequest.model_validate(request.get_json())
+
+        result = get_selling_rate_basic(
+            company_id=ctx.company_id,
+            branch_id=getattr(ctx, "branch_id", None),
+            item_id=payload.item_id,
+            txn_uom_id=payload.txn_uom_id,
+            posting_date=payload.posting_date,
+            price_list_id=payload.price_list_id,
+            qty=payload.qty,  # may be None
+        )
+
+        return api_success(
+            message="Price resolved.",
+            data=PriceLookupOut(**result).model_dump(exclude_none=True),
+            status_code=200,
+        )
+    except ValidationError as e:
         return api_error(str(e), status_code=422)
     except HTTPException as e:
         return api_error(e.description, status_code=e.code)
     except Exception as e:
         return api_error(f"An unexpected server error occurred: {e}", status_code=500)
 
-
-@bp.put("/update/pricing/<int:pricing_id>")
-@require_permission("Item Price", "UPDATE")
-def update_pricing(pricing_id: int):
+@bp.post("/pricing/resolve-batch")
+@require_permission("Pricing", "READ")
+def resolve_item_price_batch():
     _ = get_current_user()
     try:
         ctx: AffiliationContext = getattr(g, "auth")
-        payload = BranchItemPricingUpdate.model_validate(request.get_json())
-        svc.update_branch_item_pricing(pricing_id, payload, ctx)
-        return api_success(message="Pricing updated successfully.", data={}, status_code=200)
-    except (InventoryLogicError, ValidationError) as e:
-        if isinstance(e, InventoryLogicError):
-            return api_error(e.description, status_code=422)
+        payload = PriceBatchLookupRequest.model_validate(request.get_json())
+
+        results = get_selling_rate_batch(
+            company_id=ctx.company_id,
+            branch_id=getattr(ctx, "branch_id", None),
+            items=[{"item_id": it.item_id, "txn_uom_id": it.txn_uom_id, "qty": it.qty} for it in payload.items],
+            posting_date=payload.posting_date,
+            price_list_id=payload.price_list_id,
+        )
+
+        return api_success(
+            message="Prices resolved.",
+            data=PriceBatchLookupOut(results=[PriceLookupOut(**r) for r in results]).model_dump(exclude_none=True),
+            status_code=200,
+        )
+    except ValidationError as e:
         return api_error(str(e), status_code=422)
     except HTTPException as e:
         return api_error(e.description, status_code=e.code)

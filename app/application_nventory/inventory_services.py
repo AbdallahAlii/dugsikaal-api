@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from werkzeug.exceptions import BadRequest, Unauthorized, Forbidden, NotFound
 
-from app.application_nventory.inventory_models import Brand, UnitOfMeasure, Item, UOMConversion, BranchItemPricing, \
+from app.application_nventory.inventory_models import Brand, UnitOfMeasure, Item, UOMConversion, \
     ItemTypeEnum
 from app.application_nventory.repo import InventoryRepository
 from app.application_nventory.schemas import BrandCreate, BrandOut, UOMCreate, ItemCreate, UOMOut, ItemMinimalOut, \
@@ -142,14 +142,28 @@ class InventoryService:
         t = self._sku_type_prefix(item_type)
         ini = self._initials(item_name)
         tail = self._random_tail(3)
+        sku = self._sanitize_sku(f"{t}-{ini}-{tail}")
+
+        # ADDED: Log the SKU generation details
+        log.info(
+            "Generated SKU: name='%s', type=%s, prefix=%s, initials=%s, tail=%s, final_sku=%s",
+            item_name, item_type, t, ini, tail, sku
+        )
         return self._sanitize_sku(f"{t}-{ini}-{tail}")
 
     def _normalize_manual_sku(self, raw: str) -> str:
-        return self._sanitize_sku(raw, max_len=32)
+        normalized = self._sanitize_sku(raw, max_len=32)
+        log.info("Normalized manual SKU: raw='%s', normalized='%s'", raw, normalized)
+        return normalized
 
     # --- Item Service ---
     def create_item(self, payload: ItemCreate, context: AffiliationContext) -> ItemMinimalOut:
+        log.info(
+            "Starting item creation: name='%s', type=%s, company_id=%d, manual_sku='%s'",
+            payload.name, payload.item_type, context.company_id, payload.sku
+        )
         # Permission
+
         if not MASTER_DATA_CREATOR_ROLES.intersection(context.roles):
             raise Forbidden("Not authorized to create an item.")
         # Company scope
@@ -189,8 +203,11 @@ class InventoryService:
             # Auto-generate + retry to be safe under concurrency
             attempts = 10
             data = payload.model_dump(exclude={"sku"})
+            log.info("Starting auto-SKU generation: attempts=%d, name='%s'", attempts, payload.name)
+
             for i in range(attempts):
                 gen_sku = self._generate_sku(payload.name, payload.item_type)
+                log.info("Attempt %d/%d: generated SKU='%s'", i + 1, attempts, gen_sku)
                 item = Item(company_id=context.company_id, sku=gen_sku, **data)
                 try:
                     self.repo.create_item(item)
@@ -283,47 +300,3 @@ class InventoryService:
             raise DuplicateRecordError("A conversion for this item and units already exists.")
 
     # --- Branch Item Pricing Service ---
-    def create_branch_item_pricing(self, payload: BranchItemPricingCreate,
-                                   context: AffiliationContext) -> BranchItemPricingOut:
-        # Permission Check: Anyone who can manage inventory in a branch can create a price.
-        # This is not restricted to master data creators.
-
-        # Rule 1: Validate item, branch, and user's scope
-        item = self.repo.get_item_by_id(payload.item_id)
-        branch = self.repo.get_branch_by_id(payload.branch_id)
-        if not item or not branch:
-            raise NotFound("Item or Branch not found.")
-
-        ensure_scope_by_ids(context=context, target_company_id=item.company_id, target_branch_id=branch.id)
-
-        if self.repo.get_pricing_by_item_branch(payload.item_id, payload.branch_id):
-            raise DuplicateRecordError("Pricing for this item in this branch already exists.")
-
-        try:
-            pricing = BranchItemPricing(company_id=item.company_id, **payload.model_dump())
-            self.repo.create_branch_item_pricing(pricing)
-            self.s.commit()
-            bump_list_cache_branch("inventory", "branch_item_pricing", pricing.company_id, pricing.branch_id)
-            return BranchItemPricingOut.model_validate(pricing)
-        except IntegrityError:
-            self.s.rollback()
-            raise DuplicateRecordError("Pricing for this item in this branch already exists.")
-
-    def update_branch_item_pricing(self, pricing_id: int, payload: BranchItemPricingUpdate,
-                                   context: AffiliationContext) -> BranchItemPricingOut:
-        pricing = self.repo.s.get(BranchItemPricing, pricing_id)
-        if not pricing:
-            raise NotFound("Pricing record not found.")
-
-        # Rule: Validate user's scope
-        ensure_scope_by_ids(context=context, target_company_id=pricing.company_id, target_branch_id=pricing.branch_id)
-
-        try:
-            updates = payload.model_dump(exclude_unset=True)
-            self.repo.update_branch_item_pricing(pricing, updates)
-            self.s.commit()
-            bump_list_cache_branch("inventory", "branch_item_pricing", pricing.company_id, pricing.branch_id)
-            return BranchItemPricingOut.model_validate(pricing)
-        except IntegrityError:
-            self.s.rollback()
-            raise DuplicateRecordError("Update would result in a duplicate record.")

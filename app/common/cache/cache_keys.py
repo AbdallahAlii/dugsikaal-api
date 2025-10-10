@@ -47,3 +47,17 @@ def build_scoped_user_profile_cache_key(user_id: int, version: int, *, company_i
     b = branch_id or 0
     # one version counter per user (bump_user_profile invalidates all scopes)
     return f"user_profile:v{version}:{user_id}:c{c}:b{b}"
+
+
+
+# --- Price List snapshot version & keys --------------------------------------
+
+def price_list_version_key(company_id: int, pl_id: int) -> str:
+    return f"v:plist:{int(company_id)}:{int(pl_id)}"
+
+def price_list_hash_key(company_id: int, pl_id: int, version: int, day_yyyymmdd: str) -> str:
+    return f"plist:c{int(company_id)}:pl{int(pl_id)}:v{int(version)}:d{day_yyyymmdd}"
+
+# ---- UOM cache (per item) (new) ----
+def uom_item_hash_key(item_id: int) -> str:
+    return f"uomconv:item:{int(item_id)}"

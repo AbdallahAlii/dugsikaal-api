@@ -77,7 +77,7 @@ class DocumentType(BaseModel):
     affects_gl: Mapped[bool] = mapped_column(db.Boolean, nullable=False, default=False, index=True)
 
     status: Mapped[StatusEnum] = mapped_column(db.Enum(StatusEnum), nullable=False, default=StatusEnum.ACTIVE)
-
+    stock_ledger_entries: Mapped[List["StockLedgerEntry"]] = relationship(back_populates="doc_type")
     def __repr__(self) -> str:
         return f"<DocumentType id={self.id} code={self.code!r} stock={self.affects_stock} gl={self.affects_gl}>"
 
@@ -117,18 +117,35 @@ class Warehouse(BaseModel):
     )
 
     # Relationships
-    company: Mapped["Company"] = relationship("Company")
-    branch:  Mapped[Optional["Branch"]] = relationship("Branch")
 
+    company: Mapped["Company"] = relationship()
+    branch: Mapped[Optional["Branch"]] = relationship()
     parent_warehouse: Mapped[Optional["Warehouse"]] = relationship(
-        "Warehouse",
-        remote_side="Warehouse.id",
-        back_populates="child_warehouses",
+        "Warehouse", remote_side="Warehouse.id", back_populates="child_warehouses"
     )
     child_warehouses: Mapped[List["Warehouse"]] = relationship(
-        "Warehouse",
-        back_populates="parent_warehouse",
-        # No delete-orphan / passive_deletes: we want RESTRICT semantics
+        "Warehouse", back_populates="parent_warehouse"
+    )
+    bins: Mapped[List["Bin"]] = relationship(back_populates="warehouse")
+    stock_ledger_entries: Mapped[List["StockLedgerEntry"]] = relationship(back_populates="warehouse")
+    stock_reconciliation_items: Mapped[List["StockReconciliationItem"]] = relationship(back_populates="warehouse")
+    stock_entry_items_source: Mapped[List["StockEntryItem"]] = relationship(
+        "StockEntryItem", foreign_keys="[StockEntryItem.source_warehouse_id]", back_populates="source_warehouse"
+    )
+    stock_entry_items_target: Mapped[List["StockEntryItem"]] = relationship(
+        "StockEntryItem", foreign_keys="[StockEntryItem.target_warehouse_id]", back_populates="target_warehouse"
+    )
+
+
+    purchase_receipts: Mapped[list["PurchaseReceipt"]] = relationship(
+        "PurchaseReceipt",
+        back_populates="warehouse",
+        cascade="all, delete-orphan",
+    )
+    purchase_invoices: Mapped[list["PurchaseInvoice"]] = relationship(
+        "PurchaseInvoice",
+        back_populates="warehouse",
+        cascade="all, delete-orphan",
     )
 
     status: Mapped[StatusEnum] = mapped_column(
@@ -196,15 +213,17 @@ class Bin(BaseModel):
         db.Computed("actual_qty * valuation_rate", persisted=True)
     )
 
-    company: Mapped["Company"] = relationship("Company")
+    company: Mapped["Company"] = relationship()
     item: Mapped["Item"] = relationship(back_populates="bins")
-    warehouse: Mapped["Warehouse"] = relationship()
+    warehouse: Mapped["Warehouse"] = relationship(back_populates="bins")
+
 
     __table_args__ = (
         UniqueConstraint("company_id", "code", name="uq_bin_company_code"),
         UniqueConstraint("company_id", "item_id", "warehouse_id", name="uq_bin_location"),
         Index("idx_bin_item_warehouse", "item_id", "warehouse_id"),
         Index("idx_bin_company_warehouse", "company_id", "warehouse_id"),
+        Index("idx_bin_item_company", "item_id", "company_id"),
     )
 
     def __repr__(self) -> str:
@@ -244,10 +263,13 @@ class StockEntry(BaseModel):
     )
 
     # Children
+
+    company: Mapped["Company"] = relationship()
+    branch: Mapped["Branch"] = relationship()
     items: Mapped[list["StockEntryItem"]] = relationship(
         back_populates="stock_entry", cascade="all, delete-orphan"
     )
-
+    stock_ledger_entries: Mapped[List["StockLedgerEntry"]] = relationship(back_populates="stock_entry")
     __table_args__ = (
         # You previously used unique(code). If you prefer scope-specific uniqueness,
         # swap for ('company_id','branch_id','code'). Keeping your original:
@@ -255,6 +277,7 @@ class StockEntry(BaseModel):
         # Helpful composite indexes for common queries:
         Index("idx_se_company_posting", "company_id", "posting_date"),
         Index("idx_se_branch_posting", "branch_id", "posting_date"),
+        Index("idx_se_type_status", "stock_entry_type", "doc_status"),
     )
 
     def __repr__(self) -> str:
@@ -309,14 +332,14 @@ class StockEntryItem(BaseModel):
 
     # Relationships
     stock_entry: Mapped["StockEntry"] = relationship(back_populates="items")
-    item: Mapped["Item"] = relationship("Item")
+    item: Mapped["Item"] = relationship()
     source_warehouse: Mapped[Optional["Warehouse"]] = relationship(
-        "Warehouse", foreign_keys=[source_warehouse_id]
+        "Warehouse", foreign_keys=[source_warehouse_id], back_populates="stock_entry_items_source"
     )
     target_warehouse: Mapped[Optional["Warehouse"]] = relationship(
-        "Warehouse", foreign_keys=[target_warehouse_id]
+        "Warehouse", foreign_keys=[target_warehouse_id], back_populates="stock_entry_items_target"
     )
-    uom: Mapped["UnitOfMeasure"] = relationship("UnitOfMeasure")
+    uom: Mapped["UnitOfMeasure"] = relationship()
 
     __table_args__ = (
         # Fast lookups by movement side & item
@@ -326,6 +349,7 @@ class StockEntryItem(BaseModel):
         Index("idx_sei_entry_item", "stock_entry_id", "item_id"),
         # Useful when analyzing inter-warehouse flows
         Index("idx_sei_src_tgt", "source_warehouse_id", "target_warehouse_id"),
+        Index("idx_sei_item_uom", "item_id", "uom_id"),
     )
 
     def __repr__(self) -> str:
@@ -338,104 +362,111 @@ class StockEntryItem(BaseModel):
 
 class StockLedgerEntry(BaseModel):
     """
-    The complete historical record of a stock transaction and its valuation.
-    This is the immutable source of truth for all stock reports and audits.
+    The complete historical record of stock transactions.
     """
     __tablename__ = "stock_ledger_entries"
 
+    company_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("companies.id"), nullable=False, index=True)
+    branch_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("branches.id", ondelete="CASCADE"), nullable=False, index=True)
+    item_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("items.id", ondelete="CASCADE"), nullable=False, index=True)
+    warehouse_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("warehouses.id", ondelete="RESTRICT"), nullable=False, index=True)
 
-    company_id:   Mapped[int]      = mapped_column(db.BigInteger, db.ForeignKey("companies.id"), nullable=False, index=True)
-    branch_id:    Mapped[int]      = mapped_column(db.BigInteger, db.ForeignKey("branches.id", ondelete="CASCADE"), nullable=False, index=True)
-    item_id:      Mapped[int]      = mapped_column(db.BigInteger, db.ForeignKey("items.id", ondelete="CASCADE"), nullable=False, index=True)
-    warehouse_id: Mapped[int]      = mapped_column(db.BigInteger, db.ForeignKey("warehouses.id", ondelete="RESTRICT"), nullable=False, index=True)
+    # FIXED: Added UOM tracking for conversion support
+    base_uom_id: Mapped[int] = mapped_column(
+        db.BigInteger, db.ForeignKey("units_of_measure.id"), nullable=False, index=True,
+        comment="Base UOM for the item (stock UOM)"
+    )
+    transaction_uom_id: Mapped[Optional[int]] = mapped_column(
+        db.BigInteger, db.ForeignKey("units_of_measure.id"), nullable=True, index=True,
+        comment="UOM used in the transaction (for UOM conversion tracking)"
+    )
+    transaction_quantity: Mapped[Optional[Decimal]] = mapped_column(
+        db.Numeric(18, 6), nullable=True,
+        comment="Quantity in transaction UOM (before conversion)"
+    )
 
-    # Human-readable identifier
     code: Mapped[str] = mapped_column(db.String(100), nullable=False, unique=True, index=True)
+    posting_date: Mapped[date] = mapped_column(db.Date, nullable=False, index=True)
+    posting_time: Mapped[datetime] = mapped_column(db.DateTime(timezone=True), nullable=False, index=True)
 
-    # Precise posting timestamp
-    posting_date: Mapped[date]             = mapped_column(db.Date, nullable=False, index=True)
-    posting_time: Mapped[datetime]         = mapped_column(db.DateTime(timezone=True), nullable=False, index=True)
-
-    # Quantities & rates (use Decimal-friendly Numeric)
-    actual_qty:   Mapped[Decimal]          = mapped_column(db.Numeric(18, 6), nullable=False, comment="Base UOM delta (+/-).")
-    incoming_rate:Mapped[Optional[Decimal]]= mapped_column(db.Numeric(18, 6), nullable=True,  comment="Cost for incoming.")
-    outgoing_rate:Mapped[Optional[Decimal]]= mapped_column(db.Numeric(18, 6), nullable=True,  comment="Cost for outgoing.")
-    valuation_rate:Mapped[Decimal]         = mapped_column(db.Numeric(18, 6), nullable=False, comment="Avg (or layer) value after this row.")
-
-    # Monetary impact of this row (required for zero-qty valuation events or reconciliation)
+    # Quantities & rates
+    actual_qty: Mapped[Decimal] = mapped_column(db.Numeric(18, 6), nullable=False, comment="Base UOM delta (+/-).")
+    incoming_rate: Mapped[Optional[Decimal]] = mapped_column(db.Numeric(18, 6), nullable=True, comment="Cost for incoming.")
+    outgoing_rate: Mapped[Optional[Decimal]] = mapped_column(db.Numeric(18, 6), nullable=True, comment="Cost for outgoing.")
+    valuation_rate: Mapped[Decimal] = mapped_column(db.Numeric(18, 6), nullable=False, comment="Avg (or layer) value after this row.")
     stock_value_difference: Mapped[Decimal] = mapped_column(db.Numeric(20, 6), nullable=False, default=Decimal("0"))
 
     # Document linkage
-    doc_type_id: Mapped[int]               = mapped_column(db.BigInteger, db.ForeignKey("document_types.id", ondelete="RESTRICT"), nullable=False, index=True)
-    doc_id:      Mapped[int]               = mapped_column(db.BigInteger, nullable=False, index=True)
-    doc_row_id:  Mapped[Optional[int]]     = mapped_column(db.BigInteger, nullable=True,  index=True)
+    doc_type_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("document_types.id", ondelete="RESTRICT"), nullable=False, index=True)
+    doc_id: Mapped[int] = mapped_column(db.BigInteger, nullable=False, index=True)
+    doc_row_id: Mapped[Optional[int]] = mapped_column(db.BigInteger, nullable=True, index=True)
+
+    # FIXED: Added stock_entry relationship
+    stock_entry_id: Mapped[Optional[int]] = mapped_column(
+        db.BigInteger, db.ForeignKey("stock_entries.id"), nullable=True, index=True,
+        comment="Link to Stock Entry for direct tracing"
+    )
 
     # Snapshot around the move
     qty_before_transaction: Mapped[Optional[Decimal]] = mapped_column(db.Numeric(18, 6), nullable=True)
-    qty_after_transaction:  Mapped[Optional[Decimal]] = mapped_column(db.Numeric(18, 6), nullable=True)
+    qty_after_transaction: Mapped[Optional[Decimal]] = mapped_column(db.Numeric(18, 6), nullable=True)
 
     # Immutability / repost metadata
-    is_cancelled: Mapped[bool]             = mapped_column(db.Boolean, nullable=False, default=False, index=True)
-    is_reversal:  Mapped[bool]             = mapped_column(db.Boolean, nullable=False, default=False, index=True)
+    is_cancelled: Mapped[bool] = mapped_column(db.Boolean, nullable=False, default=False, index=True)
+    is_reversal: Mapped[bool] = mapped_column(db.Boolean, nullable=False, default=False, index=True)
     reversed_sle_id: Mapped[Optional[int]] = mapped_column(db.BigInteger, db.ForeignKey("stock_ledger_entries.id", ondelete="SET NULL"), nullable=True, index=True)
     adjustment_type: Mapped[SLEAdjustmentType] = mapped_column(db.Enum(SLEAdjustmentType), nullable=False, default=SLEAdjustmentType.NORMAL, index=True)
 
-    # Relationships
-    item:      Mapped["Item"]        = relationship()
-    branch:    Mapped["Branch"]      = relationship()
-    warehouse: Mapped["Warehouse"]   = relationship()
-    doc_type:  Mapped["DocumentType"]= relationship()
+    # Relationships (FIXED: Added all back_populates and new relationships)
+    item: Mapped["Item"] = relationship(back_populates="ledger_entries")
+    branch: Mapped["Branch"] = relationship()
+    warehouse: Mapped["Warehouse"] = relationship(back_populates="stock_ledger_entries")
+    doc_type: Mapped["DocumentType"] = relationship(back_populates="stock_ledger_entries")
+    base_uom: Mapped["UnitOfMeasure"] = relationship(foreign_keys=[base_uom_id])
+    transaction_uom: Mapped[Optional["UnitOfMeasure"]] = relationship(foreign_keys=[transaction_uom_id])
+    stock_entry: Mapped[Optional["StockEntry"]] = relationship(back_populates="stock_ledger_entries")
     reversed_sle: Mapped[Optional["StockLedgerEntry"]] = relationship(remote_side="StockLedgerEntry.id")
 
     __table_args__ = (
-        # Fast chronological scans for replay
-        db.Index("ix_sle_replay_scan", "company_id", "item_id", "warehouse_id", "posting_date", "posting_time", "id"),
-        db.Index("ix_sle_item_branch_wh", "company_id", "item_id", "branch_id", "warehouse_id"),
-        db.Index("ix_sle_doc_ref", "doc_type_id", "doc_id"),
-        db.UniqueConstraint("code", name="uq_sle_code"),
+        Index("ix_sle_replay_scan", "company_id", "item_id", "warehouse_id", "posting_date", "posting_time", "id"),
+        Index("ix_sle_item_branch_wh", "company_id", "item_id", "branch_id", "warehouse_id"),
+        Index("ix_sle_doc_ref", "doc_type_id", "doc_id"),
+        Index("ix_sle_stock_entry", "stock_entry_id"),  # ADDED: For Stock Entry tracing
+        Index("ix_sle_uom_tracking", "item_id", "base_uom_id", "transaction_uom_id"),  # ADDED: UOM conversion tracking
+        UniqueConstraint("code", name="uq_sle_code"),
     )
 
     def __repr__(self) -> str:
         return f"<SLE id={self.id} item={self.item_id} wh={self.warehouse_id} qty={self.actual_qty}>"
 
-
 # --- 4. Stock Reconciliation Models ---
-
 class StockReconciliation(BaseModel):
     """
-    Adjust books to physical count. On submit:
-      - For each line: diff = counted_qty - current_bin_qty
-      - Post SLE (+/- diff) with valuation handling
-      - Update Bin to counted_qty
+    Adjust books to physical count.
     """
     __tablename__ = "stock_reconciliations"
 
-    company_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("companies.id"),
-                                            nullable=False, index=True)
-    branch_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("branches.id"),
-                                           nullable=False, index=True)
-    created_by_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("users.id"),
-                                               nullable=False, index=True)
-
-    # Per-branch series (unique only within branch/company)
+    company_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("companies.id"), nullable=False, index=True)
+    branch_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("branches.id"), nullable=False, index=True)
+    created_by_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("users.id"), nullable=False, index=True)
     code: Mapped[str] = mapped_column(db.String(100), nullable=False, index=True)
-
     posting_date: Mapped[datetime] = mapped_column(db.DateTime(timezone=True), nullable=False, index=True)
-    doc_status: Mapped[DocStatusEnum] = mapped_column(db.Enum(DocStatusEnum),
-                                                      nullable=False, default=DocStatusEnum.DRAFT, index=True)
+    doc_status: Mapped[DocStatusEnum] = mapped_column(db.Enum(DocStatusEnum), nullable=False, default=DocStatusEnum.DRAFT, index=True)
     purpose: Mapped[StockReconciliationPurpose] = mapped_column(
         db.Enum(StockReconciliationPurpose), nullable=False,
         default=StockReconciliationPurpose.STOCK_RECONCILIATION, index=True
     )
     notes: Mapped[Optional[str]] = mapped_column(db.Text)
 
+    # Relationships
+    company: Mapped["Company"] = relationship()
+    branch: Mapped["Branch"] = relationship()
+    created_by: Mapped["User"] = relationship()
     items: Mapped[list["StockReconciliationItem"]] = relationship(
         back_populates="reconciliation", cascade="all, delete-orphan"
     )
-    created_by: Mapped["User"] = relationship()
 
     __table_args__ = (
-        # Unique per company+branch (so Branch A can have 000001 and Branch B can also have 000001)
         UniqueConstraint("company_id", "branch_id", "code", name="uq_reconciliation_branch_code"),
         Index("ix_reconciliation_company_branch_status", "company_id", "branch_id", "doc_status"),
         Index("ix_reconciliation_company_posting_date", "company_id", "posting_date"),
@@ -445,14 +476,9 @@ class StockReconciliation(BaseModel):
     def __repr__(self) -> str:
         return f"<StockReconciliation id={self.id} code={self.code!r} branch={self.branch_id} status={self.doc_status}>"
 
-
 class StockReconciliationItem(BaseModel):
     """
-    One counted line:
-      - item
-      - warehouse (line-level for flexibility)
-      - counted quantity (final quantity)
-      - optional valuation_rate (required by service for +ve adjustments / opening)
+    One counted line for stock reconciliation.
     """
     __tablename__ = "stock_reconciliation_items"
 
@@ -469,24 +495,20 @@ class StockReconciliationItem(BaseModel):
         nullable=False, index=True
     )
 
-    # Final quantity after count (in base UOM)
-    quantity: Mapped[float] = mapped_column(db.Numeric(12, 3), nullable=False)
+    # FIXED: Changed from float to Decimal for consistency
+    quantity: Mapped[Decimal] = mapped_column(db.Numeric(18, 6), nullable=False)
+    valuation_rate: Mapped[Optional[Decimal]] = mapped_column(db.Numeric(18, 6), nullable=True)
 
-    # Let service require this only when needed (opening stock / positive diff)
-    valuation_rate: Mapped[Optional[float]] = mapped_column(db.Numeric(12, 2), nullable=True)
-
+    # Relationships
     reconciliation: Mapped["StockReconciliation"] = relationship(back_populates="items")
     item: Mapped["Item"] = relationship()
-    warehouse: Mapped["Warehouse"] = relationship()
+    warehouse: Mapped["Warehouse"] = relationship(back_populates="stock_reconciliation_items")
 
     __table_args__ = (
-        # Allows the same item to appear for different warehouses on the same document.
         UniqueConstraint("reconciliation_id", "item_id", "warehouse_id", name="uq_recon_item_wh"),
         CheckConstraint("quantity >= 0", name="ck_recon_qty_nonneg"),
         CheckConstraint("valuation_rate IS NULL OR valuation_rate >= 0", name="ck_recon_valrate_nonneg"),
-        Index("ix_recon_item_company_wh",
-              # helpful composite for reporting joins; reconciliation.company_id is in parent row
-              "item_id", "warehouse_id"),
+        Index("ix_recon_item_company_wh", "item_id", "warehouse_id"),
     )
 
     def __repr__(self) -> str:

@@ -16,7 +16,7 @@ from app.application_buying.models import (
     PurchaseQuotation, PurchaseQuotationItem,
     PurchaseReceipt, PurchaseReceiptItem,
     PurchaseInvoice, PurchaseInvoiceItem,
-    PurchaseReturn, PurchaseReturnItem
+
 )
 
 # Lookups
@@ -103,15 +103,6 @@ def resolve_quotation_by_code(s: Session, ctx: AffiliationContext, code: str) ->
     ensure_scope_by_ids(context=ctx, target_company_id=row.company_id, target_branch_id=row.branch_id)
     return int(row.id)
 
-def resolve_return_by_code(s: Session, ctx: AffiliationContext, code: str) -> int:
-    PRET = PurchaseReturn
-    pred = _scope_predicates(PRET, ctx)
-    stmt = select(PRET.id, PRET.company_id, PRET.branch_id).where((PRET.code == code) & pred)
-    row = s.execute(stmt).first()
-    if not row:
-        raise NotFound("Purchase Return not found for your scope.")
-    ensure_scope_by_ids(context=ctx, target_company_id=row.company_id, target_branch_id=row.branch_id)
-    return int(row.id)
 
 # -------------------------------------------------------------------
 # Loaders (id -> structured JSON)
@@ -302,93 +293,4 @@ def load_purchase_quotation(s: Session, ctx: AffiliationContext, quotation_id: i
     }
     return data
 
-def load_purchase_return(s: Session, ctx: AffiliationContext, return_id: int) -> Dict[str, Any]:
-    PRET, PRETI = PurchaseReturn, PurchaseReturnItem
 
-    # ---------- header ----------
-    # Get linked doc info (receipt/invoice) + codes
-    header_stmt = (
-        select(
-            PRET.id, PRET.code, PRET.doc_status, PRET.posting_date,
-            PRET.company_id, PRET.branch_id, PRET.supplier_id,
-            PRET.warehouse_id, PRET.receipt_id, PRET.invoice_id, PRET.remarks,
-            Party.name.label("supplier_name"),
-            Branch.name.label("branch_name"),
-            Warehouse.name.label("warehouse_name"),
-            # pull codes of source docs if present
-            PurchaseReceipt.code.label("receipt_code"),
-            PurchaseInvoice.code.label("invoice_code"),
-        )
-        .select_from(PRET)
-        .join(Party, Party.id == PRET.supplier_id)
-        .join(Branch, Branch.id == PRET.branch_id)
-        .outerjoin(Warehouse, Warehouse.id == PRET.warehouse_id)
-        .outerjoin(PurchaseReceipt, PurchaseReceipt.id == PRET.receipt_id)
-        .outerjoin(PurchaseInvoice, PurchaseInvoice.id == PRET.invoice_id)
-        .where(PRET.id == return_id)
-    )
-    hdr = _first_or_404(s, header_stmt, "Purchase Return")
-    ensure_scope_by_ids(context=ctx, target_company_id=hdr["company_id"], target_branch_id=hdr["branch_id"])
-
-    # ---------- items ----------
-    items_stmt = (
-        select(
-            PRETI.id, PRETI.item_id, Item.name.label("item_name"),
-            PRETI.uom_id, UnitOfMeasure.name.label("uom_name"),
-            PRETI.quantity.label("returned_qty"),
-            PRETI.rate, PRETI.amount,
-            PRETI.receipt_item_id.label("original_receipt_item_id"),
-            PRETI.invoice_item_id.label("original_invoice_item_id")
-        )
-        .select_from(PRETI)
-        .join(Item, Item.id == PRETI.item_id)
-        .outerjoin(UnitOfMeasure, UnitOfMeasure.id == PRETI.uom_id)
-        .where(PRETI.purchase_return_id == return_id)
-        .order_by(PRETI.id.asc())
-    )
-    rows = s.execute(items_stmt).mappings().all()
-    items = [dict(r) for r in rows]
-
-    total_amount = 0.0
-    for r in rows:
-        amt = r.get("amount")
-        if amt is not None:
-            total_amount += float(amt)
-
-    # Determine source doc metadata
-    return_from_doc_type = None
-    return_from_doc_id = None
-    return_from_doc_code = None
-    if hdr["receipt_id"]:
-        return_from_doc_type = "Purchase Receipt"
-        return_from_doc_id = hdr["receipt_id"]
-        return_from_doc_code = hdr["receipt_code"]
-    elif hdr["invoice_id"]:
-        return_from_doc_type = "Purchase Invoice"
-        return_from_doc_id = hdr["invoice_id"]
-        return_from_doc_code = hdr["invoice_code"]
-
-    data = {
-        "basic_details": {
-            "id": hdr["id"],
-            "code": hdr["code"],
-            "doc_status": str(hdr["doc_status"]),
-            "posting_date": _iso8601(hdr["posting_date"]),
-            "company_id": hdr["company_id"],
-            "branch_id": hdr["branch_id"],
-            "branch_name": hdr["branch_name"],
-            "supplier_id": hdr["supplier_id"],
-            "supplier_name": hdr["supplier_name"],
-            "warehouse_id": hdr["warehouse_id"],
-            "warehouse_name": hdr["warehouse_name"],
-            "remarks": hdr["remarks"],
-            "return_from_doc_id": return_from_doc_id,
-            "return_from_doc_code": return_from_doc_code,
-            "return_from_doc_type": return_from_doc_type,
-        },
-        "items": items,
-        "financial_summary": {
-            "total_amount": total_amount
-        }
-    }
-    return data

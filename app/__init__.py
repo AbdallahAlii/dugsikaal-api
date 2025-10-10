@@ -5,6 +5,8 @@ from flask import Flask, jsonify
 from flask_session import Session
 from flask_cors import CORS
 import importlib
+
+from sqlalchemy.orm import relationship
 from werkzeug.exceptions import HTTPException
 from sqlalchemy.exc import IntegrityError
 from app.common.api_response import api_error
@@ -19,6 +21,9 @@ from core.middleware.request_id import before_request_request_id, after_request_
 from core.middleware.session_auth import before_request_session_auth
 from core.middleware.security_headers import after_request_security_headers
 from core.auth import require_login_globally, public
+
+# ---- CRITICAL: IMPORT MODELS FIRST USING CENTRAL REGISTRY ----
+from app.models_registry import *  # This imports all models via the central registry
 
 
 # Configure logging
@@ -51,6 +56,8 @@ def create_app() -> Flask:
     )
     Session(app)
 
+
+    app.logger.info("✓ All models imported via central registry")
     # ---- DB ----
     db.init_app(app)
     # 1) models first
@@ -136,6 +143,9 @@ def create_app() -> Flask:
     app.register_blueprint(hr_bp, url_prefix="/api/hr")
     from app.application_rbac.endpoints import bp as rbac_bp
     app.register_blueprint(rbac_bp, url_prefix="/api/rbac")
+
+    from app.application_reports.routes import bp as reports_bp
+    app.register_blueprint(reports_bp)
 
     from app.application_media.endpoint import media_bp
     app.register_blueprint(media_bp)  # This will register at /api/media

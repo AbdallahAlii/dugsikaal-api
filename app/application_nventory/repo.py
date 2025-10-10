@@ -7,7 +7,7 @@ from sqlalchemy import select, func, and_
 from sqlalchemy.orm import Session
 from werkzeug.exceptions import NotFound
 
-from app.application_nventory.inventory_models import Brand, UnitOfMeasure, Item, UOMConversion, BranchItemPricing
+from app.application_nventory.inventory_models import Brand, UnitOfMeasure, Item, UOMConversion
 from config.database import db
 
 from app.application_org.models.company import Company, Branch
@@ -110,21 +110,3 @@ class InventoryRepository:
             )
         )
 
-    # --- BranchItemPricing CRUD ---
-    def create_branch_item_pricing(self, pricing: BranchItemPricing) -> BranchItemPricing:
-        self.s.add(pricing)
-        self.s.flush()
-        return pricing
-
-    def get_pricing_by_item_branch(self, item_id: int, branch_id: int) -> Optional[BranchItemPricing]:
-        return self.s.scalar(
-            select(BranchItemPricing).where(
-                BranchItemPricing.item_id == item_id,
-                BranchItemPricing.branch_id == branch_id
-            )
-        )
-
-    def update_branch_item_pricing(self, pricing: BranchItemPricing, updates: dict) -> None:
-        for key, value in updates.items():
-            setattr(pricing, key, value)
-        self.s.flush([pricing])

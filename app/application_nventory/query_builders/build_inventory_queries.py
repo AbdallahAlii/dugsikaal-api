@@ -7,7 +7,7 @@ from sqlalchemy import select, false
 from sqlalchemy.orm import Session
 
 from app.application_nventory.inventory_models import (
-    Brand, UnitOfMeasure, Item, UOMConversion, BranchItemPricing
+    Brand, UnitOfMeasure, Item, UOMConversion
 )
 from app.security.rbac_effective import AffiliationContext
 
@@ -96,28 +96,4 @@ def build_uom_conversions_query(session: Session, context: AffiliationContext):
     )
 
 
-def build_branch_item_pricing_query(session: Session, context: AffiliationContext):
-    """
-    Branch-scoped list of pricing:
-      - must match user's company
-      - branch_id must be in user's branch_ids
-    """
-    co_id = getattr(context, "company_id", None)
-    branch_ids = list(getattr(context, "branch_ids", []) or [])
-    if co_id is None or not branch_ids:
-        return select(BranchItemPricing.id).where(false())
 
-    return (
-        select(
-            BranchItemPricing.id.label("id"),
-            BranchItemPricing.item_id.label("item_id"),
-            BranchItemPricing.company_id.label("company_id"),
-            BranchItemPricing.branch_id.label("branch_id"),
-            BranchItemPricing.standard_rate.label("standard_rate"),
-            BranchItemPricing.cost.label("cost"),
-        )
-        .where(
-            (BranchItemPricing.company_id == co_id) &
-            (BranchItemPricing.branch_id.in_(branch_ids))
-        )
-    )

@@ -58,7 +58,30 @@ class Party(BaseModel):
         back_populates="party", uselist=False, cascade="all, delete-orphan"
     )
     city: Mapped[Optional["City"]] = relationship(backref="parties", lazy="select")
+    purchase_quotations: Mapped[list["PurchaseQuotation"]] = db.relationship(
+        "PurchaseQuotation",
+        back_populates="supplier",
+        cascade="all, delete-orphan",
+    )
 
+    purchase_receipts: Mapped[list["PurchaseReceipt"]] = db.relationship(
+        "PurchaseReceipt",
+        back_populates="supplier",
+        cascade="all, delete-orphan",
+    )
+
+    purchase_invoices: Mapped[list["PurchaseInvoice"]] = db.relationship(
+        "PurchaseInvoice",
+        back_populates="supplier",
+        cascade="all, delete-orphan",
+    )
+
+    # Also add sales relationships if you have sales models:
+    sales_invoices: Mapped[list["SalesInvoice"]] = db.relationship(
+        "SalesInvoice",
+        back_populates="customer",  # or whatever the back_populates name is in SalesInvoice
+        cascade="all, delete-orphan",
+    )
     __table_args__ = (
         UniqueConstraint("company_id", "code", name="uq_party_company_code"),
         # NOTE: All indexes are good. No changes needed here.

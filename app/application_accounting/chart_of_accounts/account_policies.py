@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import enum
-from typing import Optional
+from typing import Optional, List
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy import Index, UniqueConstraint, CheckConstraint, text
 
@@ -57,7 +57,12 @@ class ModeOfPayment(BaseModel):
     # ---- Relationships ----
     company = relationship("Company", back_populates="modes_of_payment")
     branch = relationship("Branch", back_populates="modes_of_payment")
-
+    purchase_invoices: Mapped[List["PurchaseInvoice"]] = relationship(
+        "PurchaseInvoice", back_populates="mode_of_payment"
+    )
+    sales_invoices: Mapped[List["SalesInvoice"]] = relationship(
+        "SalesInvoice", back_populates="mode_of_payment"
+    )
     # ---- Unique Constraint ----
     __table_args__ = (
         # UniqueConstraint ensures that the combination of company and branch with name is unique

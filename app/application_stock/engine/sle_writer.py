@@ -1,5 +1,8 @@
+#
+# # app/application_stock/engine/sle_writer.py
 
-# app/application_stock/engine/sle_writer.py
+
+# # app/application_stock/engine/sle_writer.py
 from __future__ import annotations
 
 import logging
@@ -18,7 +21,11 @@ from app.application_stock.engine.errors import StockOperationError, StockValida
 from app.application_stock.engine.valuation import moving_average as ma
 from app.application_stock.engine.posting_clock import resolve_posting_dt
 
+# NEW: to resolve base_uom_id when meta doesn't include it
+from app.application_nventory.inventory_models import Item
+
 logger = logging.getLogger(__name__)
+
 
 def _validate_item(s: Session, item_id: int) -> None:
     try:
@@ -26,14 +33,17 @@ def _validate_item(s: Session, item_id: int) -> None:
     except TypeError:
         return VAL.validate_item(item_id)
 
+
 def _validate_wh_leaf(s: Session, company_id: int, branch_id: int, warehouse_id: int) -> None:
     try:
         return VAL.validate_warehouse_is_leaf(s, company_id, branch_id, warehouse_id)
     except TypeError:
         return VAL.validate_warehouse_is_leaf(company_id, branch_id, warehouse_id)
 
+
 def _validate_posting_dt(posting_dt: datetime) -> None:
     return VAL.validate_posting_dt(posting_dt)
+
 
 def _validate_rate_non_negative(name: str, val: Optional[Decimal]) -> Optional[Decimal]:
     """FIX: guard against negative rates sneaking in from dirty data."""
@@ -43,9 +53,11 @@ def _validate_rate_non_negative(name: str, val: Optional[Decimal]) -> Optional[D
         raise StockValidationError(f"{name} cannot be negative: {val}")
     return val
 
+
 def _validate_rate(val: Optional[Decimal]) -> Optional[Decimal]:
     rv = VAL.validate_rate(val)
     return _validate_rate_non_negative("Rate", rv)
+
 
 def _last_sle_before_dt(
     s: Session, company_id: int, item_id: int, warehouse_id: int, posting_dt: datetime
@@ -56,8 +68,10 @@ def _last_sle_before_dt(
     except TypeError:
         return SEL.get_last_sle_before_dt(company_id, item_id, warehouse_id, posting_dt)
 
+
 def _gen_sle_code(s: Session, company_id: int, branch_id: int) -> str:
     return generate_next_code(session=s, prefix="SL", company_id=company_id, branch_id=branch_id)
+
 
 def append_sle(
     s: Session,
@@ -75,6 +89,7 @@ def append_sle(
     - Uses resolve_posting_dt with treat_midnight_as_date=True to avoid 00:00:00 collisions.
     - Adds microsecond bump via `batch_index` so multiple lines in one submit keep strict order.
     - Enforces non-negative rates.
+    - ALWAYS stores quantities in Base UOM; records txn UOM/qty for audit if provided.
     """
     logger.info("append_sle: Starting with intent: %s", intent)
 
@@ -96,7 +111,9 @@ def append_sle(
     logger.info("append_sle: Validated rates - incoming: %s, outgoing: %s", in_rate, out_rate)
 
     # Resolve doc_type_id if needed
-    if intent.doc_type_id == 0 and "doc_type_code" in intent.meta:
+    # Pull txn-UOM metadata (optional)
+    meta = getattr(intent, "meta", {}) or {}
+    if intent.doc_type_id == 0 and getattr(intent, "meta", None) and "doc_type_code" in intent.meta:
         dt_code = intent.meta["doc_type_code"]
         dt = s.query(DocumentType).filter_by(code=dt_code).first()
         if not dt:
@@ -104,6 +121,24 @@ def append_sle(
         doc_type_id = dt.id
     else:
         doc_type_id = intent.doc_type_id
+
+    # Pull txn-UOM metadata (optional)
+    # meta = getattr(intent, "meta", {}) or {}
+    txn_uom_id = meta.get("txn_uom_id")
+    txn_qty_raw = meta.get("txn_qty")
+    base_uom_id = meta.get("base_uom_id")
+
+    # Fallback resolve base_uom_id from Item if not provided
+    if not base_uom_id:
+        it = s.get(Item, intent.item_id)
+        base_uom_id = int(getattr(it, "base_uom_id")) if it and it.base_uom_id else None
+    if not base_uom_id:
+        raise StockOperationError("Item base_uom_id is required to write SLE.")
+
+    # Normalize transaction qty (audit only)
+    txn_qty = None
+    if txn_qty_raw is not None:
+        txn_qty = Decimal(str(txn_qty_raw))
 
     # Previous state for valuation math - use resolved_posting_dt
     prev = _last_sle_before_dt(s, intent.company_id, intent.item_id, intent.warehouse_id, resolved_posting_dt)
@@ -150,6 +185,7 @@ def append_sle(
         posting_date=resolved_posting_dt.date(),
         posting_time=resolved_posting_dt,
 
+        # ✔ base units only:
         actual_qty=intent.actual_qty,
         incoming_rate=in_rate,
         outgoing_rate=out_rate_final,
@@ -164,6 +200,11 @@ def append_sle(
         qty_before_transaction=qty_before,
         qty_after_transaction=qty_after,
 
+        # NEW: UOM tracking (audit fields)
+        base_uom_id=int(base_uom_id),
+        transaction_uom_id=int(txn_uom_id) if txn_uom_id else None,
+        transaction_quantity=txn_qty,
+
         is_cancelled=False,
         is_reversal=(intent.adjustment_type == AdjustmentType.REVERSAL),
         reversed_sle_id=None,
@@ -174,6 +215,7 @@ def append_sle(
     s.add(sle)
     logger.info("append_sle: SLE added to session - ID: %s, actual_qty: %s", sle.id, sle.actual_qty)
     return sle
+
 
 def cancel_sle(s: Session, original: StockLedgerEntry) -> StockLedgerEntry:
     """Write a system-generated reversal row and mark original as cancelled."""
@@ -194,6 +236,7 @@ def cancel_sle(s: Session, original: StockLedgerEntry) -> StockLedgerEntry:
         posting_date=reversal_time.date(),
         posting_time=reversal_time,
 
+        # negate base qty; audit prices stay validated non-negative
         actual_qty=-original.actual_qty,
         incoming_rate=_validate_rate_non_negative("incoming_rate", original.incoming_rate),
         outgoing_rate=_validate_rate_non_negative("outgoing_rate", original.outgoing_rate),
@@ -207,6 +250,11 @@ def cancel_sle(s: Session, original: StockLedgerEntry) -> StockLedgerEntry:
 
         qty_before_transaction=original.qty_after_transaction,
         qty_after_transaction=original.qty_before_transaction,
+
+        # carry forward UOM audit fields so NOT NULL base_uom_id is satisfied
+        base_uom_id=original.base_uom_id,
+        transaction_uom_id=original.transaction_uom_id,
+        transaction_quantity=( -original.transaction_quantity if original.transaction_quantity is not None else None ),
 
         is_cancelled=False,
         is_reversal=True,
