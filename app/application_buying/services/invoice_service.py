@@ -9,6 +9,7 @@ from sqlalchemy import and_, select, exists, or_, func
 from werkzeug.exceptions import NotFound, Conflict
 from sqlalchemy.orm import Session
 
+from app.application_accounting.engine.errors import PostingValidationError
 from app.application_stock.engine.posting_clock import resolve_posting_dt
 from app.application_stock.stock_models import DocumentType, StockLedgerEntry
 from app.application_stock.engine.bin_derive import derive_bin
@@ -616,9 +617,10 @@ class PurchaseInvoiceService:
         """
         Submit a Purchase Invoice or Debit Note.
 
-        ERP rules:
-        - If against a Purchase Receipt -> financial-only; GL clears GRNI (2210) and credits A/P.
-        - Direct invoice -> GL posts per PURCHASE_INVOICE_DIRECT; stock only if update_stock=True.
+        Frappe-like rules:
+        - Direct PI + update_stock=True  -> DR 1141 (stock), CR 2111 (A/P), SLEs written.
+        - Direct PI + update_stock=False -> DR expense (5014), CR 2111, no SLE.
+        - Service items never touch stock; always go to expense (5014 unless you later route per item/group).
         """
         try:
             # ---- 1) READ PHASE (no locks) ---------------------------------------
@@ -636,7 +638,7 @@ class PurchaseInvoiceService:
             self.guard_purchase_invoice_submittable(invoice)
             V.validate_list_not_empty(invoice.items, "items for submission")
 
-            # Warehouse validation only matters when update_stock=True (direct PI with stock)
+            # Warehouse is required only if we will touch stock
             if invoice.update_stock and not invoice.warehouse_id:
                 raise V.BizValidationError("Warehouse is required for stock invoices.")
 
@@ -657,21 +659,48 @@ class PurchaseInvoiceService:
                 "DEBIT NOTE" if is_debit_note else "INVOICE",
                 invoice.id, invoice.code, invoice.update_stock
             )
-            logging.info("PINV submit: Raw items from invoice: %s", [
-                {"item_id": i.item_id, "quantity": i.quantity, "uom_id": i.uom_id}
-                for i in invoice.items
-            ])
+
+            # ---- Get item details for stock/service classification --------------
+            item_ids = [item.item_id for item in invoice.items]
+            item_details = self.repo.get_item_details_batch(invoice.company_id, item_ids)
+
+            # item_details: {item_id: {"is_stock_item": bool, "item_type": "Stock"/"Service", "base_uom_id": ...}}
+
+            def _is_stock_item(detail: dict) -> bool:
+                """Robust stock detection: prefer explicit flag; else infer from item_type text."""
+                if detail is None:
+                    return False
+                if "is_stock_item" in detail:
+                    try:
+                        return bool(detail["is_stock_item"])
+                    except Exception:
+                        pass
+                t = str(detail.get("item_type", "")).strip().lower()
+                return t.startswith("stock")
+
+            # Classify for logs (optional)
+            stock_items, service_items = [], []
+            for item in invoice.items:
+                det = item_details.get(item.item_id, {})
+                if _is_stock_item(det):
+                    stock_items.append(item)
+                    logging.info("PINV classify: item_id=%s -> STOCK | qty=%s rate=%s", item.item_id, item.quantity,
+                                 item.rate)
+                else:
+                    service_items.append(item)
+                    logging.info("PINV classify: item_id=%s -> SERVICE | qty=%s rate=%s", item.item_id, item.quantity,
+                                 item.rate)
+            logging.info("PINV classify: stock_items=%d, service_items=%d", len(stock_items), len(service_items))
 
             # ---- stock_lines only if this is a direct PI with stock --------------
             stock_lines = []
             if invoice.update_stock:
-                # Guard: you cannot both reference a receipt and try to post stock on the invoice
                 if invoice.receipt_id:
                     raise V.BizValidationError(
-                        "Invoice against a Purchase Receipt must not update stock. Use financial-only PI.")
+                        "Invoice against a Purchase Receipt must not update stock. Use financial-only PI."
+                    )
 
-                item_ids = [item.item_id for item in invoice.items]
-                item_details = self.repo.get_item_details_batch(invoice.company_id, item_ids)
+                # ONLY stock items go to the stock engine
                 lines_snap = [{
                     "item_id": i.item_id,
                     "uom_id": i.uom_id,
@@ -679,16 +708,18 @@ class PurchaseInvoiceService:
                     "rate": i.rate,
                     "doc_row_id": i.id,
                     "base_uom_id": item_details.get(i.item_id, {}).get("base_uom_id"),
-                    "is_stock_item": item_details.get(i.item_id, {}).get("is_stock_item", False)
-                } for i in invoice.items]
+                    "is_stock_item": True,  # by construction: we only include stock_items here
+                } for i in stock_items]
 
                 norm = self._validate_and_normalize_lines(invoice.company_id, lines_snap, is_debit_note)
-                stock_lines = [ln for ln in norm if
-                               ln.get("is_stock_item", False) and Decimal(str(ln.get("quantity", 0))) != 0]
-                logging.info("PINV submit: Final stock_lines: %s", stock_lines)
+                stock_lines = [ln for ln in norm if Decimal(str(ln.get("quantity", 0))) != 0]
 
-                if stock_lines:  # Only validate if there are actual stock lines
-                    V.validate_list_not_empty(stock_lines, "stock items for submission")
+                logging.info("PINV stock: %d stock lines prepared for SLE/BIN", len(stock_lines))
+                for sl in stock_lines:
+                    logging.info("PINV stock line: item_id=%s qty=%s rate=%s", sl["item_id"], sl["quantity"],
+                                 sl["rate"])
+            else:
+                logging.info("PINV stock: update_stock=False -> no stock processing")
 
             doc_type_id = self._get_doc_type_id_or_400(doc_type_code)
 
@@ -706,19 +737,20 @@ class PurchaseInvoiceService:
                 invoice_locked = self._get_validated_invoice(invoice_id, context, for_update=True)
                 self.guard_purchase_invoice_submittable(invoice_locked)
 
-                # 2a) Stock processing only for direct PI with stock
+                # 2a) Stock processing ONLY for stock items in direct PI with stock
                 if invoice_locked.update_stock and stock_lines:
+                    logging.info("PINV stock: writing SLE for %d stock lines", len(stock_lines))
                     stock_engine_lines = [{
                         "uom_id": ln["uom_id"],
                         "item_id": ln["item_id"],
-                        "accepted_qty": ln["quantity"],  # map qty
-                        "unit_price": ln["rate"],  # map rate
+                        "accepted_qty": ln["quantity"],
+                        "unit_price": ln["rate"],
                         "doc_row_id": ln["doc_row_id"],
                         "base_uom_id": ln.get("base_uom_id"),
                     } for ln in stock_lines]
 
                     if is_debit_note:
-                        logging.info("PINV submit: Building RETURN intents for debit note (direct PI with stock)")
+                        logging.info("PINV stock: building RETURN intents")
                         intents = build_intents_for_return(
                             company_id=invoice_locked.company_id,
                             branch_id=invoice_locked.branch_id,
@@ -730,7 +762,7 @@ class PurchaseInvoiceService:
                             session=self.s,
                         )
                     else:
-                        logging.info("PINV submit: Building RECEIPT intents for direct PI with stock")
+                        logging.info("PINV stock: building RECEIPT intents")
                         intents = build_intents_for_receipt(
                             company_id=invoice_locked.company_id,
                             branch_id=invoice_locked.branch_id,
@@ -744,7 +776,7 @@ class PurchaseInvoiceService:
 
                     if intents:
                         pairs = {(i.item_id, i.warehouse_id) for i in intents}
-                        logging.info("PINV submit: Stock intents generated | pairs=%s", list(pairs))
+                        logging.info("PINV stock: %d item-warehouse pairs", len(pairs))
 
                         # Backdating detection
                         def _has_future_sle(item_id: int, wh_id: int) -> bool:
@@ -766,22 +798,11 @@ class PurchaseInvoiceService:
                             return (q or 0) > 0
 
                         is_backdated = any(_has_future_sle(i, w) for (i, w) in pairs)
-                        logging.info("PINV submit: backdated=%s | pairs=%s", is_backdated, list(pairs))
+                        logging.info("PINV stock: backdated=%s", is_backdated)
 
                         sle_written = 0
                         with lock_pairs(self.s, pairs):
                             for idx, intent in enumerate(intents):
-                                logging.info("PINV submit: Final intent for SLE before append: %s", {
-                                    "item_id": intent.item_id,
-                                    "warehouse_id": intent.warehouse_id,
-                                    "actual_qty": intent.actual_qty,
-                                    "incoming_rate": intent.incoming_rate,
-                                    "outgoing_rate": intent.outgoing_rate,
-                                    "doc_id": intent.doc_id,
-                                    "is_return": is_debit_note,
-                                    "meta": getattr(intent, "meta", {}),
-                                })
-
                                 sle = append_sle(
                                     self.s,
                                     intent,
@@ -790,18 +811,16 @@ class PurchaseInvoiceService:
                                     batch_index=idx,
                                 )
                                 sle_written += 1
-                                logging.info(
-                                    "PINV submit: SLE appended | invoice_id=%s sle_id=%s item_id=%s",
-                                    invoice_locked.id, sle.id, intent.item_id
-                                )
+                                logging.info("PINV stock: SLE appended item_id=%s qty=%s", intent.item_id,
+                                             intent.actual_qty)
 
                         if sle_written != len(intents):
                             raise RuntimeError(f"SLE append mismatch (expected {len(intents)}, wrote {sle_written}).")
 
                         # Backdated replay
                         if is_backdated:
+                            logging.info("PINV stock: replaying forward balances for %d pairs", len(pairs))
                             for item_id, wh_id in pairs:
-                                logging.info("PINV submit: Starting replay for item=%s, wh=%s", item_id, wh_id)
                                 repost_from(
                                     s=self.s,
                                     company_id=invoice_locked.company_id,
@@ -810,36 +829,35 @@ class PurchaseInvoiceService:
                                     start_dt=posting_dt,
                                     exclude_doc_types=set()
                                 )
-                            logging.info("PINV submit: replay done for pairs=%s", list(pairs))
+                            logging.info("PINV stock: replay done")
 
                         # Derive BINs
                         bins_updated = 0
                         for item_id, wh_id in pairs:
-                            logging.info("PINV submit: Deriving bin for item=%s, wh=%s", item_id, wh_id)
-                            bin_obj = derive_bin(self.s, invoice_locked.company_id, item_id, wh_id)
+                            derive_bin(self.s, invoice_locked.company_id, item_id, wh_id)
                             bins_updated += 1
-
-                        logging.info("PINV submit: bins derived | invoice_id=%s bins_updated=%s", invoice_locked.id,
-                                     bins_updated)
+                        logging.info("PINV stock: bins updated=%d", bins_updated)
                     else:
-                        logging.warning("PINV submit: No stock intents generated despite having stock lines")
+                        logging.warning("PINV stock: no intents generated despite stock_lines")
+                else:
+                    logging.info("PINV stock: no SLE work (update_stock=%s, stock_lines=%d)",
+                                 invoice_locked.update_stock, len(stock_lines))
 
                 # 2b) GL posting (ALWAYS for invoices) -----------------------------
-                # Decide template
                 has_receipt_items = any(it.receipt_item_id for it in invoice_locked.items)
                 if is_debit_note:
                     template_code = "PURCHASE_RETURN_INVOICED"
                     amount_source_key = "RETURN_DOCUMENT_TOTAL"
-                    logging.info("PINV submit: Using PURCHASE_RETURN_INVOICED template (debit note)")
+                    logging.info("PINV GL: template=PURCHASE_RETURN_INVOICED")
                 else:
                     if invoice_locked.receipt_id or has_receipt_items:
                         template_code = "PURCHASE_INVOICE_AGAINST_RECEIPT"
                         amount_source_key = "DOCUMENT_TOTAL"
-                        logging.info("PINV submit: Using PURCHASE_INVOICE_AGAINST_RECEIPT template (against receipt)")
+                        logging.info("PINV GL: template=PURCHASE_INVOICE_AGAINST_RECEIPT")
                     else:
                         template_code = "PURCHASE_INVOICE_DIRECT"
                         amount_source_key = "DOCUMENT_TOTAL"
-                        logging.info("PINV submit: Using PURCHASE_INVOICE_DIRECT template (direct invoice)")
+                        logging.info("PINV GL: template=PURCHASE_INVOICE_DIRECT")
 
                 # Amounts
                 total_amount = abs(Decimal(str(invoice_locked.total_amount or 0)))
@@ -854,11 +872,31 @@ class PurchaseInvoiceService:
                 payable_account_id = invoice_locked.payable_account_id
                 if not payable_account_id:
                     payable_account_id = self._get_default_payable_account(invoice_locked.company_id)
-                    logging.info("PINV submit: Using default payable account: %s", payable_account_id)
+                    logging.info("PINV GL: Using default payable account: %s", payable_account_id)
 
                 dynamic_account_context = {
                     "accounts_payable_account_id": payable_account_id
                 }
+
+                # ---- Compute split: inventory vs expense (Frappe-like) -----------
+                invoice_stock_value = Decimal("0")
+                invoice_service_value = Decimal("0")
+
+                # Only book to inventory when update_stock=True & item is stock; else expense
+                for item in invoice_locked.items:
+                    val = abs(Decimal(str(item.quantity))) * Decimal(str(item.rate))
+                    det = item_details.get(item.item_id, {})
+                    if invoice_locked.update_stock and _is_stock_item(det):
+                        invoice_stock_value += val  # → DR 1141
+                    else:
+                        invoice_service_value += val  # → DR 5014
+
+                if (invoice_stock_value + invoice_service_value).quantize(Decimal("0.01")) != \
+                        Decimal(str(total_amount)).quantize(Decimal("0.01")):
+                    logging.warning(
+                        "PINV GL: value split mismatch total=%.2f vs stock=%.2f + service=%.2f",
+                        float(total_amount), float(invoice_stock_value), float(invoice_service_value)
+                    )
 
                 # Build payload
                 payload = {
@@ -870,21 +908,29 @@ class PurchaseInvoiceService:
                     "update_stock": bool(invoice_locked.update_stock),
                 }
 
-                # 🟢 CRITICAL FIX: Add RETURN_STOCK_VALUE for debit notes
-                if is_debit_note:
-                    # Calculate the stock value being returned
-                    return_stock_value = sum(
-                        abs(Decimal(str(it.quantity))) * Decimal(str(it.rate))
-                        for it in invoice_locked.items
-                    )
-                    payload["RETURN_STOCK_VALUE"] = float(return_stock_value)
-                    logging.info("PINV submit: Added RETURN_STOCK_VALUE=%.2f for debit note", float(return_stock_value))
+                # Provide amounts required by PURCHASE_INVOICE_DIRECT
+                if template_code == "PURCHASE_INVOICE_DIRECT":
+                    payload["INVOICE_STOCK_VALUE"] = float(invoice_stock_value)
+                    payload["INVOICE_SERVICE_VALUE"] = float(invoice_service_value)
+                    logging.info("PINV GL: INVOICE_STOCK_VALUE=%.2f, INVOICE_SERVICE_VALUE=%.2f",
+                                 float(invoice_stock_value), float(invoice_service_value))
 
-                # Add matched GRNI only when using the against-receipt template
+                # For debit notes: credit 1141 with the stock portion being returned (service has no stock)
+                if is_debit_note:
+                    return_stock_value = Decimal("0")
+                    for item in invoice_locked.items:
+                        det = item_details.get(item.item_id, {})
+                        if _is_stock_item(det):
+                            return_stock_value += abs(Decimal(str(item.quantity))) * Decimal(str(item.rate))
+                    payload["RETURN_STOCK_VALUE"] = float(return_stock_value)
+                    logging.info("PINV GL: RETURN_STOCK_VALUE=%.2f", float(return_stock_value))
+
+                # Against-receipt extras
                 if template_code == "PURCHASE_INVOICE_AGAINST_RECEIPT":
                     payload["INVOICE_MATCHED_GRNI_VALUE"] = float(matched_grni_value)
                     payload["receipt_id"] = invoice_locked.receipt_id
                     payload["has_receipt_items"] = has_receipt_items
+                    logging.info("PINV GL: INVOICE_MATCHED_GRNI_VALUE=%.2f", float(matched_grni_value))
 
                 ctx = PostingContext(
                     company_id=invoice_locked.company_id,
@@ -904,13 +950,23 @@ class PurchaseInvoiceService:
                     dynamic_account_context=dynamic_account_context,
                 )
 
-                logging.info(
-                    "PINV submit: GL posting with template=%s, total_amount=%.2f%s",
-                    template_code, float(total_amount),
-                    f", matched_grni={float(matched_grni_value):.2f}" if template_code == "PURCHASE_INVOICE_AGAINST_RECEIPT" else ""
-                )
-                PostingService(self.s).post(ctx)
-                logging.info("PINV submit: GL posted | invoice_id=%s template=%s", invoice_locked.id, template_code)
+                logging.info("PINV GL: posting with template=%s total=%.2f", template_code, float(total_amount))
+
+                # Enhanced error handling around GL posting
+                try:
+                    PostingService(self.s).post(ctx)
+                    logging.info("PINV GL: posted successfully")
+                except PostingValidationError as e:
+                    msg = str(e)
+                    if "Journal not balanced" in msg:
+                        raise V.BizValidationError("Accounting entries are not balanced.")
+                    elif "account not found" in msg.lower():
+                        raise V.BizValidationError("Required accounting setup missing. Configure Chart of Accounts.")
+                    else:
+                        raise V.BizValidationError(f"Accounting error: {msg}")
+                except Exception as e:
+                    logging.error("PINV GL: posting failed - %s", str(e))
+                    raise V.BizValidationError("Failed to process accounting entries.")
 
                 # 2c) Mark final status
                 final_status = DocStatusEnum.RETURNED if is_debit_note else DocStatusEnum.SUBMITTED
@@ -920,31 +976,357 @@ class PurchaseInvoiceService:
                              final_status.value, invoice_locked.id, invoice_locked.code)
 
             # ---- 3) COMMIT OUTER TX ---------------------------------------------
-            logging.info("PINV submit: committing outer transaction for invoice_id=%s", invoice.id)
             self.s.commit()
+            logging.info("PINV submit: committed | invoice_id=%s", invoice.id)
 
-            # ---- 4) Post-commit SLE sanity check --------------------------------
-            try:
-                cnt = self.s.execute(
-                    select(func.count()).select_from(StockLedgerEntry).where(
-                        StockLedgerEntry.company_id == invoice.company_id,
-                        StockLedgerEntry.doc_type_id == doc_type_id,
-                        StockLedgerEntry.doc_id == invoice.id,
-                        StockLedgerEntry.is_cancelled == False,
-                    )
-                ).scalar()
-                logging.info("DEBUG post-commit: SLE count for PINV id=%s -> %s", invoice.id, cnt)
-            except Exception:
-                logging.exception("DEBUG post-commit: failed to count SLE for PINV")
+            # ---- 4) Post-commit summary -----------------------------------------
+            logging.info("PINV summary: stock_items=%d service_items=%d total=%.2f stock_val=%.2f service_val=%.2f",
+                         len(stock_items), len(service_items),
+                         float(total_amount), float(invoice_stock_value), float(invoice_service_value))
 
-            logging.info("PINV submit: success | invoice_id=%s code=%s status=%s",
-                         invoice.id, invoice.code, final_status.value)
             return invoice
 
-        except Exception:
-            logging.exception("PINV submit: FAILED (rolled back) | invoice_id=%s", invoice_id)
+        except V.BizValidationError:
+            logging.warning("PINV submit: business validation failed | invoice_id=%s", invoice_id)
             self.s.rollback()
             raise
+        except Exception:
+            logging.exception("PINV submit: SYSTEM ERROR | invoice_id=%s", invoice_id)
+            self.s.rollback()
+            raise V.BizValidationError("Failed to submit purchase invoice. Please try again or contact support.")
+    # def submit_purchase_invoice(self, *, invoice_id: int, context: AffiliationContext) -> PurchaseInvoice:
+    #     """
+    #     Submit a Purchase Invoice or Debit Note.
+    #
+    #     ERP rules:
+    #     - If against a Purchase Receipt -> financial-only; GL clears GRNI (2210) and credits A/P.
+    #     - Direct invoice -> GL posts per PURCHASE_INVOICE_DIRECT; stock only if update_stock=True.
+    #     """
+    #     try:
+    #         # ---- 1) READ PHASE (no locks) ---------------------------------------
+    #         logging.info("PINV submit: start invoice_id=%s", invoice_id)
+    #
+    #         invoice = self._get_validated_invoice(invoice_id, context, for_update=False)
+    #
+    #         # Validate posting date at submission
+    #         PostingDateValidator.validate_standalone_document(
+    #             s=self.s,
+    #             posting_date=invoice.posting_date,
+    #             company_id=invoice.company_id,
+    #         )
+    #
+    #         self.guard_purchase_invoice_submittable(invoice)
+    #         V.validate_list_not_empty(invoice.items, "items for submission")
+    #
+    #         # Warehouse validation only matters when update_stock=True (direct PI with stock)
+    #         if invoice.update_stock and not invoice.warehouse_id:
+    #             raise V.BizValidationError("Warehouse is required for stock invoices.")
+    #
+    #         if invoice.warehouse_id:
+    #             self._validate_header(invoice.company_id, invoice.branch_id, invoice.supplier_id, invoice.warehouse_id)
+    #
+    #         # Timezone
+    #         from app.common.timezone.service import get_company_timezone
+    #         company_tz = get_company_timezone(self.s, invoice.company_id)
+    #         logging.info("PINV submit: Using company timezone: %s", company_tz)
+    #
+    #         # Doc type
+    #         is_debit_note = invoice.is_return
+    #         doc_type_code = "PURCHASE_RETURN" if is_debit_note else "PURCHASE_INVOICE"
+    #
+    #         logging.info(
+    #             "PINV submit: Processing %s | invoice_id=%s code=%s update_stock=%s",
+    #             "DEBIT NOTE" if is_debit_note else "INVOICE",
+    #             invoice.id, invoice.code, invoice.update_stock
+    #         )
+    #         logging.info("PINV submit: Raw items from invoice: %s", [
+    #             {"item_id": i.item_id, "quantity": i.quantity, "uom_id": i.uom_id}
+    #             for i in invoice.items
+    #         ])
+    #
+    #         # ---- stock_lines only if this is a direct PI with stock --------------
+    #         stock_lines = []
+    #         if invoice.update_stock:
+    #             # Guard: you cannot both reference a receipt and try to post stock on the invoice
+    #             if invoice.receipt_id:
+    #                 raise V.BizValidationError(
+    #                     "Invoice against a Purchase Receipt must not update stock. Use financial-only PI.")
+    #
+    #             item_ids = [item.item_id for item in invoice.items]
+    #             item_details = self.repo.get_item_details_batch(invoice.company_id, item_ids)
+    #             lines_snap = [{
+    #                 "item_id": i.item_id,
+    #                 "uom_id": i.uom_id,
+    #                 "quantity": i.quantity,
+    #                 "rate": i.rate,
+    #                 "doc_row_id": i.id,
+    #                 "base_uom_id": item_details.get(i.item_id, {}).get("base_uom_id"),
+    #                 "is_stock_item": item_details.get(i.item_id, {}).get("is_stock_item", False)
+    #             } for i in invoice.items]
+    #
+    #             norm = self._validate_and_normalize_lines(invoice.company_id, lines_snap, is_debit_note)
+    #             stock_lines = [ln for ln in norm if
+    #                            ln.get("is_stock_item", False) and Decimal(str(ln.get("quantity", 0))) != 0]
+    #             logging.info("PINV submit: Final stock_lines: %s", stock_lines)
+    #
+    #             if stock_lines:  # Only validate if there are actual stock lines
+    #                 V.validate_list_not_empty(stock_lines, "stock items for submission")
+    #
+    #         doc_type_id = self._get_doc_type_id_or_400(doc_type_code)
+    #
+    #         # Posting datetime
+    #         posting_dt = resolve_posting_dt(
+    #             invoice.posting_date.date() if hasattr(invoice.posting_date, "date") else invoice.posting_date,
+    #             created_at=invoice.created_at,
+    #             tz=company_tz,
+    #             treat_midnight_as_date=True,
+    #         )
+    #         logging.info("PINV submit: posting_dt=%s (timezone: %s)", posting_dt, posting_dt.tzinfo)
+    #
+    #         # ---- 2) ATOMIC WRITE PHASE (SAVEPOINT) ------------------------------
+    #         with self.s.begin_nested():
+    #             invoice_locked = self._get_validated_invoice(invoice_id, context, for_update=True)
+    #             self.guard_purchase_invoice_submittable(invoice_locked)
+    #
+    #             # 2a) Stock processing only for direct PI with stock
+    #             if invoice_locked.update_stock and stock_lines:
+    #                 stock_engine_lines = [{
+    #                     "uom_id": ln["uom_id"],
+    #                     "item_id": ln["item_id"],
+    #                     "accepted_qty": ln["quantity"],  # map qty
+    #                     "unit_price": ln["rate"],  # map rate
+    #                     "doc_row_id": ln["doc_row_id"],
+    #                     "base_uom_id": ln.get("base_uom_id"),
+    #                 } for ln in stock_lines]
+    #
+    #                 if is_debit_note:
+    #                     logging.info("PINV submit: Building RETURN intents for debit note (direct PI with stock)")
+    #                     intents = build_intents_for_return(
+    #                         company_id=invoice_locked.company_id,
+    #                         branch_id=invoice_locked.branch_id,
+    #                         warehouse_id=invoice_locked.warehouse_id,
+    #                         posting_dt=posting_dt,
+    #                         doc_type_id=doc_type_id,
+    #                         doc_id=invoice_locked.id,
+    #                         lines=stock_engine_lines,
+    #                         session=self.s,
+    #                     )
+    #                 else:
+    #                     logging.info("PINV submit: Building RECEIPT intents for direct PI with stock")
+    #                     intents = build_intents_for_receipt(
+    #                         company_id=invoice_locked.company_id,
+    #                         branch_id=invoice_locked.branch_id,
+    #                         warehouse_id=invoice_locked.warehouse_id,
+    #                         posting_dt=posting_dt,
+    #                         doc_type_id=doc_type_id,
+    #                         doc_id=invoice_locked.id,
+    #                         lines=stock_engine_lines,
+    #                         session=self.s,
+    #                     )
+    #
+    #                 if intents:
+    #                     pairs = {(i.item_id, i.warehouse_id) for i in intents}
+    #                     logging.info("PINV submit: Stock intents generated | pairs=%s", list(pairs))
+    #
+    #                     # Backdating detection
+    #                     def _has_future_sle(item_id: int, wh_id: int) -> bool:
+    #                         q = self.s.execute(
+    #                             select(func.count()).select_from(StockLedgerEntry).where(
+    #                                 StockLedgerEntry.company_id == invoice_locked.company_id,
+    #                                 StockLedgerEntry.item_id == item_id,
+    #                                 StockLedgerEntry.warehouse_id == wh_id,
+    #                                 (
+    #                                         (StockLedgerEntry.posting_date > posting_dt.date()) |
+    #                                         and_(
+    #                                             StockLedgerEntry.posting_date == posting_dt.date(),
+    #                                             StockLedgerEntry.posting_time > posting_dt,
+    #                                         )
+    #                                 ),
+    #                                 StockLedgerEntry.is_cancelled == False,
+    #                             )
+    #                         ).scalar()
+    #                         return (q or 0) > 0
+    #
+    #                     is_backdated = any(_has_future_sle(i, w) for (i, w) in pairs)
+    #                     logging.info("PINV submit: backdated=%s | pairs=%s", is_backdated, list(pairs))
+    #
+    #                     sle_written = 0
+    #                     with lock_pairs(self.s, pairs):
+    #                         for idx, intent in enumerate(intents):
+    #                             logging.info("PINV submit: Final intent for SLE before append: %s", {
+    #                                 "item_id": intent.item_id,
+    #                                 "warehouse_id": intent.warehouse_id,
+    #                                 "actual_qty": intent.actual_qty,
+    #                                 "incoming_rate": intent.incoming_rate,
+    #                                 "outgoing_rate": intent.outgoing_rate,
+    #                                 "doc_id": intent.doc_id,
+    #                                 "is_return": is_debit_note,
+    #                                 "meta": getattr(intent, "meta", {}),
+    #                             })
+    #
+    #                             sle = append_sle(
+    #                                 self.s,
+    #                                 intent,
+    #                                 created_at_hint=invoice_locked.created_at,
+    #                                 tz_hint=company_tz,
+    #                                 batch_index=idx,
+    #                             )
+    #                             sle_written += 1
+    #                             logging.info(
+    #                                 "PINV submit: SLE appended | invoice_id=%s sle_id=%s item_id=%s",
+    #                                 invoice_locked.id, sle.id, intent.item_id
+    #                             )
+    #
+    #                     if sle_written != len(intents):
+    #                         raise RuntimeError(f"SLE append mismatch (expected {len(intents)}, wrote {sle_written}).")
+    #
+    #                     # Backdated replay
+    #                     if is_backdated:
+    #                         for item_id, wh_id in pairs:
+    #                             logging.info("PINV submit: Starting replay for item=%s, wh=%s", item_id, wh_id)
+    #                             repost_from(
+    #                                 s=self.s,
+    #                                 company_id=invoice_locked.company_id,
+    #                                 item_id=item_id,
+    #                                 warehouse_id=wh_id,
+    #                                 start_dt=posting_dt,
+    #                                 exclude_doc_types=set()
+    #                             )
+    #                         logging.info("PINV submit: replay done for pairs=%s", list(pairs))
+    #
+    #                     # Derive BINs
+    #                     bins_updated = 0
+    #                     for item_id, wh_id in pairs:
+    #                         logging.info("PINV submit: Deriving bin for item=%s, wh=%s", item_id, wh_id)
+    #                         bin_obj = derive_bin(self.s, invoice_locked.company_id, item_id, wh_id)
+    #                         bins_updated += 1
+    #
+    #                     logging.info("PINV submit: bins derived | invoice_id=%s bins_updated=%s", invoice_locked.id,
+    #                                  bins_updated)
+    #                 else:
+    #                     logging.warning("PINV submit: No stock intents generated despite having stock lines")
+    #
+    #             # 2b) GL posting (ALWAYS for invoices) -----------------------------
+    #             # Decide template
+    #             has_receipt_items = any(it.receipt_item_id for it in invoice_locked.items)
+    #             if is_debit_note:
+    #                 template_code = "PURCHASE_RETURN_INVOICED"
+    #                 amount_source_key = "RETURN_DOCUMENT_TOTAL"
+    #                 logging.info("PINV submit: Using PURCHASE_RETURN_INVOICED template (debit note)")
+    #             else:
+    #                 if invoice_locked.receipt_id or has_receipt_items:
+    #                     template_code = "PURCHASE_INVOICE_AGAINST_RECEIPT"
+    #                     amount_source_key = "DOCUMENT_TOTAL"
+    #                     logging.info("PINV submit: Using PURCHASE_INVOICE_AGAINST_RECEIPT template (against receipt)")
+    #                 else:
+    #                     template_code = "PURCHASE_INVOICE_DIRECT"
+    #                     amount_source_key = "DOCUMENT_TOTAL"
+    #                     logging.info("PINV submit: Using PURCHASE_INVOICE_DIRECT template (direct invoice)")
+    #
+    #             # Amounts
+    #             total_amount = abs(Decimal(str(invoice_locked.total_amount or 0)))
+    #
+    #             # Matched value for clearing GRNI when against receipt
+    #             matched_grni_value = sum(
+    #                 abs(Decimal(str(it.quantity))) * Decimal(str(it.rate))
+    #                 for it in invoice_locked.items if it.receipt_item_id
+    #             )
+    #
+    #             # Resolve payable account (default 2111 if none)
+    #             payable_account_id = invoice_locked.payable_account_id
+    #             if not payable_account_id:
+    #                 payable_account_id = self._get_default_payable_account(invoice_locked.company_id)
+    #                 logging.info("PINV submit: Using default payable account: %s", payable_account_id)
+    #
+    #             dynamic_account_context = {
+    #                 "accounts_payable_account_id": payable_account_id
+    #             }
+    #
+    #             # Build payload
+    #             payload = {
+    #                 "invoice_lines": [
+    #                     {"quantity": it.quantity, "rate": it.rate, "item_id": it.item_id}
+    #                     for it in invoice_locked.items
+    #                 ],
+    #                 amount_source_key: float(total_amount),  # DOCUMENT_TOTAL / RETURN_DOCUMENT_TOTAL
+    #                 "update_stock": bool(invoice_locked.update_stock),
+    #             }
+    #
+    #             # 🟢 CRITICAL FIX: Add RETURN_STOCK_VALUE for debit notes
+    #             if is_debit_note:
+    #                 # Calculate the stock value being returned
+    #                 return_stock_value = sum(
+    #                     abs(Decimal(str(it.quantity))) * Decimal(str(it.rate))
+    #                     for it in invoice_locked.items
+    #                 )
+    #                 payload["RETURN_STOCK_VALUE"] = float(return_stock_value)
+    #                 logging.info("PINV submit: Added RETURN_STOCK_VALUE=%.2f for debit note", float(return_stock_value))
+    #
+    #             # Add matched GRNI only when using the against-receipt template
+    #             if template_code == "PURCHASE_INVOICE_AGAINST_RECEIPT":
+    #                 payload["INVOICE_MATCHED_GRNI_VALUE"] = float(matched_grni_value)
+    #                 payload["receipt_id"] = invoice_locked.receipt_id
+    #                 payload["has_receipt_items"] = has_receipt_items
+    #
+    #             ctx = PostingContext(
+    #                 company_id=invoice_locked.company_id,
+    #                 branch_id=invoice_locked.branch_id,
+    #                 source_doctype_id=doc_type_id,
+    #                 source_doc_id=invoice_locked.id,
+    #                 posting_date=posting_dt,
+    #                 created_by_id=context.user_id,
+    #                 is_auto_generated=True,
+    #                 entry_type=None,
+    #                 remarks=f"{'Purchase Debit Note' if is_debit_note else 'Purchase Invoice'} {invoice_locked.code}",
+    #                 template_code=template_code,
+    #                 payload=payload,
+    #                 runtime_accounts={},
+    #                 party_id=invoice_locked.supplier_id,
+    #                 party_type=PartyTypeEnum.SUPPLIER,
+    #                 dynamic_account_context=dynamic_account_context,
+    #             )
+    #
+    #             logging.info(
+    #                 "PINV submit: GL posting with template=%s, total_amount=%.2f%s",
+    #                 template_code, float(total_amount),
+    #                 f", matched_grni={float(matched_grni_value):.2f}" if template_code == "PURCHASE_INVOICE_AGAINST_RECEIPT" else ""
+    #             )
+    #             PostingService(self.s).post(ctx)
+    #             logging.info("PINV submit: GL posted | invoice_id=%s template=%s", invoice_locked.id, template_code)
+    #
+    #             # 2c) Mark final status
+    #             final_status = DocStatusEnum.RETURNED if is_debit_note else DocStatusEnum.SUBMITTED
+    #             invoice_locked.doc_status = final_status
+    #             self.repo.save(invoice_locked)
+    #             logging.info("PINV submit: status -> %s | invoice_id=%s code=%s",
+    #                          final_status.value, invoice_locked.id, invoice_locked.code)
+    #
+    #         # ---- 3) COMMIT OUTER TX ---------------------------------------------
+    #         logging.info("PINV submit: committing outer transaction for invoice_id=%s", invoice.id)
+    #         self.s.commit()
+    #
+    #         # ---- 4) Post-commit SLE sanity check --------------------------------
+    #         try:
+    #             cnt = self.s.execute(
+    #                 select(func.count()).select_from(StockLedgerEntry).where(
+    #                     StockLedgerEntry.company_id == invoice.company_id,
+    #                     StockLedgerEntry.doc_type_id == doc_type_id,
+    #                     StockLedgerEntry.doc_id == invoice.id,
+    #                     StockLedgerEntry.is_cancelled == False,
+    #                 )
+    #             ).scalar()
+    #             logging.info("DEBUG post-commit: SLE count for PINV id=%s -> %s", invoice.id, cnt)
+    #         except Exception:
+    #             logging.exception("DEBUG post-commit: failed to count SLE for PINV")
+    #
+    #         logging.info("PINV submit: success | invoice_id=%s code=%s status=%s",
+    #                      invoice.id, invoice.code, final_status.value)
+    #         return invoice
+    #
+    #     except Exception:
+    #         logging.exception("PINV submit: FAILED (rolled back) | invoice_id=%s", invoice_id)
+    #         self.s.rollback()
+    #         raise
 
 
     def _get_default_payable_account(self, company_id: int) -> int:
@@ -957,24 +1339,29 @@ class PurchaseInvoiceService:
         from app.application_accounting.chart_of_accounts.models import Account
 
         # ONLY look for account code '2111'
-        stmt = select(Account.id).where(
-            Account.company_id == company_id,
-            Account.code == '2111',
-            Account.is_active == True
+        stmt = (
+            select(Account.id)
+            .where(
+                Account.company_id == company_id,
+                Account.code == '2111',
+                # Optional hardening (uncomment if you want):
+                # Account.is_group.is_(False),
+                # Account.account_type == AccountTypeEnum.PAYABLE,
+            )
+            .limit(1)
         )
+
         account_id = self.s.execute(stmt).scalar_one_or_none()
 
         if account_id:
             logging.info(f"Found default payable account 2111: {account_id}")
             return account_id
 
-        # If 2111 not found, raise clear error
         raise V.BizValidationError(
             "Default Accounts Payable account (2111 - Creditors) not found. "
             "Please set up account 2111 in your chart of accounts "
             "or specify a payable account when creating the purchase invoice."
         )
-
 
     def _get_doc_type_id_or_400(self, code: str) -> int:
         dt = self.s.execute(select(DocumentType.id).where(DocumentType.code == code)).scalar_one_or_none()

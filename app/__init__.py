@@ -146,7 +146,8 @@ def create_app() -> Flask:
 
     from app.application_reports.routes import bp as reports_bp
     app.register_blueprint(reports_bp)
-
+    from app.application_accounting.endpoints import  bp as accounting_bp
+    app.register_blueprint(accounting_bp)
     from app.application_media.endpoint import media_bp
     app.register_blueprint(media_bp)  # This will register at /api/media
 

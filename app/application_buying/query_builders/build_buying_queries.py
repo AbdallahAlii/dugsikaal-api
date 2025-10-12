@@ -11,6 +11,7 @@ from app.application_buying.models import (
 )
 from app.application_parties.parties_models import Party
 from app.application_org.models.company import Branch
+from config.database import db
 
 
 def _ymd(col):
@@ -81,11 +82,10 @@ def build_purchase_receipts_query(session: Session, context: AffiliationContext)
             q = q.where(false())
 
     return q
-
-
 def build_purchase_invoices_query(session: Session, context: AffiliationContext):
     """
     Company-scoped list of purchase invoices with ERP-style presentation
+    - Clean, simple fields like receipt list
     """
     co_id = getattr(context, "company_id", None)
     if co_id is None:
@@ -103,8 +103,8 @@ def build_purchase_invoices_query(session: Session, context: AffiliationContext)
             PI.doc_status.label("status"),
             _ymd(PI.posting_date).label("posting_date"),
             PI.total_amount.label("total_amount"),
-            PI.amount_paid.label("amount_paid"),
-            PI.balance_due.label("balance_due"),
+            PI.paid_amount.label("amount_paid"),
+            PI.outstanding_amount.label("balance_due"),
             B.name.label("branch_location"),
             PI.company_id.label("company_id"),
             PI.branch_id.label("branch_id"),
@@ -125,8 +125,6 @@ def build_purchase_invoices_query(session: Session, context: AffiliationContext)
             q = q.where(false())
 
     return q
-
-
 def build_purchase_quotations_query(session: Session, context: AffiliationContext):
     """
     Company-scoped list of purchase quotations with ERP-style presentation

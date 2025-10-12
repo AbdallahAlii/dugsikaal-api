@@ -59,8 +59,8 @@ BUYING_LIST_CONFIGS = {
             "posting_date": PurchaseInvoice.posting_date,
             "document_number": PurchaseInvoice.code,
             "total_amount": PurchaseInvoice.total_amount,
-            # "amount_paid": PurchaseInvoice.amount_paid,
-            # "balance_due": PurchaseInvoice.balance_due,
+            "paid_amount": PurchaseInvoice.paid_amount,  # FIXED: field name
+            "outstanding_amount": PurchaseInvoice.outstanding_amount,  # FIXED: field name
             "id": PurchaseInvoice.id,
         },
         filter_fields={
@@ -70,6 +70,7 @@ BUYING_LIST_CONFIGS = {
             "status": PurchaseInvoice.doc_status,
             "posting_date": PurchaseInvoice.posting_date,
             "update_stock": PurchaseInvoice.update_stock,
+            "is_return": PurchaseInvoice.is_return,  # ADDED: filter by return type
         },
         cache_enabled=False,
     ),

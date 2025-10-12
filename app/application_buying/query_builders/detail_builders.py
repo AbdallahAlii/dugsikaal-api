@@ -5,9 +5,10 @@ from typing import Dict, Any, Optional, Iterable, List, Tuple
 from datetime import datetime, timezone, timedelta
 
 from sqlalchemy import select, func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 from werkzeug.exceptions import NotFound, Forbidden
-
+from app.application_accounting.chart_of_accounts.models import Account
+from app.application_accounting.chart_of_accounts.account_policies import ModeOfPayment
 from app.security.rbac_effective import AffiliationContext
 from app.security.rbac_guards import ensure_scope_by_ids
 
@@ -165,25 +166,75 @@ def load_purchase_receipt(s: Session, ctx: AffiliationContext, receipt_id: int) 
             "total_amount": float(hdr["total_amount"]) if hdr["total_amount"] is not None else 0.0
         }
     }
-    return data
 
+
+    return data
 def load_purchase_invoice(s: Session, ctx: AffiliationContext, invoice_id: int) -> Dict[str, Any]:
     PI, PII = PurchaseInvoice, PurchaseInvoiceItem
+
+    # date-only formatter (YYYY-MM-DD) in APP_TZ
+    def _date_only(dt: Optional[datetime]) -> Optional[str]:
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=APP_TZ)
+        else:
+            dt = dt.astimezone(APP_TZ)
+        return dt.date().isoformat()
+
+    # enum value extractor (returns "Submitted" instead of "DocStatusEnum.SUBMITTED")
+    def _enum_value(x) -> str:
+        return getattr(x, "value", x)
+
+    # Aliases
+    INV_WH = aliased(Warehouse)
+    PR = aliased(PurchaseReceipt)
+    RWH = aliased(Warehouse)
+    RPTY = aliased(Party)
+    AP = aliased(Account)
+    CB = aliased(Account)
+    MOP = aliased(ModeOfPayment)
 
     # ---------- header ----------
     header_stmt = (
         select(
-            PI.id, PI.code, PI.doc_status, PI.update_stock, PI.posting_date, PI.due_date,
+            # core
+            PI.id, PI.code, PI.doc_status, PI.update_stock,
+            PI.posting_date, PI.dated, PI.due_date,
             PI.company_id, PI.branch_id, PI.supplier_id, PI.warehouse_id,
-            PI.total_amount, PI.amount_paid, PI.balance_due, PI.remarks,
+            PI.total_amount, PI.paid_amount, PI.outstanding_amount, PI.remarks,
+            PI.is_return, PI.is_debit_note,
+            PI.receipt_id,
+            PI.payable_account_id,
+            PI.mode_of_payment_id, PI.cash_bank_account_id,
+
+            # names
             Party.name.label("supplier_name"),
             Branch.name.label("branch_name"),
-            Warehouse.name.label("warehouse_name"),
+            INV_WH.name.label("invoice_warehouse_name"),
+
+            # receipt context
+            PR.code.label("receipt_code"),
+            RWH.id.label("receipt_warehouse_id"),
+            RWH.name.label("receipt_warehouse_name"),
+            RPTY.id.label("receipt_supplier_id"),
+            RPTY.name.label("receipt_supplier_name"),
+
+            # accounting names (ids are already on PI)
+            AP.name.label("payable_account_name"),
+            CB.name.label("cash_bank_account_name"),
+            MOP.name.label("mode_of_payment_name"),
         )
         .select_from(PI)
         .join(Party, Party.id == PI.supplier_id)
         .join(Branch, Branch.id == PI.branch_id)
-        .outerjoin(Warehouse, Warehouse.id == PI.warehouse_id)
+        .outerjoin(INV_WH, INV_WH.id == PI.warehouse_id)
+        .outerjoin(PR, PR.id == PI.receipt_id)
+        .outerjoin(RWH, RWH.id == PR.warehouse_id)
+        .outerjoin(RPTY, RPTY.id == PR.supplier_id)
+        .outerjoin(AP, AP.id == PI.payable_account_id)
+        .outerjoin(CB, CB.id == PI.cash_bank_account_id)
+        .outerjoin(MOP, MOP.id == PI.mode_of_payment_id)
         .where(PI.id == invoice_id)
     )
     hdr = _first_or_404(s, header_stmt, "Purchase Invoice")
@@ -192,9 +243,12 @@ def load_purchase_invoice(s: Session, ctx: AffiliationContext, invoice_id: int) 
     # ---------- items ----------
     items_stmt = (
         select(
-            PII.id, PII.item_id, Item.name.label("item_name"),
+            PII.id, PII.item_id,
+            Item.name.label("item_name"),
             PII.uom_id, UnitOfMeasure.name.label("uom_name"),
-            PII.quantity, PII.rate, PII.amount, PII.receipt_item_id, PII.remarks
+            PII.quantity, PII.rate, PII.amount,
+            PII.receipt_item_id, PII.returned_qty, PII.remarks,
+            PII.return_against_item_id
         )
         .select_from(PII)
         .join(Item, Item.id == PII.item_id)
@@ -205,31 +259,80 @@ def load_purchase_invoice(s: Session, ctx: AffiliationContext, invoice_id: int) 
     rows = s.execute(items_stmt).mappings().all()
     items = [dict(r) for r in rows]
 
-    data = {
+    # absolute total qty (works for returns too)
+    total_qty_abs = float(sum(abs(float(r.get("quantity") or 0)) for r in rows))
+
+    data: Dict[str, Any] = {
+        # ===== Basic Info =====
         "basic_details": {
             "id": hdr["id"],
-            "code": hdr["code"],
-            "doc_status": str(hdr["doc_status"]),
-            "update_stock": bool(hdr["update_stock"]),
-            "posting_date": _iso8601(hdr["posting_date"]),
-            "due_date": _iso8601(hdr["due_date"]),
+            "doc_no": hdr["code"],
+            "doc_status": _enum_value(hdr["doc_status"]),
+            "is_return": bool(hdr["is_return"]),
+            "is_debit_note": bool(hdr["is_debit_note"]),
+            "posting_date": _date_only(hdr["posting_date"]),
+            "dated": _date_only(hdr["dated"]),
+            "due_date": _date_only(hdr["due_date"]),
+        },
+
+        # ===== Party & Branch =====
+        "party_and_branch": {
             "company_id": hdr["company_id"],
             "branch_id": hdr["branch_id"],
             "branch_name": hdr["branch_name"],
             "supplier_id": hdr["supplier_id"],
             "supplier_name": hdr["supplier_name"],
-            "warehouse_id": hdr["warehouse_id"],
-            "warehouse_name": hdr["warehouse_name"],
+            "receipt_supplier_id": hdr.get("receipt_supplier_id"),
+            "receipt_supplier_name": hdr.get("receipt_supplier_name"),
+        },
+
+        # ===== Stock Info =====
+        "stock_info": {
+            "update_stock": bool(hdr["update_stock"]),
+            "invoice_warehouse_id": hdr["warehouse_id"],
+            "invoice_warehouse_name": hdr.get("invoice_warehouse_name"),
+            "receipt_id": hdr["receipt_id"],
+            "receipt_code": hdr.get("receipt_code"),
+            "receipt_warehouse_id": hdr.get("receipt_warehouse_id"),
+            "receipt_warehouse_name": hdr.get("receipt_warehouse_name"),
+        },
+
+        # ===== Payments (ids + names only) =====
+        "payments": {
+            "paid_amount": float(hdr["paid_amount"]) if hdr["paid_amount"] is not None else 0.0,
+            "mode_of_payment": {
+                "id": hdr.get("mode_of_payment_id"),
+                "name": hdr.get("mode_of_payment_name"),
+            },
+            "cash_bank_account": {
+                "id": hdr.get("cash_bank_account_id"),
+                "name": hdr.get("cash_bank_account_name"),
+            },
+            "payable_account": {
+                "id": hdr.get("payable_account_id"),
+                "name": hdr.get("payable_account_name"),
+            },
+        },
+
+        # ===== Financial Summary (DB field names) =====
+        "financial_summary": {
+            "total_qty": total_qty_abs,
+            "total_amount": float(hdr["total_amount"]) if hdr["total_amount"] is not None else 0.0,
+            "paid_amount": float(hdr["paid_amount"]) if hdr["paid_amount"] is not None else 0.0,
+            "outstanding_amount": float(hdr["outstanding_amount"]) if hdr["outstanding_amount"] is not None else 0.0,
+        },
+
+        # ===== Items Grid =====
+        "items": items,
+
+        # ===== Meta =====
+        "meta": {
             "remarks": hdr["remarks"],
         },
-        "items": items,
-        "financial_summary": {
-            "total_amount": float(hdr["total_amount"]) if hdr["total_amount"] is not None else 0.0,
-            "amount_paid": float(hdr["amount_paid"]) if hdr["amount_paid"] is not None else 0.0,
-            "balance_due": float(hdr["balance_due"]) if hdr["balance_due"] is not None else 0.0,
-        }
     }
+
     return data
+
 
 def load_purchase_quotation(s: Session, ctx: AffiliationContext, quotation_id: int) -> Dict[str, Any]:
     PQ, PQI = PurchaseQuotation, PurchaseQuotationItem
