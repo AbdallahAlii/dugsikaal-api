@@ -86,55 +86,7 @@ def create_purchase_receipt():
         logger.exception("Unexpected error: %s", str(e))
         return api_error("An unexpected error occurred.", status_code=500)
 
-@bp.post("/receipt/return/<int:original_receipt_id>/create")
-@require_permission("Purchase Receipt", "CREATE") # Or a specific return permission
-def create_purchase_return(original_receipt_id: int):
-    """Creates a Purchase Return against a submitted Purchase Receipt."""
-    try:
-        ctx = _get_context()
-        payload = PurchaseReturnCreate.model_validate(request.get_json(silent=True) or {})
-        svc = PurchaseReceiptService()
-        pr_return = svc.create_purchase_return(
-            original_receipt_id=original_receipt_id, payload=payload, context=ctx
-        )
-        return api_success(
-            data={"id": pr_return.id, "code": pr_return.code},
-            message="Purchase Return created in Draft status.",
-            status_code=201,
-        )
-    except ValidationError as e:
-        return api_error(str(e), status_code=422)
-    except BizValidationError as e:
-        return api_error(str(e), status_code=400)
-    except Exception:
-        # Log the full exception here
-        return api_error("An unexpected error occurred.", status_code=500)
-@bp.patch("/receipt/<int:receipt_id>")
-@require_permission("Purchase Receipt", "EDIT")
-def update_purchase_receipt(receipt_id: int):
-    try:
-        ctx = _get_context()
-        payload = PurchaseReceiptUpdate.model_validate(request.get_json(silent=True) or {})
-        svc = PurchaseReceiptService()
-        pr = svc.update_purchase_receipt(receipt_id=receipt_id, payload=payload, context=ctx)
-        return api_success(
-            data={"id": pr.id, "code": pr.code},
-            message="Purchase Receipt updated successfully.",
-            status_code=200,
-        )
 
-    except ValidationError as e:
-        return api_error(str(e), status_code=422)
-    except Forbidden as e:
-        return api_error(e.description, status_code=e.code)
-    except (BizValidationError, Conflict) as e:
-        return api_error(str(e), status_code=400)
-    except NotFound as e:
-        return api_error(str(e), status_code=404)
-    except PermissionError:
-        return api_error("Unauthorized", status_code=401)
-    except Exception:
-        return api_error("An unexpected error occurred.", status_code=500)
 
 @bp.post("/receipt/<int:receipt_id>/submit")
 @require_permission("Purchase Receipt", "SUBMIT")

@@ -6,7 +6,7 @@ from .query_builders.detail_builders import (
     resolve_brand_by_name, load_brand,
     resolve_uom_by_name, load_uom,
     resolve_item_by_sku, resolve_item_by_name, load_item,
-    load_uom_conversion, resolve_id_strict,
+    load_uom_conversion, resolve_id_strict, load_item_detail,
 )
 from ..application_doctypes.core_lists.config import DetailConfig, register_detail_configs
 
@@ -27,16 +27,16 @@ INVENTORY_DETAIL_CONFIGS = {
     ),
     "items": DetailConfig(
         permission_tag="Item",
-        loader=load_item,
+        loader=load_item_detail,  # ⬅️ switched
         resolver_map={
-            "id":   resolve_id_strict,
+            "id": resolve_id_strict,
             "code": resolve_item_by_sku,
-            "sku":  resolve_item_by_sku,   # alias
-            "name": resolve_item_by_name
+            "sku": resolve_item_by_sku,
+            "name": resolve_item_by_name,  # ⬅️ click by name like ERPNext
         },
-        cache_enabled=False,  # turn ON only if you add bumps on all dependent writes
+        cache_enabled=False,
         cache_ttl=900,
-        default_by="name",
+        default_by="name",  # ⬅️ default resolver key
     ),
     "uom_conversions": DetailConfig(
         permission_tag="UOMConversion",

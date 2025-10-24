@@ -1,3 +1,4 @@
+-- app/application_reports/sql/stock_ledger_query.sql
 -- Frappe-style stock ledger (by names), voucher-aware, Postgres-safe
 
 SELECT

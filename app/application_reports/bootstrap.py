@@ -1,19 +1,27 @@
+# app/application_reports/bootstrap.py
 from __future__ import annotations
 import logging
 import os
 from importlib import import_module
 from typing import Dict
 
+from app.application_reports.core.safe_query_report import SafeQueryReport
 from app.security.rbac_effective import AffiliationContext
 from app.application_accounting.chart_of_accounts.models import Account, AccountBalance, AccountTypeEnum
 from app.application_reports.core.engine import ReportMeta, ReportType, ColumnDefinition, FilterDefinition, \
     ReportEngine, QueryReport, ScriptReport
 from app.application_reports.core.columns import BALANCE_SHEET_COLUMNS, company_filter, GL_COLUMNS, \
-    STOCK_LEDGER_COLUMNS, TRIAL_BALANCE_COLUMNS
+    STOCK_LEDGER_COLUMNS, TRIAL_BALANCE_COLUMNS, ITEM_STOCK_LEDGER_COLUMNS_FULL, ITEM_STOCK_LEDGER_COLUMNS_COMPACT, \
+    STOCK_BALANCE_SINGLE_ITEM_COLUMNS_FULL, STOCK_BALANCE_SINGLE_ITEM_COLUMNS_COMPACT
 
 log = logging.getLogger(__name__)
 
-
+def _bool(v):
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.lower() in ("1","true","yes","y","on")
+    return False
 def bootstrap_reports(engine: ReportEngine) -> None:
     """
     Bootstrap all standard reports with Frappe-style metadata
@@ -56,6 +64,50 @@ def bootstrap_reports(engine: ReportEngine) -> None:
         columns=STOCK_LEDGER_COLUMNS
     )
     engine.register_report(sl_report)
+
+    # --- Stock Balance (single item) -----------------------------------------
+    sb_meta = ReportMeta(
+        name="Stock Balance",
+        description="Opening, In, Out, Balance for a single Item + Warehouse",
+        report_type=ReportType.QUERY,
+        module="Stock",
+        category="Inventory Reports",
+    )
+    sb_report = SafeQueryReport(
+        meta=sb_meta,
+        sql_file=os.path.join(sql_dir, "stock_balance_single_item.sql"),
+        columns=STOCK_BALANCE_SINGLE_ITEM_COLUMNS_FULL,  # default if no selector
+        required_all=["company"],
+        required_any_groups=[["item_id", "item"]],
+        columns_selector=lambda f: (
+            STOCK_BALANCE_SINGLE_ITEM_COLUMNS_COMPACT if _bool(f.get("compact"))
+            else STOCK_BALANCE_SINGLE_ITEM_COLUMNS_FULL
+        ),
+    )
+    engine.register_report(sb_report)
+
+    # --- Item Stock Ledger (history) -----------------------------------------
+    isl_meta = ReportMeta(
+        name="Item Stock Ledger",
+        description="Movement history for a single Item + Warehouse",
+        report_type=ReportType.QUERY,
+        module="Stock",
+        category="Inventory Reports",
+    )
+    isl_report = SafeQueryReport(
+        meta=isl_meta,
+        sql_file=os.path.join(sql_dir, "item_stock_ledger.sql"),
+        columns=ITEM_STOCK_LEDGER_COLUMNS_FULL,
+        required_all=["company"],
+        required_any_groups=[["item_id", "item"]],
+        columns_selector=lambda f: (
+            ITEM_STOCK_LEDGER_COLUMNS_COMPACT if _bool(f.get("compact"))
+            else ITEM_STOCK_LEDGER_COLUMNS_FULL
+        ),
+    )
+    engine.register_report(isl_report)
+
+
 
     # Balance Sheet Report
     bs_meta = ReportMeta(

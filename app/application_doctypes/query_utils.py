@@ -1,7 +1,7 @@
 # app/common/query_utils.py
 from __future__ import annotations
-from typing import Any, Dict, Sequence
-from sqlalchemy import and_, or_, asc, desc
+from typing import Any, Dict, Sequence, Optional, List
+from sqlalchemy import and_, or_, asc, desc, ClauseElement
 from sqlalchemy.sql import Select
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 
@@ -17,15 +17,57 @@ def apply_search(query: Select, search_columns: Sequence[Any], search_value: str
         return query
     return query.where(or_(*[c.ilike(like_expr) for c in cols if hasattr(c, "ilike")]))
 
-def apply_sort(query: Select, sort_key: str | None, sort_order: str | None, sort_fields: Dict[str, Any]) -> Select:
-    col = sort_fields.get((sort_key or "").strip())
-    if not col:
-        if sort_fields:
-            col = next(iter(sort_fields.values()))
-        else:
-            return query
-    direction = desc if (sort_order or "").strip().lower() == "desc" else asc
-    return query.order_by(direction(col))
+# def apply_sort(query: Select, sort_key: str | None, sort_order: str | None, sort_fields: Dict[str, Any]) -> Select:
+#     col = sort_fields.get((sort_key or "").strip())
+#     if not col:
+#         if sort_fields:
+#             col = next(iter(sort_fields.values()))
+#         else:
+#             return query
+#     direction = desc if (sort_order or "").strip().lower() == "desc" else asc
+#     return query.order_by(direction(col))
+def apply_sort(q: Select, sort_key: Optional[str], sort_order: Optional[str],
+               sort_fields: Dict[str, ClauseElement],
+               default_sort: Optional[List[ClauseElement]] = None) -> Select:
+    """
+    Apply sorting to a SQLAlchemy Select.
+
+    Behavior:
+    1) If user provided sort_key and it exists in sort_fields -> use that (respect sort_order).
+    2) Else if default_sort is provided and non-empty -> apply default_sort (in given order).
+    3) Else attempt a date-priority auto-detect across known names in sort_fields.
+    4) Else fallback to first available sort_field desc.
+    """
+    # 1) explicit user sort
+    if sort_key and sort_key in (sort_fields or {}):
+        col = sort_fields[sort_key]
+        direction = desc if (sort_order or "").strip().lower() == "desc" else asc
+        return q.order_by(direction(col))
+
+    # 2) explicit default_sort from config (highest priority after user choice)
+    if default_sort:
+        # default_sort should be a list of ClauseElements or (col,) etc.
+        # We'll apply them in the given order.
+        for s in default_sort:
+            q = q.order_by(s)
+        return q
+
+    # 3) date-priority heuristic (back-compat)
+    date_priority = ['posting_date', 'created_at', 'modified', 'updated_at', 'date']
+    for date_field in date_priority:
+        if date_field in (sort_fields or {}):
+            date_col = sort_fields[date_field]
+            q = q.order_by(desc(date_col))
+            if 'id' in (sort_fields or {}):
+                q = q.order_by(desc(sort_fields['id']))
+            return q
+
+    # 4) fallback to first available field (desc)
+    if sort_fields:
+        first_col = next(iter(sort_fields.values()))
+        return q.order_by(desc(first_col))
+
+    return q
 
 def apply_filters_sa(query: Select, filters: Dict[str, Any] | None, allowed_columns: Dict[str, Any] | None) -> Select:
     if not filters or not allowed_columns:

@@ -8,10 +8,10 @@ from sqlalchemy.orm import Session
 from werkzeug.exceptions import NotFound, Forbidden, BadRequest
 
 from app.application_nventory.inventory_models import (
-    Brand, UnitOfMeasure, Item, UOMConversion
+    Brand, UnitOfMeasure, Item, UOMConversion, ItemGroup
 )
 from app.security.rbac_effective import AffiliationContext
-
+from app.application_accounting.chart_of_accounts.assets_model import AssetCategory
 # ---- scope helpers ----
 def _ensure_company(ctx: AffiliationContext, company_id: int):
     if getattr(ctx, "is_system_admin", False):
@@ -126,5 +126,104 @@ def load_uom_conversion(s: Session, ctx: AffiliationContext, conv_id: int) -> Di
     _ensure_company(ctx, data["company_id"])
     return data
 
+def load_item_detail(s: Session, ctx: AffiliationContext, item_id: int) -> dict:
+    """
+    ERP-style detail for Item:
+    - Basic: id, name, sku, item_type, status, description
+    - Group: item_group (id, code, name, is_group)
+    - Brand: id, name
+    - UOM: base uom (id, name, symbol)
+    - Asset: is_fixed_asset, asset_category (id, name)
+    - Conversions: list of {id, uom_id, uom_name, uom_symbol, factor, is_active}
+    """
+    stmt = (
+        select(
+            Item.id, Item.company_id,
+            Item.id, Item.company_id,
+            Item.name, Item.sku, Item.item_type, Item.status, Item.description,
+            Item.is_fixed_asset, Item.asset_category_id,
+            Item.item_group_id, Item.brand_id, Item.base_uom_id,
+            ItemGroup.code.label("item_group_code"),
+            ItemGroup.name.label("item_group_name"),
+            ItemGroup.is_group.label("item_group_is_group"),
+            Brand.name.label("brand_name"),
+            UnitOfMeasure.name.label("base_uom_name"),
+            UnitOfMeasure.symbol.label("base_uom_symbol"),
+            AssetCategory.name.label("asset_category_name"),
+        )
+        .select_from(Item)
+        .join(ItemGroup, ItemGroup.id == Item.item_group_id)
+        .outerjoin(Brand, Brand.id == Item.brand_id)
+        .outerjoin(UnitOfMeasure, UnitOfMeasure.id == Item.base_uom_id)
+        .outerjoin(AssetCategory, AssetCategory.id == Item.asset_category_id)
+        .where(Item.id == item_id)
+    )
 
+    row = s.execute(stmt).mappings().first()
+    if not row:
+        raise NotFound("Item not found.")
+    _ensure_company(ctx, row["company_id"])
+
+    # UOM conversions (active first, then by name)
+    conv_stmt = (
+        select(
+            UOMConversion.id,
+            UOMConversion.uom_id,
+            UnitOfMeasure.name.label("uom_name"),
+            UnitOfMeasure.symbol.label("uom_symbol"),
+            UOMConversion.conversion_factor.label("factor"),
+            UOMConversion.is_active,
+        )
+        .select_from(UOMConversion)
+        .join(UnitOfMeasure, UnitOfMeasure.id == UOMConversion.uom_id)
+        .where(UOMConversion.item_id == item_id)
+        .order_by(UOMConversion.is_active.desc(), UnitOfMeasure.name.asc())
+    )
+    conversions = [dict(r) for r in s.execute(conv_stmt).mappings().all()]
+
+    # Compose ERP-style grouped payload (only include keys that exist)
+    def keep(v):  # drop Nones
+        return v is not None
+
+    data = {
+        "id": row["id"],
+        "company_id": row["company_id"],
+        "display": {
+            "name": row["name"],
+            "sku": row["sku"],
+            "item_type": row["item_type"],
+            "status": row["status"],
+            "description": row["description"],
+        },
+        "group": {
+            "id": row["item_group_id"],
+            "code": row["item_group_code"],
+            "name": row["item_group_name"],
+            "is_group": row["item_group_is_group"],
+        },
+        "brand": {
+            "id": row["brand_id"],
+            "name": row["brand_name"],
+        } if keep(row["brand_id"]) or keep(row["brand_name"]) else None,
+        "uom": {
+            "base_uom_id": row["base_uom_id"],
+            "base_uom_name": row["base_uom_name"],
+            "base_uom_symbol": row["base_uom_symbol"],
+            "conversions": conversions,   # [{id,uom_id,uom_name,uom_symbol,factor,is_active}, ...]
+        },
+        "asset": {
+            "is_fixed_asset": bool(row["is_fixed_asset"]),
+            "asset_category_id": row["asset_category_id"],
+            "asset_category_name": row["asset_category_name"],
+        } if bool(row["is_fixed_asset"]) or keep(row["asset_category_id"]) else {
+            "is_fixed_asset": False
+        },
+    }
+
+    # prune empty sections
+    for k in ("brand",):
+        if data.get(k) is None:
+            data.pop(k, None)
+
+    return data
 

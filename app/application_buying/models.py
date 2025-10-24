@@ -395,7 +395,8 @@ class PurchaseInvoice(BaseModel):
         foreign_keys="PurchaseInvoice.return_against_id"
     )
     assets: Mapped[List["Asset"]] = relationship(
-        "Asset", back_populates="purchase_invoice"
+        "Asset",
+        back_populates="purchase_invoice_rel"
     )
 
     # Table Constraints & Indices

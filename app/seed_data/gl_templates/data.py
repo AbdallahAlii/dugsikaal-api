@@ -39,6 +39,10 @@ AMOUNT_SOURCES = {
     "RETURN_TAX_AMOUNT": "Tax to reverse on purchase return",
     # Depreciation
     "DEPRECIATION_AMOUNT": "Depreciation amount for the period",
+    # Stock Reconciliation - Frappe Style
+    "STOCK_VALUE_DIFFERENCE": "Value difference for stock reconciliation (positive for gains, negative for losses)",
+    # Stock Reconciliation
+    "STOCK_RECON_DIFFERENCE": "Absolute value difference for stock reconciliation",
 }
 
 # Use constants (no accidental 'D'/'C' strings)
@@ -180,7 +184,17 @@ TEMPLATE_DEFS: List[Dict[str, Any]] = [
         is_active=True,
         is_primary=False,
     ),
-
+    # --------------------------------------------------------------------------
+    # --- Inventory & Stock ---
+    # --------------------------------------------------------------------------
+    dict(
+        doctype_code="STOCK_RECONCILIATION",
+        code="STOCK_RECON_GENERAL",
+        label="Stock Reconciliation",
+        description="Adjusts inventory to match physical count. DR/CR Stock; CR/DR Difference Account.",
+        is_active=True,
+        is_primary=True,
+    ),
     # --------------------------------------------------------------------------
     # --- Payments & Bank/Cash ---
     # --------------------------------------------------------------------------
@@ -334,7 +348,17 @@ TEMPLATE_ITEMS: List[Dict[str, Any]] = [
     # A/P Write-Off
     dict(template_code="AP_WRITE_OFF", sequence=10, effect=DEBIT,  account_code=None, amount_source="WRITE_OFF_AMOUNT", is_required=True, requires_dynamic_account=True, context_key="accounts_payable_account_id"),
     dict(template_code="AP_WRITE_OFF", sequence=20, effect=CREDIT, account_code="4153", amount_source="WRITE_OFF_AMOUNT", is_required=True, requires_dynamic_account=False, context_key=None),
+    # --------------------------------------------------------------------------
+    # --- Stock Reconciliation Items ---
+    # --------------------------------------------------------------------------
 
+    # Stock Reconciliation - Following your existing pattern
+    # We'll handle gain/loss logic in the service layer
+    dict(template_code="STOCK_RECON_GENERAL", sequence=10, effect=DEBIT, account_code="1141",
+         amount_source="STOCK_RECON_DIFFERENCE", is_required=False, requires_dynamic_account=False, context_key=None),
+    dict(template_code="STOCK_RECON_GENERAL", sequence=20, effect=CREDIT, account_code=None,
+         amount_source="STOCK_RECON_DIFFERENCE", is_required=False, requires_dynamic_account=True,
+         context_key="difference_account_id"),
     # --------------------------------------------------------------------------
     # --- Payments & Bank/Cash Items ---
     # --------------------------------------------------------------------------

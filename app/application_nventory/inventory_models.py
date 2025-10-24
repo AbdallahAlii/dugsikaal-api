@@ -31,6 +31,7 @@ class Brand(BaseModel):
     items: Mapped[list["Item"]] = relationship(back_populates="brand")
     status: Mapped[StatusEnum] = mapped_column(db.Enum(StatusEnum), nullable=False, default=StatusEnum.ACTIVE)
 
+    company: Mapped["Company"] = relationship("Company", back_populates="brands")
     __table_args__ = (
         UniqueConstraint("company_id", "name", name="uq_brand_company_name"),
         Index("ix_brands_company_id", "company_id"),
@@ -54,6 +55,7 @@ class UnitOfMeasure(BaseModel):
 
     # relationships
     items: Mapped[List["Item"]] = relationship(back_populates="base_uom")
+    company: Mapped["Company"] = relationship("Company", back_populates="units_of_measure")
 
     uom_conversions: Mapped[List["UOMConversion"]] = relationship(
         back_populates="uom", cascade="all, delete-orphan"
@@ -129,7 +131,7 @@ class ItemGroup(BaseModel):
     default_expense_account: Mapped[Optional["Account"]] = relationship(foreign_keys=[default_expense_account_id])
     default_income_account: Mapped[Optional["Account"]] = relationship(foreign_keys=[default_income_account_id])
     default_inventory_account: Mapped[Optional["Account"]] = relationship(foreign_keys=[default_inventory_account_id])
-
+    company: Mapped["Company"] = relationship("Company", back_populates="item_groups")
     __table_args__ = (
         UniqueConstraint("company_id", "code", name="uq_item_group_company_code"),
         # Index on company_id and accounts for fast retrieval of company-specific defaults
@@ -190,7 +192,7 @@ class Item(BaseModel):
     brand: Mapped[Optional["Brand"]] = relationship(back_populates="items")
     base_uom: Mapped["UnitOfMeasure"] = relationship("UnitOfMeasure", foreign_keys=[base_uom_id])
     asset_category: Mapped[Optional["AssetCategory"]] = relationship(back_populates="items")
-
+    company: Mapped["Company"] = relationship("Company", back_populates="items")
 
     ledger_entries: Mapped[list["StockLedgerEntry"]] = relationship(
         back_populates="item", cascade="all, delete-orphan"
@@ -263,8 +265,6 @@ class PriceList(BaseModel):
         comment="Determines if this price list is used for Sales, Purchases, or both."
     )
 
-    currency_code: Mapped[str] = mapped_column(db.String(3), nullable=False, default="USD",
-                                               comment="ISO currency code (e.g., USD, EUR).")
 
     is_active: Mapped[bool] = mapped_column(db.Boolean, default=True, index=True,
                                             comment="A disabled price list cannot be used in new transactions.")
@@ -281,7 +281,7 @@ class PriceList(BaseModel):
     )
 
     def __repr__(self) -> str:
-        return f"<PriceList {self.name} ({self.currency_code})>"
+        return f"<PriceList {self.name} ({self.list_type.value})>"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # ITEM PRICE MODEL - Final Clean Version
@@ -291,7 +291,11 @@ class ItemPrice(BaseModel):
     Specific price for an item in a price list, with optional branch override
     """
     __tablename__ = "item_prices"
-
+    code: Mapped[str] = mapped_column(
+        db.String(100), nullable=False, index=True,
+        comment="An optional external or human-readable code for this specific item price rule."
+    )
+    company_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("companies.id"), nullable=False, index=True)
     item_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("items.id", ondelete="CASCADE"), nullable=False, index=True)
     price_list_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("price_lists.id", ondelete="CASCADE"), nullable=False, index=True)
     branch_id: Mapped[Optional[int]] = mapped_column(db.BigInteger, db.ForeignKey("branches.id"), nullable=True, index=True)
@@ -306,10 +310,10 @@ class ItemPrice(BaseModel):
     price_list: Mapped["PriceList"] = relationship(back_populates="item_prices")
     branch: Mapped[Optional["Branch"]] = relationship(back_populates="item_prices")
     uom: Mapped[Optional["UnitOfMeasure"]] = relationship(back_populates="item_prices")
-
+    company: Mapped["Company"] = relationship("Company", back_populates="item_prices")
     __table_args__ = (
         UniqueConstraint("price_list_id", "item_id", "uom_id", "branch_id", name="uq_item_price_branch_unique"),
-
+        Index("ix_item_price_company_code_lookup", "company_id", "code"),
        Index("ix_item_price_lookup", "item_id", "price_list_id", "branch_id"),
         Index("ix_item_price_uom", "item_id", "uom_id", "price_list_id"),
         Index("ix_item_price_validity", "valid_from", "valid_upto"),

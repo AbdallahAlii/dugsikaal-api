@@ -117,6 +117,95 @@ STOCK_LEDGER_COLUMNS = [
 
 
 
+
+# --- Stock Balance (Single Item) ---------------------------------------------
+STOCK_BALANCE_SINGLE_ITEM_COLUMNS_FULL = [
+    data_column("item_name", "Item", 220),
+    data_column("item_group", "Item Group", 160),
+    data_column("warehouse", "Warehouse", 200),
+    data_column("stock_uom", "Stock UOM", 100),
+
+    float_column("opening_qty", "Opening Qty", precision=6),
+    currency_column("opening_value", "Opening Value", precision=6),
+
+    float_column("in_qty", "In Qty", precision=6),
+    currency_column("in_value", "In Value", precision=6),
+
+    float_column("out_qty", "Out Qty", precision=6),
+    currency_column("out_value", "Out Value", precision=6),
+
+    float_column("balance_qty", "Balance Qty", precision=6),
+    currency_column("valuation_rate", "Valuation Rate", precision=6),
+    currency_column("balance_value", "Balance Value", precision=6),
+]
+
+# leaner (same data, less columns)
+STOCK_BALANCE_SINGLE_ITEM_COLUMNS_COMPACT = [
+    data_column("item_name", "Item", 220),
+    data_column("warehouse", "Warehouse", 200),
+    float_column("balance_qty", "Balance Qty", precision=6),
+    currency_column("valuation_rate", "Valuation Rate", precision=6),
+    currency_column("balance_value", "Balance Value", precision=6),
+]
+
+# --- Item Stock Ledger (history for one item+warehouse) ----------------------
+ITEM_STOCK_LEDGER_COLUMNS_FULL = [
+    date_column("posting_date", "Date"),
+    data_column("posting_time", "Time"),
+
+    data_column("item_name", "Item", 220),
+    data_column("item_group", "Item Group", 160),
+    data_column("warehouse", "Warehouse", 200),
+
+    data_column("stock_uom", "Stock UOM", 100),
+    data_column("transaction_uom_name", "Transaction UOM", 130),
+    float_column("transaction_quantity", "Transaction Qty", precision=6),
+
+    float_column("in_qty", "In Qty", precision=6),
+    currency_column("in_value", "In Value", precision=6),
+
+    float_column("out_qty", "Out Qty", precision=6),
+    currency_column("out_value", "Out Value", precision=6),
+
+    float_column("balance_qty", "Balance Qty", precision=6),
+    currency_column("incoming_rate", "Incoming Rate", precision=6),
+    currency_column("valuation_rate", "Valuation Rate", precision=6),
+    currency_column("balance_value", "Balance Value", precision=6),
+
+    data_column("voucher_type", "Voucher Type", 140),
+    data_column("voucher_no", "Voucher No", 160),
+]
+
+# compact (fast list views)
+ITEM_STOCK_LEDGER_COLUMNS_COMPACT = [
+    date_column("posting_date", "Date"),
+    data_column("posting_time", "Time"),
+    data_column("warehouse", "Warehouse", 180),
+    data_column("voucher_type", "Voucher Type", 120),
+    data_column("voucher_no", "Voucher No", 140),
+
+    data_column("stock_uom", "UOM", 80),
+    float_column("in_qty", "In Qty", precision=6),
+    float_column("out_qty", "Out Qty", precision=6),
+    float_column("balance_qty", "Balance Qty", precision=6),
+
+    currency_column("valuation_rate", "Valuation Rate", precision=6),
+    currency_column("balance_value", "Balance Value", precision=6),
+]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 BALANCE_SHEET_COLUMNS = [
     data_column("account", "Account", 250),
     currency_column("balance", "Balance"),

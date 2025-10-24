@@ -51,6 +51,6 @@ CODE_TYPES: List[Dict] = [
     dict(name="Landed Cost Voucher",prefix="LCV",    pattern="{PREFIX}-{YYYY}-{SEQ}",    scope="BRANCH",  reset_policy="YEARLY", padding=5),
     dict(name="Stock Ledger",       prefix="SL",     pattern="{PREFIX}-{SEQ}",           scope="BRANCH",  reset_policy="NEVER",  padding=7),
     dict(name="Stock Entry",        prefix="SE",     pattern="{PREFIX}-{YYYY}-{SEQ}",    scope="BRANCH",  reset_policy="YEARLY", padding=5),
-    dict(name="Stock Reconciliation",prefix="SRE",   pattern="{PREFIX}-{YYYY}-{SEQ}",    scope="BRANCH",  reset_policy="YEARLY", padding=5),
+    dict(name="Stock Reconciliation",prefix="MAT-RECO",   pattern="{PREFIX}-{YYYY}-{SEQ}",    scope="BRANCH",  reset_policy="YEARLY", padding=5),
     dict(name="Stock Transfer",     prefix="ST",     pattern="{PREFIX}-{YYYY}-{SEQ}",    scope="BRANCH",  reset_policy="YEARLY", padding=5),
 ]

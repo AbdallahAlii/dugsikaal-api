@@ -69,18 +69,6 @@ def create_app() -> Flask:
     autoregister_all()
 
 
-    # # ✅ THIS IS THE FIX: Call the registration function after models are loaded.
-    # from app.application_hr import register_module_lists
-    # register_module_lists()
-    # from app.application_nventory import register_module_lists as register_inventory_lists
-    # register_inventory_lists()
-    # from app.application_nventory import register_module_details as register_inventory_detail_configs
-    # register_inventory_detail_configs()
-    # from app.application_buying import register_module_lists as register_buying_lists
-    #
-    # register_buying_lists()
-    # from app.application_buying import register_module_details as register_buying_detail_configs
-    # register_buying_detail_configs()
 
 
     # ---- CORS (allow credentials for session cookie) ----
@@ -150,7 +138,8 @@ def create_app() -> Flask:
     app.register_blueprint(accounting_bp)
     from app.application_media.endpoint import media_bp
     app.register_blueprint(media_bp)  # This will register at /api/media
-
+    from app.application_accounting.chart_of_accounts.endpoints import bp as accounting_bp
+    app.register_blueprint(accounting_bp)
     from app.application_nventory.endpoints import bp as inventory_bp
     app.register_blueprint(inventory_bp, url_prefix="/api/inventory")
 

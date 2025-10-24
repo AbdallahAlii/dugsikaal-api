@@ -101,12 +101,50 @@ class InventoryRepository:
         self.s.flush()
         return conversion
 
-    def get_uom_conversion_by_ids(self, item_id: int, from_uom_id: int, to_uom_id: int) -> Optional[UOMConversion]:
+    def get_item_by_name_excluding_id(self, company_id: int, name: str, exclude_item_id: int) -> Optional[Item]:
         return self.s.scalar(
-            select(UOMConversion).where(
-                UOMConversion.item_id == item_id,
-                UOMConversion.from_uom_id == from_uom_id,
-                UOMConversion.to_uom_id == to_uom_id
+            select(Item).where(
+                Item.company_id == company_id,
+                func.lower(Item.name) == func.lower(name),
+                Item.id != exclude_item_id
             )
         )
 
+    # ---------------------- UOM conversion helpers ----------------------------
+
+
+    def flush_model(self, model):
+        self.s.flush([model])
+
+    # --- UOM conversion helpers ---
+    def get_uom_conversion(self, item_id: int, uom_id: int) -> Optional[UOMConversion]:
+        return self.s.scalar(
+            select(UOMConversion).where(
+                UOMConversion.item_id == item_id,
+                UOMConversion.uom_id == uom_id
+            )
+        )
+
+    def upsert_uom_conversion(self, *, item_id: int, uom_id: int, factor: float,
+                              is_active: bool = True) -> UOMConversion:
+        conv = self.get_uom_conversion(item_id, uom_id)
+        if conv:
+            conv.conversion_factor = factor
+            conv.is_active = is_active
+            self.s.flush([conv])
+            return conv
+        conv = UOMConversion(
+            item_id=item_id,
+            uom_id=uom_id,
+            conversion_factor=factor,
+            is_active=is_active,
+        )
+        self.s.add(conv)
+        self.s.flush([conv])
+        return conv
+
+    def delete_uom_conversion(self, item_id: int, uom_id: int) -> int:
+        return self.s.query(UOMConversion).filter(
+            UOMConversion.item_id == item_id,
+            UOMConversion.uom_id == uom_id
+        ).delete(synchronize_session='fetch')

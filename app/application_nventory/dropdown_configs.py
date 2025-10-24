@@ -5,8 +5,9 @@ from app.application_doctypes.core_lists.config import CacheScope
 from app.application_nventory.inventory_models import Item, UnitOfMeasure, Brand, UOMConversion
 from app.application_nventory.query_builders.dropdown_builders import (
     build_items_dropdown, build_uoms_dropdown, build_brands_dropdown,
-     build_item_uoms_dropdown,
-    build_active_items_dropdown, build_active_uoms_dropdown, build_active_brands_dropdown
+    build_item_uoms_dropdown,
+    build_active_items_dropdown, build_active_uoms_dropdown, build_active_brands_dropdown,
+    build_item_group_parents_dropdown, build_item_group_leaves_dropdown, build_item_groups_dropdown
 )
 
 # inventory module registrations
@@ -74,6 +75,31 @@ INVENTORY_DROPDOWN_CONFIGS = {
         default_limit=50,
         max_limit=200,
     ),
+
+ "item_groups": DropdownConfig(
+        permission_tag="ItemGroup",
+        query_builder=build_item_groups_dropdown,
+        cache_enabled=True,
+        cache_ttl=600,
+        cache_scope="COMPANY",
+    ),
+    # Folders only (for Parent picker)
+    "item_group_parents": DropdownConfig(
+        permission_tag="ItemGroup",
+        query_builder=build_item_group_parents_dropdown,
+        cache_enabled=True,
+        cache_ttl=600,
+        cache_scope="COMPANY",
+    ),
+    # Leaves only (when you want a terminal category)
+    "item_group_leaves": DropdownConfig(
+        permission_tag="ItemGroup",
+        query_builder=build_item_group_leaves_dropdown,
+        cache_enabled=True,
+        cache_ttl=600,
+        cache_scope="COMPANY",
+    ),
+
 }
 
 

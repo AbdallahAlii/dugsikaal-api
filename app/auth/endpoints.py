@@ -9,7 +9,9 @@ from app.auth.service.me_service import profile_service
 from app.auth.service.user_service import UserService
 from app.common.api_response import api_error, api_success
 from app.common.decorators import rate_limit
+from app.common.timezone.service import get_company_timezone
 from app.security.rbac_effective import AffiliationContext
+from config.database import db
 from core.auth import public
 from app.auth.service.auth_service import AuthService
 from app.auth.schemas import LoginRequest, ChangeMyPasswordRequest, ResetPasswordRequest, UpdateAccountStatusRequest
@@ -66,19 +68,30 @@ def logout():
 
     return resp
 
+
 # @bp.get("/me")
 # def me():
-#     if not g.get("current_user"):
-#         return api_error("Not authenticated or session expired.", status_code=401)
+#     # This line is correct and will now work properly
+#     # because the other checks are in place.
+#     user_profile = get_current_user()
 #
-#     return api_success(data={"user": g.current_user})
+#     return api_success(data={"user": user_profile})
 @bp.get("/me")
 def me():
-    # This line is correct and will now work properly
-    # because the other checks are in place.
+    # ensures session & sets g.current_user / g.auth
     user_profile = get_current_user()
+    ctx: AffiliationContext | None = getattr(g, "auth", None)
 
-    return api_success(data={"user": user_profile})
+    tz = "Africa/Mogadishu"
+    try:
+        if ctx and getattr(ctx, "company_id", None):
+            tz = str(get_company_timezone(db.session, int(ctx.company_id)))
+    except Exception:
+        # keep default on any failure
+        tz = "Africa/Mogadishu"
+
+    # ⬇️ include company_timezone alongside user
+    return api_success(data={"user": user_profile, "company_timezone": tz})
 
 
 
@@ -105,41 +118,7 @@ def me_profile():
         return api_error("Profile not found.", status_code=404)
 
     return api_success(data=data)
-# @bp.get("/me/profile")
-# def me_profile():
-#     # Ensure session + populate g.current_user and g.auth (your standard pattern)
-#     user_profile = get_current_user()   # returns a dict and also sets g.current_user
-#
-#     ctx: AffiliationContext = getattr(g, "auth", None)
-#     if not ctx or not getattr(ctx, "company_id", None):
-#         return api_error("Unauthorized or missing company context.", status_code=401)
-#
-#     user_id = int(user_profile.get("user_id") or user_profile.get("id"))
-#     company_id = int(ctx.company_id)
-#     branch_id = int(ctx.branch_id) if getattr(ctx, "branch_id", None) else None
-#
-#     data = profile_service.get_me_profile(
-#         user_id=user_id,
-#         company_id=company_id,
-#         branch_id=branch_id,
-#     )
-#     if not data:
-#         return api_error("Profile not found.", status_code=404)
-#
-#     return api_success(data=data)
 
-
-
-
-
-
-
-# @bp.post("/companies/<int:company_id>/employees")
-# @require_permission("Employee", "CREATE", company_kw="company_id")
-# @require_scope(company_kw="company_id")
-# def create_employee(company_id: int):
-#     # Your creation logic here
-#     return jsonify({"message": "Employee created"}), 201
 
 
 

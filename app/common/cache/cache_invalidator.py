@@ -8,7 +8,7 @@ from typing import Any, Optional
 from .cache import get_version
 from .core_cache import bump_version
 from .cache_keys import detail_version_key, list_version_key, user_profile_version_key, build_detail_cache_key, \
-    price_list_version_key
+    price_list_version_key, coa_balance_version_key
 from app.application_doctypes.core_lists.config import CacheScope, get_list_config
 from app.application_doctypes.core_lists.cache import build_list_scope_key
 from app.security.rbac_effective import AffiliationContext
@@ -144,3 +144,66 @@ def bump_price_list(company_id: int, price_list_id: int) -> int:
     v = bump_version(price_list_version_key(company_id, price_list_id))
     log.info("[cache] BUMP PRICE LIST co=%s pl=%s -> v%s", company_id, price_list_id, v)
     return v
+
+
+def bump_coa_structure_company(company_id: int) -> int:
+    """
+    Bumps the version used by the COA tree *structure* (code/name/parent/is_group changes).
+    Call from Account create/update/delete that changes structure or label.
+    """
+    scope_key = f"co:{int(company_id)}"
+    ve = f"accounting:coa_tree:scope:{scope_key}"
+    v = bump_version(list_version_key(ve, company_id=None))
+    log.info("[cache] BUMP COA STRUCT company=%s -> v%s", company_id, v)
+    return v
+
+def bump_coa_balance_company(company_id: int) -> int:
+    """
+    Bumps the version used by the COA *balances* (GL postings).
+    Call after successful posting that changes AccountBalance/current_balance.
+    """
+    v = bump_version(coa_balance_version_key(company_id))
+    log.info("[cache] BUMP COA BAL company=%s -> v%s", company_id, v)
+    return v
+
+
+
+# ─────────────────────────────────────────────────────────────
+# Accounting-specific convenience bumpers (lists + details)
+# ─────────────────────────────────────────────────────────────
+
+# ---- generic detail bump (entity-only namespace in detail cache) ------------
+def bump_accounting_detail(entity: str, record_id: int) -> int:
+    """Bump the versioned detail cache for a single record."""
+    return bump_detail(entity, record_id)
+
+# ---- Modes of Payment (company scope) ---------------------------------------
+def bump_mop_list_company(company_id: int) -> int:
+    return bump_list_cache_company("accounting", "modes_of_payment", company_id)
+
+def bump_mop_detail(mop_id: int) -> int:
+    return bump_accounting_detail("modes_of_payment", mop_id)
+
+# ---- Fiscal Years (company scope) -------------------------------------------
+def bump_fiscal_years_list_company(company_id: int) -> int:
+    return bump_list_cache_company("accounting", "fiscal_years", company_id)
+
+def bump_fiscal_year_detail(fiscal_year_id: int) -> int:
+    return bump_accounting_detail("fiscal_years", fiscal_year_id)
+
+# ---- Cost Centers (branch + company scope) ----------------------------------
+def bump_cost_centers_list_company(company_id: int) -> int:
+    return bump_list_cache_company("accounting", "cost_centers", company_id)
+
+def bump_cost_centers_list_branch(company_id: int, branch_id: int) -> int:
+    return bump_list_cache_branch("accounting", "cost_centers", company_id, branch_id)
+
+def bump_cost_center_detail(cost_center_id: int) -> int:
+    return bump_accounting_detail("cost_centers", cost_center_id)
+
+# ---- Accounts (company scope) -----------------------------------------------
+def bump_accounts_list_company(company_id: int) -> int:
+    return bump_list_cache_company("accounting", "accounts", company_id)
+
+def bump_account_detail(account_id: int) -> int:
+    return bump_accounting_detail("accounts", account_id)

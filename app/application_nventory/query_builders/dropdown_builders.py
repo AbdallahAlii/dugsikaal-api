@@ -3,7 +3,7 @@ from sqlalchemy import select, literal, union_all, case, or_, and_, func
 from sqlalchemy.orm import Session, aliased
 from typing import Mapping, Any
 
-from app.application_nventory.inventory_models import Item, UnitOfMeasure, Brand, UOMConversion
+from app.application_nventory.inventory_models import Item, UnitOfMeasure, Brand, UOMConversion, ItemGroup
 from app.common.models.base import StatusEnum
 from app.security.rbac_effective import AffiliationContext
 from config.database import db
@@ -306,3 +306,87 @@ def build_item_uoms_dropdown(session: Session, ctx: AffiliationContext, params: 
             u.c.label.asc()  # Then alphabetically
         )
     )
+
+
+
+def build_item_groups_dropdown(session: Session, ctx: AffiliationContext, params: Mapping[str, Any]):
+    """
+    Minimal Item Group dropdown (both folders and leaves).
+    Columns:
+      - value: id
+      - label: "<code> - <name>"
+      - is_group: bool (so UI can show folder/dot icon)
+
+    Optional filters in `params`:
+      - only_groups: 1/0 (or True/False)
+      - only_leaves: 1/0 (or True/False)
+      - parent_id: int  -> restrict to children of this parent
+      - root_only: 1/0  -> only groups whose parent is NULL
+      - q: str          -> search name/code (ilike)
+    """
+    co_id = _co(ctx)
+    if not co_id:
+        return select(ItemGroup.id.label("value")).where(literal(False))  # empty
+
+    q = (
+        select(
+            ItemGroup.id.label("value"),
+            (ItemGroup.code + " - " + ItemGroup.name).label("label"),
+            ItemGroup.is_group.label("is_group"),
+        )
+        .where(ItemGroup.company_id == co_id)
+    )
+
+    # Filters
+    only_groups = params.get("only_groups")
+    only_leaves = params.get("only_leaves")
+    parent_id = params.get("parent_id")
+    root_only = params.get("root_only")
+    term = (params.get("q") or "").strip()
+
+    if only_groups:
+        q = q.where(ItemGroup.is_group.is_(True))
+    if only_leaves:
+        q = q.where(ItemGroup.is_group.is_(False))
+    if parent_id is not None:
+        try:
+            pid = int(parent_id)
+            q = q.where(ItemGroup.parent_item_group_id == pid)
+        except Exception:
+            # ignore bad parent_id; returns nothing
+            return select(ItemGroup.id.label("value")).where(literal(False))
+    if root_only:
+        q = q.where(ItemGroup.parent_item_group_id.is_(None))
+    if term:
+        like = f"%{term}%"
+        q = q.where(or_(ItemGroup.name.ilike(like), ItemGroup.code.ilike(like)))
+
+    # Order: groups first (nice UX), then code, then name
+    q = q.order_by(
+        case((ItemGroup.is_group.is_(True), 0), else_=1),
+        ItemGroup.code.asc(),
+        ItemGroup.name.asc(),
+    )
+    return q
+
+
+def build_item_group_parents_dropdown(session: Session, ctx: AffiliationContext, params: Mapping[str, Any]):
+    """
+    Convenience wrapper: groups only (folders), minimal fields.
+    Accepts same params as build_item_groups_dropdown; we force only_groups=1.
+    """
+    params = dict(params or {})
+    params["only_groups"] = True
+    return build_item_groups_dropdown(session, ctx, params)
+
+
+def build_item_group_leaves_dropdown(session: Session, ctx: AffiliationContext, params: Mapping[str, Any]):
+    """
+    Convenience wrapper: leaves only (non-groups), minimal fields.
+    Accepts same params as build_item_groups_dropdown; we force only_leaves=1.
+    """
+    params = dict(params or {})
+    params["only_leaves"] = True
+    return build_item_groups_dropdown(session, ctx, params)
+
+

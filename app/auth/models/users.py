@@ -38,6 +38,32 @@ class User(BaseModel):
         cascade="all, delete-orphan",
         lazy="selectin",
     )
+
+    # ADD THESE MISSING RELATIONSHIPS
+    created_payment_entries = db.relationship(
+        "PaymentEntry",
+        back_populates="created_by",
+        foreign_keys="PaymentEntry.created_by_id"
+    )
+
+    created_expenses = db.relationship(
+        "Expense",
+        back_populates="created_by",
+        foreign_keys="Expense.created_by_id"
+    )
+
+    created_journal_entries = db.relationship(
+        "JournalEntry",
+        back_populates="created_by",
+        foreign_keys="JournalEntry.created_by_id"
+    )
+
+    submitted_period_closing_vouchers = db.relationship(
+        "PeriodClosingVoucher",
+        back_populates="submitted_by",
+        foreign_keys="PeriodClosingVoucher.submitted_by_id"
+    )
+
     created_purchase_receipts = db.relationship("PurchaseReceipt", back_populates="created_by")
     created_purchase_invoices = db.relationship("PurchaseInvoice", back_populates="created_by")
 

@@ -5,14 +5,17 @@ import logging
 import secrets
 from typing import Optional, List, Dict
 import re
+
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from werkzeug.exceptions import BadRequest, Unauthorized, Forbidden, NotFound
 
+from app.application_accounting.chart_of_accounts.assets_model import AssetCategory
 from app.application_nventory.inventory_models import Brand, UnitOfMeasure, Item, UOMConversion, \
-    ItemTypeEnum
-from app.application_nventory.repo import InventoryRepository
-from app.application_nventory.schemas import BrandCreate, BrandOut, UOMCreate, ItemCreate, UOMOut, ItemMinimalOut, \
+    ItemTypeEnum, ItemGroup
+from app.application_nventory.repo.inventory_repo import InventoryRepository
+from app.application_nventory.schemas.inventory_schemas import BrandCreate, BrandOut, UOMCreate, ItemCreate, UOMOut, ItemMinimalOut, \
     UOMConversionCreate, UOMConversionOut, BranchItemPricingCreate, BranchItemPricingOut, BranchItemPricingUpdate, \
     ItemUpdate
 from app.common.cache.cache_invalidator import bump_list_cache_company, bump_list_cache_branch, bump_inventory_dropdowns
@@ -155,6 +158,19 @@ class InventoryService:
         normalized = self._sanitize_sku(raw, max_len=32)
         log.info("Normalized manual SKU: raw='%s', normalized='%s'", raw, normalized)
         return normalized
+    def _ensure_item_group_belongs_to_company(self, item_group_id: int, company_id: int):
+        row = self.s.execute(
+            select(ItemGroup.id, ItemGroup.company_id).where(ItemGroup.id == item_group_id)
+        ).first()
+        if not row or int(row.company_id) != int(company_id):
+            raise NotFound("Invalid item group selected.")
+
+    def _ensure_asset_category_belongs_to_company(self, asset_category_id: int, company_id: int):
+        row = self.s.execute(
+            select(AssetCategory.id, AssetCategory.company_id).where(AssetCategory.id == asset_category_id)
+        ).first()
+        if not row or int(row.company_id) != int(company_id):
+            raise NotFound("Invalid asset category selected.")
 
     # --- Item Service ---
     def create_item(self, payload: ItemCreate, context: AffiliationContext) -> ItemMinimalOut:
@@ -162,49 +178,74 @@ class InventoryService:
             "Starting item creation: name='%s', type=%s, company_id=%d, manual_sku='%s'",
             payload.name, payload.item_type, context.company_id, payload.sku
         )
-        # Permission
 
+        # Permission
         if not MASTER_DATA_CREATOR_ROLES.intersection(context.roles):
             raise Forbidden("Not authorized to create an item.")
+
         # Company scope
         ensure_scope_by_ids(context=context, target_company_id=context.company_id)
+
+        # Mandatory: item_group_id
+        if not getattr(payload, "item_group_id", None):
+            raise InventoryLogicError("Item group is required.")
 
         # Name duplicate (per company)
         if self.repo.get_item_by_name(context.company_id, payload.name):
             raise DuplicateRecordError("Item with this name already exists.")
 
-        # Validate cross-company FKs early
+        # Cross-company FK validation
+        self._ensure_item_group_belongs_to_company(payload.item_group_id, context.company_id)
+
         if payload.brand_id:
             self._ensure_brand_belongs_to_company(payload.brand_id, context.company_id)
+
         if payload.base_uom_id:
             self._ensure_uom_belongs_to_company(payload.base_uom_id, context.company_id)
 
+        # Fixed-asset rules:
+        #  - if explicitly marked fixed asset, category is required
+        #  - if category provided but is_fixed_asset not provided, auto-enable is_fixed_asset
+        is_fixed_asset = bool(getattr(payload, "is_fixed_asset", False))
+        asset_category_id = getattr(payload, "asset_category_id", None)
+
+        if is_fixed_asset and not asset_category_id:
+            raise InventoryLogicError("Fixed Asset items require an asset_category_id.")
+
+        if asset_category_id:
+            self._ensure_asset_category_belongs_to_company(asset_category_id, context.company_id)
+            # convenience: if caller forgot to set is_fixed_asset, switch it on
+            if not is_fixed_asset:
+                is_fixed_asset = True
+
         # Decide final SKU
         manual_sku = (payload.sku or "").strip()
+        data = payload.model_dump(exclude={"sku"}, exclude_unset=True)
+
+        # overwrite the possibly missing/derived flags safely
+        data["is_fixed_asset"] = is_fixed_asset
+        if asset_category_id is not None:
+            data["asset_category_id"] = asset_category_id
+
         if manual_sku:
             final_sku = self._normalize_manual_sku(manual_sku)
             if self.repo.get_item_by_sku(context.company_id, final_sku):
                 raise DuplicateRecordError("Item with this SKU already exists.")
-            data = payload.model_dump(exclude={"sku"})
+
             item = Item(company_id=context.company_id, sku=final_sku, **data)
             try:
                 self.repo.create_item(item)
                 self.s.commit()
-
-                # ✅ USE THE HELPER FUNCTION
                 bump_list_cache_company("inventory", "items", context.company_id)
                 bump_inventory_dropdowns("inventory", "items", context.company_id)
-
                 return ItemMinimalOut.model_validate(item)
             except IntegrityError:
                 self.s.rollback()
                 raise DuplicateRecordError("Item with this SKU already exists.")
         else:
-            # Auto-generate + retry to be safe under concurrency
+            # Auto-generate + retry for uniqueness
             attempts = 10
-            data = payload.model_dump(exclude={"sku"})
             log.info("Starting auto-SKU generation: attempts=%d, name='%s'", attempts, payload.name)
-
             for i in range(attempts):
                 gen_sku = self._generate_sku(payload.name, payload.item_type)
                 log.info("Attempt %d/%d: generated SKU='%s'", i + 1, attempts, gen_sku)
@@ -212,12 +253,8 @@ class InventoryService:
                 try:
                     self.repo.create_item(item)
                     self.s.commit()
-
-                    # ✅ INVALIDATE BOTH LIST AND DROPDOWN CACHES
-                    # ✅ USE THE HELPER FUNCTION
                     bump_list_cache_company("inventory", "items", context.company_id)
                     bump_inventory_dropdowns("inventory", "items", context.company_id)
-
                     return ItemMinimalOut.model_validate(item)
                 except IntegrityError:
                     self.s.rollback()
@@ -225,7 +262,7 @@ class InventoryService:
                         raise DuplicateRecordError("Could not allocate a unique SKU. Please retry.")
 
     def update_item(self, item_id: int, payload: ItemUpdate, context: AffiliationContext) -> ItemMinimalOut:
-        # Rule 1: Permission check
+        # Permission
         if not MASTER_DATA_CREATOR_ROLES.intersection(context.roles):
             raise Forbidden("Not authorized to update an item.")
 
@@ -233,29 +270,85 @@ class InventoryService:
         if not item:
             raise NotFound("Item not found.")
 
-        # Rule 2: Scope check - The user must belong to the same company as the item.
+        # Scope
         ensure_scope_by_ids(context=context, target_company_id=item.company_id)
 
+        incoming: Dict = payload.model_dump(exclude_unset=True)
+        conv_changes = incoming.pop("uom_conversions", None)
+
+        # Basic FK sanity
+        if "brand_id" in incoming and incoming["brand_id"] is not None:
+            self._ensure_brand_belongs_to_company(incoming["brand_id"], item.company_id)
+        if "base_uom_id" in incoming and incoming["base_uom_id"] is not None:
+            self._ensure_uom_belongs_to_company(incoming["base_uom_id"], item.company_id)
+        if "item_group_id" in incoming and incoming["item_group_id"] is not None:
+            self._ensure_item_group_belongs_to_company(incoming["item_group_id"], item.company_id)
+
+        # Unique name check
+        if "name" in incoming and incoming["name"]:
+            exists = self.repo.get_item_by_name_excluding_id(item.company_id, incoming["name"], item.id)
+            if exists:
+                raise DuplicateRecordError("Another item with this name already exists.")
+
+        # Apply item field updates
+        if incoming:
+            self.repo.update_item(item, incoming)
+
+        # Handle UOM conversions with inferred intent
+        if conv_changes is not None:
+            for c in conv_changes:
+                uom_id = c["uom_id"]
+                factor = c.get("conversion_factor")
+                is_active = c.get("is_active")
+
+                # validate same-company UOM
+                self._ensure_uom_belongs_to_company(uom_id, item.company_id)
+
+                # CASE 1: UPSERT when factor provided (>0)
+                if factor is not None:
+                    try:
+                        f = float(factor)
+                    except Exception:
+                        raise InventoryLogicError("Conversion factor must be a number.")
+                    if f <= 0:
+                        raise InventoryLogicError("Conversion factor must be > 0.")
+                    self.repo.upsert_uom_conversion(
+                        item_id=item.id,
+                        uom_id=uom_id,
+                        factor=f,
+                        is_active=True if is_active is None else bool(is_active),
+                    )
+                    continue
+
+                # CASE 2: Toggle is_active (must exist)
+                if is_active is not None:
+                    conv = self.repo.get_uom_conversion(item.id, uom_id)
+                    if not conv:
+                        raise NotFound("UOM conversion not found.")
+                    conv.is_active = bool(is_active)
+                    self.repo.flush_model(conv)
+                    continue
+
+                # CASE 3: Neither factor nor is_active → DELETE
+                deleted = self.repo.delete_uom_conversion(item.id, uom_id)
+                if deleted == 0:
+                    raise NotFound("UOM conversion not found.")
+
+        # Commit
         try:
-            updates = payload.model_dump(exclude_unset=True)
-            if updates.get('brand_id'):
-                self._ensure_brand_belongs_to_company(updates['brand_id'], item.company_id)
-            if updates.get('base_uom_id'):
-                self._ensure_uom_belongs_to_company(updates['base_uom_id'], item.company_id)
-
-            self.repo.update_item(item, updates)
             self.s.commit()
-
-            # ✅ INVALIDATE BOTH LIST AND DROPDOWN CACHES
-            bump_list_cache_company("inventory", "items", context.company_id)
-            bump_dropdown_company("inventory", "items", context.company_id)  # ADD THIS LINE
-            bump_dropdown_company("inventory", "active_items", context.company_id)  # ADD THIS LINE
-
-            return ItemMinimalOut.model_validate(item)
         except IntegrityError:
             self.s.rollback()
             raise DuplicateRecordError("Update would result in a duplicate record.")
 
+        # Cache bumps
+        bump_list_cache_company("inventory", "items", context.company_id)
+        bump_dropdown_company("inventory", "items", context.company_id)
+        bump_dropdown_company("inventory", "active_items", context.company_id)
+        if conv_changes is not None:
+            bump_list_cache_company("inventory", "uom_conversions", context.company_id)
+
+        return ItemMinimalOut.model_validate(item)
     # --- UOM Conversion Service ---
     def create_uom_conversion(self, payload: UOMConversionCreate, context: AffiliationContext) -> UOMConversionOut:
         # No change in permission check, it's not a master data role.

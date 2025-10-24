@@ -61,3 +61,15 @@ def price_list_hash_key(company_id: int, pl_id: int, version: int, day_yyyymmdd:
 # ---- UOM cache (per item) (new) ----
 def uom_item_hash_key(item_id: int) -> str:
     return f"uomconv:item:{int(item_id)}"
+
+
+
+
+# --- COA (Chart of Accounts) version keys ------------------------------------
+
+def coa_balance_version_key(company_id: int) -> str:
+    """
+    Balance version for a company's chart of accounts.
+    Bump this whenever postings affect AccountBalance/current balance.
+    """
+    return f"v:coa:balance:c{int(company_id)}"

@@ -32,6 +32,7 @@ class ListConfig:
         cache_enabled: bool = True,
         cache_ttl: int = 300,
         cache_scope: CacheScope = CacheScope.BRANCH,
+
     ):
         if not permission_tag or not callable(query_builder):
             raise TypeError("permission_tag and query_builder are required.")

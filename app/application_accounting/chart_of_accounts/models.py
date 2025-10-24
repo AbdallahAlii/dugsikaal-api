@@ -36,6 +36,8 @@ class PartyTypeEnum(str, enum.Enum):
     CUSTOMER = "Customer"
     SUPPLIER = "Supplier"
     EMPLOYEE = "Employee"
+    SHAREHOLDER = "Shareholder"
+    OTHER = "Other"
 
 class JournalEntryTypeEnum(str, enum.Enum):
     GENERAL = "General"
@@ -71,6 +73,7 @@ class FiscalYear(BaseModel):
                                                comment="True if period is less than 12 months.")
 
     # Relationships (FIXED: Added missing relationships)
+    company: Mapped["Company"] = relationship(back_populates="fiscal_years")
     period_closing_vouchers: Mapped[List["PeriodClosingVoucher"]] = relationship(
         back_populates="closing_fiscal_year",
         cascade="all, delete-orphan"
@@ -152,13 +155,13 @@ class PeriodClosingVoucher(BaseModel):
                                                     comment="Calculated Net P/L for the year.")
 
     # Relationships
+    company: Mapped["Company"] = relationship(back_populates="period_closing_vouchers")
     closing_fiscal_year: Mapped["FiscalYear"] = relationship(back_populates="period_closing_vouchers")
     closing_account_head: Mapped["Account"] = relationship(foreign_keys=[closing_account_head_id])
     generated_journal_entry: Mapped[Optional["JournalEntry"]] = relationship(
         "JournalEntry", foreign_keys=[generated_journal_entry_id]
     )
     submitted_by: Mapped[Optional["User"]] = relationship(foreign_keys=[submitted_by_id])
-    company: Mapped["Company"] = relationship()
 
     # Table Constraints & Indices (ADDED performance indexes)
     __table_args__ = (
@@ -181,37 +184,45 @@ class PeriodClosingVoucher(BaseModel):
 # ──────────────────────────────────────────────────────────────────────────────
 class CostCenter(BaseModel):
     """
-    An organizational unit used to track expenses and revenue for a specific
-    department or project.
+    Frappe-style Cost Center: enable/disable instead of docstatus.
     """
     __tablename__ = "cost_centers"
 
     # Foreign Keys
-    company_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("companies.id"),
-                                            nullable=False, index=True)
-    branch_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("branches.id"),
-                                           nullable=False, index=True)
-
-    # Core Fields
-    code: Mapped[str] = mapped_column(db.String(50), nullable=False, index=True)
-    name: Mapped[str] = mapped_column(db.String(255), nullable=False)
-    status: Mapped[DocStatusEnum] = mapped_column(
-        db.Enum(DocStatusEnum), nullable=False, default=DocStatusEnum.DRAFT, index=True
+    company_id: Mapped[int] = mapped_column(
+        db.BigInteger, db.ForeignKey("companies.id"), nullable=False, index=True
+    )
+    branch_id: Mapped[int] = mapped_column(
+        db.BigInteger, db.ForeignKey("branches.id"), nullable=False, index=True
     )
 
+    # Core fields
+    name: Mapped[str] = mapped_column(db.String(255), nullable=False, index=True)
+
+
+    enabled: Mapped[bool] = mapped_column(db.Boolean, nullable=False, default=True, index=True)
+
+    # Relationships
     journal_entry_items: Mapped[List["JournalEntryItem"]] = relationship(
         back_populates="cost_center", cascade="all, delete-orphan"
     )
     general_ledger_entries: Mapped[List["GeneralLedgerEntry"]] = relationship(
         back_populates="cost_center", cascade="all, delete-orphan"
     )
-    # Table Constraints & Indices
+    company: Mapped["Company"] = relationship(back_populates="cost_centers")
+    branch: Mapped["Branch"] = relationship(back_populates="cost_centers")
+
+    expenses: Mapped[List["Expense"]] = relationship(back_populates="cost_center")
+    expense_items: Mapped[List["ExpenseItem"]] = relationship(back_populates="cost_center")
+
     __table_args__ = (
-        UniqueConstraint("company_id", "branch_id", "code", name="uq_cost_center_company_branch_code"),
+        # keep your original uniqueness rule; consider tightening later if needed
+        UniqueConstraint("company_id", "branch_id", "name", name="uq_cost_center_company_branch_name"),
+        Index("ix_cost_center_company_branch", "company_id", "branch_id"),
     )
 
     def __repr__(self) -> str:
-        return f"<CostCenter code={self.code!r} name={self.name!r}>"
+        return f"<CostCenter name={self.name!r} enabled={self.enabled}>"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -238,13 +249,15 @@ class Account(BaseModel):
                                                         nullable=False, index=True)
     is_group: Mapped[bool] = mapped_column(db.Boolean, nullable=False, default=False)
     debit_or_credit: Mapped[DebitOrCreditEnum] = mapped_column(db.Enum(DebitOrCreditEnum), nullable=False)
-    status: Mapped[DocStatusEnum] = mapped_column(
-        db.Enum(DocStatusEnum), nullable=False, default=DocStatusEnum.DRAFT, index=True
-    )
+    # status: Mapped[DocStatusEnum] = mapped_column(
+    #     db.Enum(DocStatusEnum), nullable=False, default=DocStatusEnum.DRAFT, index=True
+    # )
+    enabled: Mapped[bool] = mapped_column(db.Boolean, nullable=False, default=True, index=True)
+
 
     # Relationships
     company: Mapped["Company"] = db.relationship(
-        "Company",  # String reference
+        "Company",
         back_populates="accounts",
         foreign_keys=[company_id]
     )
@@ -260,6 +273,11 @@ class Account(BaseModel):
     purchase_invoices_cash_bank: Mapped[List["PurchaseInvoice"]] = relationship(
         "PurchaseInvoice", foreign_keys="[PurchaseInvoice.cash_bank_account_id]", back_populates="cash_bank_account"
     )
+    stock_reconciliations: Mapped[List["StockReconciliation"]] = relationship(
+        "StockReconciliation",
+        foreign_keys="[StockReconciliation.difference_account_id]",
+        back_populates="difference_account"
+    )
     journal_entry_items: Mapped[List["JournalEntryItem"]] = relationship(
         back_populates="account", cascade="all, delete-orphan"
     )
@@ -271,8 +289,6 @@ class Account(BaseModel):
         foreign_keys="[SalesInvoice.vat_account_id]",
         back_populates="vat_account"
     )
-
-
     sales_invoices_cash_bank: Mapped[List["SalesInvoice"]] = relationship(
         "SalesInvoice",
         foreign_keys="[SalesInvoice.cash_bank_account_id]",
@@ -282,6 +298,7 @@ class Account(BaseModel):
     __table_args__ = (
         UniqueConstraint("company_id", "code", name="uq_account_company_code"),
         Index("ix_account_company_type", "company_id", "account_type"),
+        Index("ix_account_enabled", "company_id", "enabled"),
     )
 
     def __repr__(self) -> str:
@@ -393,15 +410,31 @@ class JournalEntry(BaseModel):
     source_doc_id: Mapped[Optional[int]] = mapped_column(db.BigInteger, nullable=True, index=True)
 
     # Relationships
+    # Relationships
     items: Mapped[List["JournalEntryItem"]] = relationship(
         back_populates="journal_entry", cascade="all, delete-orphan"
     )
-    general_ledger_entries: Mapped[List["GeneralLedgerEntry"]] = relationship(  # FIXED: Added
+    general_ledger_entries: Mapped[List["GeneralLedgerEntry"]] = relationship(
         back_populates="journal_entry", cascade="all, delete-orphan"
     )
+    company: Mapped["Company"] = relationship(back_populates="journal_entries")
+    branch: Mapped["Branch"] = relationship(back_populates="journal_entries")
     fiscal_year: Mapped["FiscalYear"] = relationship(back_populates="journal_entries")
+    created_by: Mapped["User"] = relationship(
+        back_populates="created_journal_entries",
+        foreign_keys=[created_by_id]
+    )
     source_doctype: Mapped["DocumentType"] = relationship()
-
+    payments: Mapped[List["PaymentEntry"]] = relationship(
+        back_populates="journal_entry"
+    )
+    expenses: Mapped[List["Expense"]] = relationship(
+        back_populates="journal_entry"
+    )
+    period_closing_vouchers: Mapped[List["PeriodClosingVoucher"]] = relationship(
+        back_populates="generated_journal_entry",
+        foreign_keys="PeriodClosingVoucher.generated_journal_entry_id"
+    )
 
 
     # Table Constraints & Indices
@@ -501,11 +534,13 @@ class GeneralLedgerEntry(BaseModel):
     entry_type: Mapped[str] = mapped_column(db.String(100), nullable=False, index=True)
 
     # Relationships
-    account: Mapped["Account"] = relationship(back_populates="general_ledger_entries")  # FIXED
-    cost_center: Mapped[Optional["CostCenter"]] = relationship(back_populates="general_ledger_entries")  # FIXED
-    journal_entry: Mapped["JournalEntry"] = relationship(back_populates="general_ledger_entries")  # FIXED
+    account: Mapped["Account"] = relationship(back_populates="general_ledger_entries")
+    cost_center: Mapped[Optional["CostCenter"]] = relationship(back_populates="general_ledger_entries")
+    journal_entry: Mapped["JournalEntry"] = relationship(back_populates="general_ledger_entries")
     source_doctype: Mapped["DocumentType"] = relationship()
     fiscal_year: Mapped["FiscalYear"] = relationship(back_populates="general_ledger_entries")
+    company: Mapped["Company"] = relationship(back_populates="general_ledger_entries")
+    branch: Mapped["Branch"] = relationship(back_populates="general_ledger_entries")
 
     # Table Constraints & Indices
     __table_args__ = (
@@ -567,8 +602,8 @@ class GLEntryTemplate(BaseModel):
     )
 
     # Relationships
+    company: Mapped["Company"] = relationship(back_populates="gl_entry_templates")
     source_doctype: Mapped["DocumentType"] = relationship()
-    # Corrected line below: Removed the 'comment' keyword
     template_items: Mapped[List["GLTemplateItem"]] = relationship(
         back_populates="template", cascade="all, delete-orphan"
     )
@@ -641,7 +676,6 @@ class  GLTemplateItem(BaseModel):
     # Relationships
     template: Mapped["GLEntryTemplate"] = relationship(back_populates="template_items")
     account: Mapped[Optional["Account"]] = relationship()
-
     __table_args__ = (
         # For ordering
         Index("ix_glti_template_seq", "template_id", "sequence"),

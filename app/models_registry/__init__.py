@@ -34,10 +34,13 @@ from app.application_accounting.chart_of_accounts.models import (
 )
 
 # Assets & Fixed Assets
-from app.application_accounting.chart_of_accounts.assets_model import (
-    AssetCategory, Asset, AssetDepreciationEntry
-)
 
+from app.application_accounting.chart_of_accounts.assets_model import (
+    AssetCategory, Asset, AssetDepreciationEntry,
+    FinanceBook, AssetFinanceBook,
+    AssetMovement, AssetMovementItem,
+    AssetStatusEnum, DepreciationMethodEnum,
+)
 # ==============================================================================
 # INVENTORY & STOCK MODELS
 # ==============================================================================
@@ -93,11 +96,16 @@ from app.application_hr.models.hr import (
 from app.application_accounting.chart_of_accounts.assets_model import (
     AssetCategory, Asset, AssetDepreciationEntry
 )
+# PAYMENT & EXPENSE MODELS
+from app.application_accounting.chart_of_accounts.finance_model import (
+    PaymentEntry, PaymentItem, PaymentTypeEnum,    Expense, ExpenseItem, ExpenseType
+)
+
 
 # Accounting Policies & Rules
 from app.application_accounting.chart_of_accounts.account_policies import (
-    ModeOfPayment, AccountSelectionRule,
-    ModeOfPaymentTypeEnum, AccountUseRoleEnum, AccountRuleTypeEnum
+    ModeOfPayment, ModeOfPaymentAccount, AccountAccessPolicy,
+    ModeOfPaymentTypeEnum, AccountUseRoleEnum
 )
 
 # ==============================================================================
@@ -144,17 +152,21 @@ __all__ = [
 
     # Assets
     'AssetCategory', 'Asset', 'AssetDepreciationEntry',
+    'FinanceBook', 'AssetFinanceBook',
+    'AssetMovement', 'AssetMovementItem',
 
     # Policies & Rules
-    'ModeOfPayment', 'AccountSelectionRule',
-
+    'ModeOfPayment', 'ModeOfPaymentAccount', 'AccountAccessPolicy',
+    # PAYMENT & EXPENSE MODELS
+    'PaymentEntry', 'PaymentItem', 'Expense', 'ExpenseItem', 'ExpenseType',
     # ==================== ENUMS ====================
     'DocStatusEnum', 'ItemTypeEnum',
     'AccountTypeEnum', 'ReportTypeEnum', 'DebitOrCreditEnum',
     'JournalEntryTypeEnum', 'PartyTypeEnum',
-    'ModeOfPaymentTypeEnum', 'AccountUseRoleEnum', 'AccountRuleTypeEnum',
+    'ModeOfPaymentTypeEnum', 'AccountUseRoleEnum',
     'PartyNatureEnum', 'PartyRoleEnum',
-    'GenderEnum', 'PersonRelationshipEnum'
+    'GenderEnum', 'PersonRelationshipEnum', 'PaymentTypeEnum',
+    'AssetStatusEnum', 'DepreciationMethodEnum',
 ]
 
 # ==============================================================================

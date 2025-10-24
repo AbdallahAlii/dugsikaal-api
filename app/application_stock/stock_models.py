@@ -439,6 +439,7 @@ class StockLedgerEntry(BaseModel):
     def __repr__(self) -> str:
         return f"<SLE id={self.id} item={self.item_id} wh={self.warehouse_id} qty={self.actual_qty}>"
 
+
 # --- 4. Stock Reconciliation Models ---
 class StockReconciliation(BaseModel):
     """
@@ -449,19 +450,32 @@ class StockReconciliation(BaseModel):
     company_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("companies.id"), nullable=False, index=True)
     branch_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("branches.id"), nullable=False, index=True)
     created_by_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("users.id"), nullable=False, index=True)
-    code: Mapped[str] = mapped_column(db.String(100), nullable=False, index=True)
-    posting_date: Mapped[datetime] = mapped_column(db.DateTime(timezone=True), nullable=False, index=True)
-    doc_status: Mapped[DocStatusEnum] = mapped_column(db.Enum(DocStatusEnum), nullable=False, default=DocStatusEnum.DRAFT, index=True)
+
+    # Purpose determines which account to use
     purpose: Mapped[StockReconciliationPurpose] = mapped_column(
         db.Enum(StockReconciliationPurpose), nullable=False,
         default=StockReconciliationPurpose.STOCK_RECONCILIATION, index=True
     )
+
+    # Difference Account can be overridden by user
+    difference_account_id: Mapped[Optional[int]] = mapped_column(
+        db.BigInteger, db.ForeignKey("accounts.id"), nullable=True, index=True,
+        comment="Account for stock difference (auto-set based on purpose)"
+    )
+
+    code: Mapped[str] = mapped_column(db.String(100), nullable=False, index=True)
+    posting_date: Mapped[datetime] = mapped_column(db.DateTime(timezone=True), nullable=False, index=True)
+    doc_status: Mapped[DocStatusEnum] = mapped_column(db.Enum(DocStatusEnum), nullable=False,
+                                                      default=DocStatusEnum.DRAFT, index=True)
     notes: Mapped[Optional[str]] = mapped_column(db.Text)
 
     # Relationships
     company: Mapped["Company"] = relationship()
     branch: Mapped["Branch"] = relationship()
     created_by: Mapped["User"] = relationship()
+    difference_account: Mapped[Optional["Account"]] = relationship(
+        foreign_keys=[difference_account_id], back_populates="stock_reconciliations"
+    )
     items: Mapped[list["StockReconciliationItem"]] = relationship(
         back_populates="reconciliation", cascade="all, delete-orphan"
     )
@@ -471,10 +485,12 @@ class StockReconciliation(BaseModel):
         Index("ix_reconciliation_company_branch_status", "company_id", "branch_id", "doc_status"),
         Index("ix_reconciliation_company_posting_date", "company_id", "posting_date"),
         Index("ix_reconciliation_company_purpose", "company_id", "purpose"),
+        Index("ix_reconciliation_difference_account", "difference_account_id"),
     )
 
     def __repr__(self) -> str:
-        return f"<StockReconciliation id={self.id} code={self.code!r} branch={self.branch_id} status={self.doc_status}>"
+        return f"<StockReconciliation id={self.id} code={self.code!r} purpose={self.purpose}>"
+
 
 class StockReconciliationItem(BaseModel):
     """
@@ -495,9 +511,21 @@ class StockReconciliationItem(BaseModel):
         nullable=False, index=True
     )
 
-    # FIXED: Changed from float to Decimal for consistency
+    # Required fields (user input)
     quantity: Mapped[Decimal] = mapped_column(db.Numeric(18, 6), nullable=False)
     valuation_rate: Mapped[Optional[Decimal]] = mapped_column(db.Numeric(18, 6), nullable=True)
+
+    # Auto-calculated fields (Frappe style)
+    current_qty: Mapped[Optional[Decimal]] = mapped_column(db.Numeric(18, 6), nullable=True,
+                                                           comment="Current stock quantity in system before reconciliation")
+    current_valuation_rate: Mapped[Optional[Decimal]] = mapped_column(db.Numeric(18, 6), nullable=True,
+                                                                      comment="Current valuation rate in system before reconciliation")
+
+    # Difference calculation (auto-calculated, Frappe style)
+    qty_difference: Mapped[Optional[Decimal]] = mapped_column(db.Numeric(18, 6), nullable=True,
+                                                              comment="quantity - current_qty (positive = gain, negative = loss)")
+    amount_difference: Mapped[Optional[Decimal]] = mapped_column(db.Numeric(18, 6), nullable=True,
+                                                                 comment="Absolute value difference for accounting entries")
 
     # Relationships
     reconciliation: Mapped["StockReconciliation"] = relationship(back_populates="items")
@@ -508,6 +536,9 @@ class StockReconciliationItem(BaseModel):
         UniqueConstraint("reconciliation_id", "item_id", "warehouse_id", name="uq_recon_item_wh"),
         CheckConstraint("quantity >= 0", name="ck_recon_qty_nonneg"),
         CheckConstraint("valuation_rate IS NULL OR valuation_rate >= 0", name="ck_recon_valrate_nonneg"),
+        CheckConstraint("current_qty IS NULL OR current_qty >= 0", name="ck_recon_current_qty_nonneg"),
+        CheckConstraint("current_valuation_rate IS NULL OR current_valuation_rate >= 0",
+                        name="ck_recon_current_valrate_nonneg"),
         Index("ix_recon_item_company_wh", "item_id", "warehouse_id"),
     )
 

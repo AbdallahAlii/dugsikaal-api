@@ -1,5 +1,5 @@
-# app/inventory/schemas.py
 
+# app/application_nventory/inventory_schemas.py
 from __future__ import annotations
 
 from datetime import datetime
@@ -52,7 +52,6 @@ class UOMOut(BaseModel):
 class UOMConversionCreate(BaseModel):
     item_id: int
     from_uom_id: int
-    # to_uom_id: int
     conversion_factor: float = Field(..., gt=0)
 
 
@@ -92,6 +91,9 @@ class BranchItemPricingOut(BaseModel):
 
 # --- Item Schemas ---
 class ItemCreate(BaseModel):
+    class Config:
+        extra = "forbid"
+
     name: str
     sku: Optional[str] = None
     item_type: ItemTypeEnum
@@ -99,21 +101,24 @@ class ItemCreate(BaseModel):
     item_group_id: int
     brand_id: Optional[int] = None
     base_uom_id: Optional[int] = None
+    is_fixed_asset: bool = False
+    asset_category_id: Optional[int] = None
     status: StatusEnum = StatusEnum.ACTIVE
 
     @validator('base_uom_id')
     def validate_base_uom_for_stock_item(cls, v, values):
-        if 'item_type' in values and values['item_type'] == ItemTypeEnum.STOCK_ITEM and not v:
-            raise ValueError("base_uom_id is required for a Stock Item.")
+        if values.get('item_type') == ItemTypeEnum.STOCK_ITEM and not v:
+            raise ValueError("Base UOM is required for a Stock Item.")
+        return v
+
+    @validator('asset_category_id', always=True)
+    def validate_fixed_asset_requires_category(cls, v, values):
+        if values.get('is_fixed_asset') and not v:
+            raise ValueError("Please select an Asset Category.")
         return v
 
 
-class ItemUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    brand_id: Optional[int] = None
-    status: Optional[StatusEnum] = None
-    base_uom_id: Optional[int] = None
+
 
 
 class ItemMinimalOut(BaseModel):
@@ -124,18 +129,21 @@ class ItemMinimalOut(BaseModel):
     brand_id: Optional[int] = None
     base_uom_id: Optional[int] = None
     status: StatusEnum
+    is_fixed_asset: bool
+    asset_category_id: Optional[int] = None
 
     class Config:
         from_attributes = True
 
 
-# --- Pricing (Price Discovery) Schemas ---------------------------------------
+# --- Pricing Schemas ---
 class PriceLookupRequest(BaseModel):
     item_id: int
     txn_uom_id: int
     qty: Optional[float] = Field(None, ge=0)
     posting_date: Optional[datetime] = None
     price_list_id: Optional[int] = None
+
 
 class PriceLookupOut(BaseModel):
     item_id: int
@@ -147,15 +155,43 @@ class PriceLookupOut(BaseModel):
     line_amount: Optional[float] = None
     stock_qty_change: Optional[float] = None
 
+
 class PriceBatchItemIn(BaseModel):
     item_id: int
     txn_uom_id: int
     qty: Optional[float] = Field(None, ge=0)
+
 
 class PriceBatchLookupRequest(BaseModel):
     items: List[PriceBatchItemIn] = Field(..., min_items=1)
     posting_date: Optional[datetime] = None
     price_list_id: Optional[int] = None
 
+
 class PriceBatchLookupOut(BaseModel):
     results: List[PriceLookupOut]
+
+
+
+class UOMConvChange(BaseModel):
+    uom_id: int
+    conversion_factor: Optional[float] = None     # no gt=0 here
+    is_active: Optional[bool] = None
+
+    @validator('conversion_factor')
+    def conversion_factor_must_be_positive(cls, v):
+        if v is not None and v <= 0:
+            # short, ERP-style message
+            raise ValueError("Conversion factor must be greater than 0.")
+        return v
+
+class ItemUpdate(BaseModel):
+    # allowed fields (all optional)
+    name: Optional[str] = None
+    brand_id: Optional[int] = None
+    status: Optional[StatusEnum] = None
+    item_group_id: Optional[int] = None
+    base_uom_id: Optional[int] = None
+
+    # batch UOM conversion changes (upsert / toggle / delete)
+    uom_conversions: Optional[List[UOMConvChange]] = None

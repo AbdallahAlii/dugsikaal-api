@@ -46,6 +46,12 @@ class Company(BaseModel):
         comment="Object-storage key/path for the encrypted image",
         index=True,
     )
+    timezone: Mapped[Optional[str]] = mapped_column(
+        db.String(50),
+        nullable=True,
+        default=None,  # Or set a sensible default if required, e.g., 'UTC'
+        comment="IANA Timezone string (e.g., 'America/New_York') for company operations",
+    )
     # relationships
     city: Mapped["City"] = db.relationship("City", back_populates="companies", lazy="selectin")
     branches: Mapped[list["Branch"]] = db.relationship(
@@ -61,15 +67,64 @@ class Company(BaseModel):
         lazy="selectin",
     )
 
+    # Accounting relationships
     accounts: Mapped[list["Account"]] = db.relationship(
-        "Account",  # Add the string class name
+        "Account",
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+    fiscal_years: Mapped[list["FiscalYear"]] = db.relationship(
+        "FiscalYear",
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+    period_closing_vouchers: Mapped[list["PeriodClosingVoucher"]] = db.relationship(
+        "PeriodClosingVoucher",
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+    cost_centers: Mapped[list["CostCenter"]] = db.relationship(
+        "CostCenter",
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+    journal_entries: Mapped[list["JournalEntry"]] = db.relationship(
+        "JournalEntry",
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+    general_ledger_entries: Mapped[list["GeneralLedgerEntry"]] = db.relationship(
+        "GeneralLedgerEntry",
         back_populates="company",
         cascade="all, delete-orphan",
     )
 
-    # Also fix the other relationships that might have the same issue:
+    gl_entry_templates: Mapped[list["GLEntryTemplate"]] = db.relationship(
+        "GLEntryTemplate",
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+
+    # Payment and Expense relationships
+    payment_entries: Mapped[list["PaymentEntry"]] = db.relationship(
+        "PaymentEntry",
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+    expenses: Mapped[list["Expense"]] = db.relationship(
+        "Expense",
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+    expense_types: Mapped[list["ExpenseType"]] = db.relationship(
+        "ExpenseType",
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+
+    # Other existing relationships
     purchase_receipts: Mapped[list["PurchaseReceipt"]] = db.relationship(
-        "PurchaseReceipt",  # Add string class name
+        "PurchaseReceipt",
         back_populates="company",
         cascade="all, delete-orphan",
     )
@@ -79,7 +134,7 @@ class Company(BaseModel):
         cascade="all, delete-orphan",
     )
     purchase_invoices: Mapped[list["PurchaseInvoice"]] = db.relationship(
-        "PurchaseInvoice",  # Add string class name
+        "PurchaseInvoice",
         back_populates="company",
         cascade="all, delete-orphan",
     )
@@ -88,8 +143,37 @@ class Company(BaseModel):
         back_populates="company",
         cascade="all, delete-orphan",
     )
-    price_lists: Mapped[List["PriceList"]] = db.relationship(
-        "PriceList", back_populates="company", cascade="all, delete-orphan"
+    brands: Mapped[list["Brand"]] = db.relationship(
+        "Brand",
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+    units_of_measure: Mapped[list["UnitOfMeasure"]] = db.relationship(
+        "UnitOfMeasure",
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+    item_groups: Mapped[list["ItemGroup"]] = db.relationship(
+        "ItemGroup",
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+    items: Mapped[list["Item"]] = db.relationship(
+        "Item",
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+    price_lists: Mapped[list["PriceList"]] = db.relationship(
+        "PriceList",
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+
+    # ADD THIS MISSING RELATIONSHIP
+    item_prices: Mapped[list["ItemPrice"]] = db.relationship(
+        "ItemPrice",
+        back_populates="company",
+        cascade="all, delete-orphan",
     )
 
 
@@ -135,22 +219,46 @@ class Branch(BaseModel):
 
     # relationships
     company: Mapped["Company"] = db.relationship("Company", back_populates="branches")
+
+    # Accounting relationships
+    cost_centers: Mapped[list["CostCenter"]] = db.relationship(
+        "CostCenter",
+        back_populates="branch",
+        cascade="all, delete-orphan",
+    )
+
+    journal_entries: Mapped[list["JournalEntry"]] = db.relationship(
+        "JournalEntry",
+        back_populates="branch",
+        cascade="all, delete-orphan",
+    )
+    general_ledger_entries: Mapped[list["GeneralLedgerEntry"]] = db.relationship(
+        "GeneralLedgerEntry",
+        back_populates="branch",
+        cascade="all, delete-orphan",
+    )
+
+    # Payment and Expense relationships
+    payment_entries: Mapped[list["PaymentEntry"]] = db.relationship(
+        "PaymentEntry",
+        back_populates="branch"
+    )
+    expenses: Mapped[list["Expense"]] = db.relationship(
+        "Expense",
+        back_populates="branch"
+    )
+
+    # Other existing relationships
     purchase_receipts: Mapped[list["PurchaseReceipt"]] = db.relationship(
         "PurchaseReceipt",
         back_populates="branch"
     )
-
     purchase_invoices: Mapped[list["PurchaseInvoice"]] = db.relationship(
         "PurchaseInvoice",
         back_populates="branch"
     )
-
     purchase_quotations: Mapped[list["PurchaseQuotation"]] = db.relationship(
         "PurchaseQuotation",
-        back_populates="branch"
-    )
-    modes_of_payment: Mapped[list["ModeOfPayment"]] = db.relationship(
-        "ModeOfPayment",
         back_populates="branch"
     )
 

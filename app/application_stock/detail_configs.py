@@ -3,6 +3,8 @@ from __future__ import annotations
 from app.application_doctypes.core_lists.config import DetailConfig, register_detail_configs
 from app.application_stock.query_builders.bin_detail_builders import load_bin_detail, resolve_bin_id_strict, \
     resolve_bin_by_code
+from app.application_stock.query_builders.stock_reconciliation_detail_builders import load_stock_reconciliation_detail, \
+    resolve_stock_reconciliation_id_strict, resolve_stock_reconciliation_by_code
 from app.application_stock.query_builders.warehouse_detail_builders import (
     resolve_id_strict, resolve_warehouse_by_code, resolve_warehouse_by_name, load_warehouse_detail
 )
@@ -31,6 +33,17 @@ STOCK_DETAIL_CONFIGS = {
         cache_enabled=True,
         cache_ttl=600,
         default_by="code",  # you asked: “detail make code please”
+    ),
+    "stock_reconciliations": DetailConfig(
+        permission_tag="Stock Reconciliation",
+        loader=load_stock_reconciliation_detail,
+        resolver_map={
+            "id": resolve_stock_reconciliation_id_strict,
+            "code": resolve_stock_reconciliation_by_code,
+        },
+        cache_enabled=False,
+        # cache_ttl=600,  # Moderate TTL for frequently accessed reconciliation details
+        default_by="code",  # Lookup by code by default
     ),
 }
 
