@@ -78,7 +78,7 @@ from app.application_buying.models import (
 )
 
 # Sales Module
-from app.application_sales.models import SalesInvoice, SalesInvoiceItem
+from app.application_selling.models import SalesInvoice, SalesInvoiceItem
 
 # HR Module
 from app.application_hr.models.hr import (

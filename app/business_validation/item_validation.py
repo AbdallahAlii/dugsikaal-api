@@ -54,6 +54,14 @@ ERR_RETURN_ITEM_NOT_FOUND = "Invalid item selected for return."
 ERR_RETURN_QTY_EXCEEDED = "Return quantity exceeds balance quantity for an item."
 
 
+ERR_PAID_AMOUNT_EXCEEDED = "Paid amount cannot exceed total amount"
+ERR_POS_REQUIRES_PAYMENT = "POS invoices require immediate payment"
+ERR_STOCK_ITEM_OUT_OF_STOCK = "Insufficient stock for item"
+ERR_WAREHOUSE_REQUIRED_FOR_STOCK = "Warehouse is required when updating stock"
+ERR_VAT_CONSISTENCY = "VAT requires VAT account and rate when VAT amount > 0"
+ERR_PAYMENT_CONSISTENCY = "Payment method and account required when amount is paid"
+ERR_OUTSTANDING_CONSISTENCY = "Outstanding amount must equal total minus paid amount"
+ERR_QUANTITY_DIRECTION = "Invoice items require positive quantities, returns require negative quantities"
 # --- Document Status Guards ---
 
 
@@ -74,10 +82,7 @@ def guard_cancellable_state(status: DocStatusEnum) -> None:
     if status != DocStatusEnum.SUBMITTED:
         raise DocumentStateError("Only Submitted documents can be cancelled.")
 
-def validate_customer_is_active(is_valid: bool) -> None:
-    """Checks the result of a repository call for customer validity."""
-    if not is_valid:
-        raise BizValidationError(ERR_INVALID_CUSTOMER)
+
 
 # --- Field & List Validators ---
 
@@ -232,3 +237,114 @@ def validate_item_uom_compatibility(lines: List[Dict[str, Any]]) -> None:
         # This validation only applies to stock items with a specified UOM.
         if line.get("is_stock_item") and not line.get("uom_ok", False):
             raise BizValidationError(ERR_UOM_INCOMPATIBLE)
+
+    # --- Sales-Specific Validators ---
+    def validate_customer_is_active(is_valid: bool) -> None:
+        """Checks the result of a repository call for customer validity."""
+        if not is_valid:
+            raise BizValidationError(ERR_INVALID_CUSTOMER)
+
+    def validate_paid_amount_consistency(paid_amount: Decimal, total_amount: Decimal) -> None:
+        """Validates that paid amount doesn't exceed total amount."""
+        if paid_amount < Decimal('0'):
+            raise BizValidationError("Paid amount cannot be negative")
+
+        if paid_amount > total_amount:
+            raise BizValidationError(ERR_PAID_AMOUNT_EXCEEDED)
+
+    def validate_outstanding_consistency(total_amount: Decimal, paid_amount: Decimal,
+                                         outstanding_amount: Decimal) -> None:
+        """Validates that outstanding = total - paid."""
+        expected_outstanding = total_amount - paid_amount
+        if outstanding_amount != expected_outstanding:
+            raise BizValidationError(ERR_OUTSTANDING_CONSISTENCY)
+
+    def validate_pos_payment_required(is_pos: bool, paid_amount: Decimal, total_amount: Decimal) -> None:
+        """Validates that POS invoices require full payment."""
+        if is_pos and paid_amount != total_amount:
+            raise BizValidationError(ERR_POS_REQUIRES_PAYMENT)
+
+    def validate_stock_availability(quantity: Decimal, available_stock: Decimal, item_code: str = "") -> None:
+        """Validates that requested quantity doesn't exceed available stock."""
+        if quantity > available_stock:
+            item_ref = f" for item {item_code}" if item_code else ""
+            raise BizValidationError(
+                f"{ERR_STOCK_ITEM_OUT_OF_STOCK}{item_ref} (Available: {available_stock}, Requested: {quantity})")
+
+    def validate_warehouse_for_stock_update(update_stock: bool, warehouse_id: Optional[int]) -> None:
+        """Validates that warehouse is provided when stock update is enabled."""
+        if update_stock and not warehouse_id:
+            raise BizValidationError(ERR_WAREHOUSE_REQUIRED_FOR_STOCK)
+
+    def validate_vat_consistency(vat_amount: Decimal, vat_account_id: Optional[int]) -> None:
+        """Validates VAT field consistency."""
+        if vat_amount > Decimal('0') and not vat_account_id:
+            raise BizValidationError(ERR_VAT_CONSISTENCY)
+
+        if vat_amount == Decimal('0') and vat_account_id:
+            raise BizValidationError("VAT account should not be set when VAT amount is zero")
+
+    def validate_payment_consistency(paid_amount: Decimal, mode_of_payment_id: Optional[int],
+                                     cash_bank_account_id: Optional[int]) -> None:
+        """Validates payment method consistency."""
+        if paid_amount > Decimal('0'):
+            if not mode_of_payment_id:
+                raise BizValidationError("Payment method is required when amount is paid")
+            if not cash_bank_account_id:
+                raise BizValidationError("Cash/Bank account is required when amount is paid")
+        else:
+            if mode_of_payment_id or cash_bank_account_id:
+                raise BizValidationError("Payment method and account should not be set when no amount is paid")
+
+    def validate_quantity_direction(is_return: bool, quantity: Decimal) -> None:
+        """Validates that quantities have correct sign based on document type."""
+        if is_return:
+            if quantity >= Decimal('0'):
+                raise BizValidationError(ERR_QUANTITY_DIRECTION)
+        else:
+            if quantity <= Decimal('0'):
+                raise BizValidationError(ERR_QUANTITY_DIRECTION)
+
+    # --- Comprehensive Sales Validation Gates ---
+
+    def validate_sales_document_basics(customer_id: Optional[int], items: List[Dict[str, Any]]) -> None:
+        """Validates basic requirements for any sales document."""
+        if not customer_id:
+            raise BizValidationError("Customer is required")
+
+        validate_list_not_empty(items, "item")
+        validate_unique_items(items, "item_id")
+
+    def validate_sales_amounts(total_amount: Decimal, paid_amount: Decimal, outstanding_amount: Decimal) -> None:
+        """Validates sales amount consistency."""
+        validate_paid_amount_consistency(paid_amount, total_amount)
+        validate_outstanding_consistency(total_amount, paid_amount, outstanding_amount)
+
+    def validate_sales_payment_setup(is_pos: bool, paid_amount: Decimal, total_amount: Decimal,
+                                     mode_of_payment_id: Optional[int], cash_bank_account_id: Optional[int]) -> None:
+        """Validates payment-related business rules."""
+        validate_payment_consistency(paid_amount, mode_of_payment_id, cash_bank_account_id)
+
+        if is_pos:
+            validate_pos_payment_required(is_pos, paid_amount, total_amount)
+
+    def validate_sales_stock_requirements(update_stock: bool, warehouse_id: Optional[int],
+                                          items: List[Dict[str, Any]], stock_checker=None) -> None:
+        """Validates stock-related business rules."""
+        validate_warehouse_for_stock_update(update_stock, warehouse_id)
+
+        # If we have a stock checker and warehouse, validate stock availability
+        if update_stock and warehouse_id and stock_checker:
+            for item in items:
+                if item.get('is_stock_item', True):  # Default to True for safety
+                    available_stock = stock_checker(item['item_id'], warehouse_id)
+                    validate_stock_availability(
+                        abs(item.get('quantity', Decimal('0'))),  # Use absolute value for stock check
+                        available_stock,
+                        item.get('item_code', str(item['item_id']))
+                    )
+
+    def validate_sales_items_direction(is_return: bool, items: List[Dict[str, Any]]) -> None:
+        """Validates that items have correct quantity direction."""
+        for item in items:
+            validate_quantity_direction(is_return, item.get('quantity', Decimal('0')))

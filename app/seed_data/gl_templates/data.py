@@ -45,6 +45,7 @@ AMOUNT_SOURCES = {
     "STOCK_RECON_DIFFERENCE": "Absolute value difference for stock reconciliation",
 }
 
+
 # Use constants (no accidental 'D'/'C' strings)
 DEBIT = "DEBIT"
 CREDIT = "CREDIT"
@@ -199,36 +200,28 @@ TEMPLATE_DEFS: List[Dict[str, Any]] = [
     # --- Payments & Bank/Cash ---
     # --------------------------------------------------------------------------
     dict(
-        doctype_code="RECEIPT_ENTRY",
-        code="RECEIPT_FROM_CUSTOMER",
-        label="Receipt from Customer",
-        description="Records money received from a customer. DR Bank; CR A/R.",
+        doctype_code="PAYMENT_ENTRY",
+        code="PAYMENT_RECEIVE",  # Receipt from Customer (or money received from any party)
+        label="Receipt (Receive)",
+        description="DR Bank/Cash; CR Party Ledger (A/R for Customer, A/P for Supplier refund if you prefer).",
         is_active=True,
         is_primary=True,
     ),
     dict(
         doctype_code="PAYMENT_ENTRY",
-        code="PAYMENT_TO_SUPPLIER",
-        label="Payment to Supplier",
-        description="Records money paid to a supplier. DR A/P; CR Bank.",
+        code="PAYMENT_PAY",  # Payment to Supplier (or money paid to any party)
+        label="Payment (Pay)",
+        description="DR Party Ledger (A/P for Supplier, A/R for Customer refund if you prefer); CR Bank/Cash.",
         is_active=True,
         is_primary=True,
     ),
     dict(
         doctype_code="PAYMENT_ENTRY",
-        code="REFUND_TO_CUSTOMER",
-        label="Refund to Customer",
-        description="Records a cash refund to a customer, settling a credit note. DR A/R; CR Bank.",
+        code="PAYMENT_INTERNAL_TRANSFER",
+        label="Internal Transfer",
+        description="Cash/Bank to Cash/Bank. DR Target; CR Source.",
         is_active=True,
-        is_primary=False,
-    ),
-    dict(
-        doctype_code="RECEIPT_ENTRY", # Can be RECEIPT_ENTRY or PAYMENT_ENTRY
-        code="REFUND_FROM_SUPPLIER",
-        label="Refund from Supplier",
-        description="Records a cash refund from a supplier, settling a debit note. DR Bank; CR A/P.",
-        is_active=True,
-        is_primary=False,
+        is_primary=True,
     ),
 
     # --------------------------------------------------------------------------
@@ -250,6 +243,16 @@ TEMPLATE_DEFS: List[Dict[str, Any]] = [
         is_active=True,
         is_primary=True,
     ),
+
+
+    dict(
+        doctype_code="PERIOD_CLOSING_VOUCHER",
+        code="PERIOD_CLOSING",
+        label="Period Closing Voucher",
+        description="Zeros P&L accounts and transfers net to Retained Earnings.",
+        is_active=True,
+        is_primary=True,
+    ),
 ]
 
 # ==============================================================================
@@ -262,7 +265,9 @@ TEMPLATE_ITEMS: List[Dict[str, Any]] = [
     # Sales Invoice (Financials Only)
     dict(template_code="SALES_INV_AR", sequence=10, effect=DEBIT,  account_code=None, amount_source="DOCUMENT_TOTAL", is_required=True, requires_dynamic_account=True, context_key="accounts_receivable_account_id"),
     dict(template_code="SALES_INV_AR", sequence=20, effect=CREDIT, account_code=None, amount_source="DOCUMENT_SUBTOTAL", is_required=True, requires_dynamic_account=True, context_key="income_account_id"),
-    dict(template_code="SALES_INV_AR", sequence=30, effect=CREDIT, account_code="2311", amount_source="TAX_AMOUNT", is_required=False, requires_dynamic_account=False, context_key=None),
+    dict(template_code="SALES_INV_AR", sequence=30, effect=CREDIT,
+         account_code=None, amount_source="TAX_AMOUNT",
+         is_required=False, requires_dynamic_account=True, context_key="tax_account_id"),
     dict(template_code="SALES_INV_AR", sequence=40, effect=DEBIT,  account_code="5116", amount_source="DISCOUNT_AMOUNT", is_required=False, requires_dynamic_account=False, context_key=None),
     dict(template_code="SALES_INV_AR", sequence=50, effect=DEBIT,  account_code="5113", amount_source="ROUND_OFF_POSITIVE", is_required=False, requires_dynamic_account=False, context_key=None),
     dict(template_code="SALES_INV_AR", sequence=60, effect=CREDIT, account_code="4153", amount_source="ROUND_OFF_NEGATIVE", is_required=False, requires_dynamic_account=False, context_key=None),
@@ -270,7 +275,9 @@ TEMPLATE_ITEMS: List[Dict[str, Any]] = [
     # Sales Invoice (Stock and Financials)
     dict(template_code="SALES_INV_WITH_STOCK", sequence=10, effect=DEBIT,  account_code=None, amount_source="DOCUMENT_TOTAL", is_required=True, requires_dynamic_account=True, context_key="accounts_receivable_account_id"),
     dict(template_code="SALES_INV_WITH_STOCK", sequence=20, effect=CREDIT, account_code=None, amount_source="DOCUMENT_SUBTOTAL", is_required=True, requires_dynamic_account=True, context_key="income_account_id"),
-    dict(template_code="SALES_INV_WITH_STOCK", sequence=30, effect=CREDIT, account_code="2311", amount_source="TAX_AMOUNT", is_required=False, requires_dynamic_account=False, context_key=None),
+    dict(template_code="SALES_INV_WITH_STOCK", sequence=30, effect=CREDIT,
+         account_code=None, amount_source="TAX_AMOUNT",
+         is_required=False, requires_dynamic_account=True, context_key="tax_account_id"),
     dict(template_code="SALES_INV_WITH_STOCK", sequence=40, effect=DEBIT,  account_code="5011", amount_source="COST_OF_GOODS_SOLD", is_required=True, requires_dynamic_account=False, context_key=None),
     dict(template_code="SALES_INV_WITH_STOCK", sequence=50, effect=CREDIT, account_code="1141", amount_source="COST_OF_GOODS_SOLD", is_required=True, requires_dynamic_account=False, context_key=None),
     dict(template_code="SALES_INV_WITH_STOCK", sequence=60, effect=DEBIT,  account_code="5116", amount_source="DISCOUNT_AMOUNT", is_required=False, requires_dynamic_account=False, context_key=None),
@@ -284,7 +291,9 @@ TEMPLATE_ITEMS: List[Dict[str, Any]] = [
     # --- Sales Returns, Cancellations & Write-Off Items ---
     # Sales Return (Credit Note)
     dict(template_code="SALES_RETURN_CREDIT", sequence=10, effect=DEBIT,  account_code=None, amount_source="DOCUMENT_SUBTOTAL", is_required=True, requires_dynamic_account=True, context_key="income_account_id"),
-    dict(template_code="SALES_RETURN_CREDIT", sequence=20, effect=DEBIT,  account_code="2311", amount_source="TAX_AMOUNT", is_required=False, requires_dynamic_account=False, context_key=None),
+    dict(template_code="SALES_RETURN_CREDIT", sequence=20, effect=DEBIT,
+         account_code=None, amount_source="TAX_AMOUNT",
+         is_required=False, requires_dynamic_account=True, context_key="tax_account_id"),
     dict(template_code="SALES_RETURN_CREDIT", sequence=30, effect=CREDIT, account_code=None, amount_source="DOCUMENT_TOTAL", is_required=True, requires_dynamic_account=True, context_key="accounts_receivable_account_id"),
     dict(template_code="SALES_RETURN_CREDIT", sequence=40, effect=DEBIT,  account_code="1141", amount_source="COGS_REVERSAL", is_required=False, requires_dynamic_account=False, context_key=None), # Optional if restocked
     dict(template_code="SALES_RETURN_CREDIT", sequence=50, effect=CREDIT, account_code="5011", amount_source="COGS_REVERSAL", is_required=False, requires_dynamic_account=False, context_key=None), # Optional if restocked
@@ -292,7 +301,9 @@ TEMPLATE_ITEMS: List[Dict[str, Any]] = [
     # Cancel Sales Invoice (Exact reversal of SALES_INV_AR)
     dict(template_code="CANCEL_SALES_INVOICE", sequence=10, effect=CREDIT, account_code=None, amount_source="DOCUMENT_TOTAL", is_required=True, requires_dynamic_account=True, context_key="accounts_receivable_account_id"),
     dict(template_code="CANCEL_SALES_INVOICE", sequence=20, effect=DEBIT,  account_code=None, amount_source="DOCUMENT_SUBTOTAL", is_required=True, requires_dynamic_account=True, context_key="income_account_id"),
-    dict(template_code="CANCEL_SALES_INVOICE", sequence=30, effect=DEBIT,  account_code="2311", amount_source="TAX_AMOUNT", is_required=False, requires_dynamic_account=False, context_key=None),
+    dict(template_code="CANCEL_SALES_INVOICE", sequence=30, effect=DEBIT,
+         account_code=None, amount_source="TAX_AMOUNT",
+         is_required=False, requires_dynamic_account=True, context_key="tax_account_id"),
 
     # Cancel Delivery Note (Exact reversal of DELIVERY_NOTE_COGS)
     dict(template_code="CANCEL_DELIVERY_NOTE", sequence=10, effect=CREDIT, account_code="5011", amount_source="COST_OF_GOODS_SOLD", is_required=True, requires_dynamic_account=False, context_key=None),
@@ -362,22 +373,35 @@ TEMPLATE_ITEMS: List[Dict[str, Any]] = [
     # --------------------------------------------------------------------------
     # --- Payments & Bank/Cash Items ---
     # --------------------------------------------------------------------------
-    # Receipt from Customer
-    dict(template_code="RECEIPT_FROM_CUSTOMER", sequence=10, effect=DEBIT,  account_code=None, amount_source="AMOUNT_RECEIVED", is_required=True, requires_dynamic_account=True, context_key="cash_bank_account_id"),
-    dict(template_code="RECEIPT_FROM_CUSTOMER", sequence=20, effect=CREDIT, account_code=None, amount_source="AMOUNT_RECEIVED", is_required=True, requires_dynamic_account=True, context_key="accounts_receivable_account_id"),
+    # --- PAYMENT_RECEIVE ------------------------------------------------------
+    # DR Bank/Cash (dynamic from header paid_to or explicit cash_bank_account_id)
+    dict(template_code="PAYMENT_RECEIVE", sequence=10, effect=DEBIT,
+         account_code=None, amount_source="AMOUNT_RECEIVED",
+         is_required=True, requires_dynamic_account=True, context_key="cash_bank_account_id"),
+    # CR Party Ledger (typically A/R 1131 for Customer receipt)
+    dict(template_code="PAYMENT_RECEIVE", sequence=20, effect=CREDIT,
+         account_code=None, amount_source="AMOUNT_RECEIVED",
+         is_required=True, requires_dynamic_account=True, context_key="party_ledger_account_id"),
 
-    # Payment to Supplier
-    dict(template_code="PAYMENT_TO_SUPPLIER", sequence=10, effect=DEBIT,  account_code=None, amount_source="AMOUNT_PAID", is_required=True, requires_dynamic_account=True, context_key="accounts_payable_account_id"),
-    dict(template_code="PAYMENT_TO_SUPPLIER", sequence=20, effect=CREDIT, account_code=None, amount_source="AMOUNT_PAID", is_required=True, requires_dynamic_account=True, context_key="cash_bank_account_id"),
+    # --- PAYMENT_PAY ----------------------------------------------------------
+    # DR Party Ledger (typically A/P 2111 for Supplier payment)
+    dict(template_code="PAYMENT_PAY", sequence=10, effect=DEBIT,
+         account_code=None, amount_source="AMOUNT_PAID",
+         is_required=True, requires_dynamic_account=True, context_key="party_ledger_account_id"),
+    # CR Bank/Cash
+    dict(template_code="PAYMENT_PAY", sequence=20, effect=CREDIT,
+         account_code=None, amount_source="AMOUNT_PAID",
+         is_required=True, requires_dynamic_account=True, context_key="cash_bank_account_id"),
 
-    # Refund to Customer
-    dict(template_code="REFUND_TO_CUSTOMER", sequence=10, effect=DEBIT,  account_code=None, amount_source="AMOUNT_REFUNDED", is_required=True, requires_dynamic_account=True, context_key="accounts_receivable_account_id"),
-    dict(template_code="REFUND_TO_CUSTOMER", sequence=20, effect=CREDIT, account_code=None, amount_source="AMOUNT_REFUNDED", is_required=True, requires_dynamic_account=True, context_key="cash_bank_account_id"),
-
-    # Refund from Supplier
-    dict(template_code="REFUND_FROM_SUPPLIER", sequence=10, effect=DEBIT,  account_code=None, amount_source="AMOUNT_RECEIVED", is_required=True, requires_dynamic_account=True, context_key="cash_bank_account_id"),
-    dict(template_code="REFUND_FROM_SUPPLIER", sequence=20, effect=CREDIT, account_code=None, amount_source="AMOUNT_RECEIVED", is_required=True, requires_dynamic_account=True, context_key="accounts_payable_account_id"),
-
+    # --- PAYMENT_INTERNAL_TRANSFER -------------------------------------------
+    # DR Target Bank/Cash (paid_to)
+    dict(template_code="PAYMENT_INTERNAL_TRANSFER", sequence=10, effect=DEBIT,
+         account_code=None, amount_source="AMOUNT_PAID",
+         is_required=True, requires_dynamic_account=True, context_key="paid_to_account_id"),
+    # CR Source Bank/Cash (paid_from)
+    dict(template_code="PAYMENT_INTERNAL_TRANSFER", sequence=20, effect=CREDIT,
+         account_code=None, amount_source="AMOUNT_PAID",
+         is_required=True, requires_dynamic_account=True, context_key="paid_from_account_id"),
     # --------------------------------------------------------------------------
     # --- Other & Internal Items ---
     # --------------------------------------------------------------------------

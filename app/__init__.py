@@ -150,8 +150,8 @@ def create_app() -> Flask:
     app.register_blueprint(buying_bp, url_prefix="/api/buying")
     from app.application_stock.endpoints import bp as stock_bp
     app.register_blueprint(stock_bp, url_prefix="/api/stock")
-    from app.application_sales.endpoints import bp as sales_bp
-    app.register_blueprint(sales_bp, url_prefix="/api/sales")
+    from app.application_selling.endpoints import bp as sales_bp
+    app.register_blueprint(sales_bp, url_prefix="/api/v1/selling")
     from app.navigation_workspace.endpoints import bp as nav_workspace_bp
     app.register_blueprint(nav_workspace_bp , url_prefix="/api/navigation")
     from app.application_doctypes.endpoint import docypelist_bp
