@@ -46,6 +46,7 @@ from app.application_stock.engine.handlers.sales import (
 
 logger = logging.getLogger(__name__)
 
+
 class SalesService:
     DN_PREFIX = "SDN"
     SI_PREFIX = "SINV"
@@ -75,22 +76,37 @@ class SalesService:
                 if wid not in ok_whs:
                     raise V.BizValidationError("Invalid or non-transactional warehouse in payload.")
 
-    def _resolve_income_account_id(self, company_id: int, item_detail: Dict, group_defaults: Dict, explicit_income_account_id: Optional[int]) -> int:
+    def _resolve_income_account_id(
+            self,
+            company_id: int,
+            item_detail: Dict,
+            group_defaults: Dict,
+            explicit_income_account_id: Optional[int],
+    ) -> int:
         if explicit_income_account_id:
-            return explicit_income_account_id
-        # Try item-group default first
+            return int(explicit_income_account_id)
+
+        # 1) Item Group default
         grp_id = item_detail.get("item_group_id")
         if grp_id and grp_id in group_defaults:
             acc = group_defaults[grp_id].get("default_income_account_id")
             if acc:
                 return int(acc)
-        # Fallback by type
-        is_stock = bool(item_detail.get("is_stock_item"))
+
+        # 2) Fallback by item type
+        is_stock = False
+        if "is_stock_item" in item_detail:
+            is_stock = bool(item_detail.get("is_stock_item"))
+        elif "item_type" in item_detail:
+            it = str(item_detail.get("item_type") or "").lower()
+            is_stock = it in {"stock", "stock_item"}
+
         code = "4101" if is_stock else "4102"  # Sales Income / Service Income
         aid = self.repo.get_account_id_by_code(company_id, code)
         if not aid:
+            from app.business_validation import item_validation as V
             raise V.BizValidationError(f"Default income account {code} not found.")
-        return aid
+        return int(aid)
 
     def _get_doc_type_id_or_400(self, code: str) -> int:
         dt = self.repo.get_doc_type_id(code)
@@ -98,7 +114,7 @@ class SalesService:
             raise V.BizValidationError(f"DocumentType '{code}' not found.")
         return dt
 
-    def _detect_backdated(self, company_id: int, pairs: Set[Tuple[int,int]], posting_dt: datetime) -> bool:
+    def _detect_backdated(self, company_id: int, pairs: Set[Tuple[int, int]], posting_dt: datetime) -> bool:
         def _has_future_sle(item_id: int, wh_id: int) -> bool:
             q = self.s.execute(
                 select(func.count()).select_from(StockLedgerEntry).where(
@@ -145,7 +161,6 @@ class SalesService:
         if uom_pairs:
             compat = self.repo.get_compatible_uom_pairs(company_id, uom_pairs)
             for item_id, uom_id in uom_pairs:
-                # If item is service, skip; else enforce
                 if details.get(item_id, {}).get("is_stock_item", False) and (item_id, uom_id) not in compat:
                     raise V.BizValidationError(f"UOM not compatible for item_id={item_id}")
 
@@ -168,10 +183,10 @@ class SalesService:
 
     def update_delivery_note(self, *, dn_id: int, payload: DeliveryNoteUpdate, context: AffiliationContext) -> SalesDeliveryNote:
         dn = self.repo.get_dn(dn_id, for_update=True)
-        if not dn: raise NotFound("Delivery Note not found.")
+        if not dn:
+            raise NotFound("Delivery Note not found.")
         ensure_scope_by_ids(context=context, target_company_id=dn.company_id, target_branch_id=dn.branch_id)
-        if dn.doc_status != DocStatusEnum.DRAFT:
-            raise V.BizValidationError("Only draft Delivery Notes can be updated.")
+        V.guard_draft_only(dn.doc_status)
 
         if payload.posting_date:
             from app.business_validation.posting_date_validation import PostingDateValidator
@@ -217,12 +232,14 @@ class SalesService:
 
     def submit_delivery_note(self, *, dn_id: int, context: AffiliationContext) -> SalesDeliveryNote:
         dn = self.repo.get_dn(dn_id, for_update=False)
-        if not dn: raise NotFound("Delivery Note not found.")
+        if not dn:
+            raise NotFound("Delivery Note not found.")
         ensure_scope_by_ids(context=context, target_company_id=dn.company_id, target_branch_id=dn.branch_id)
         V.guard_submittable_state(dn.doc_status)
 
         tz = get_company_timezone(self.s, dn.company_id)
-        posting_dt = resolve_posting_dt(dn.posting_date.date(), created_at=dn.created_at, tz=tz, treat_midnight_as_date=True)
+        posting_dt = resolve_posting_dt(dn.posting_date.date(), created_at=dn.created_at, tz=tz,
+                                        treat_midnight_as_date=True)
         dt_id = self._get_doc_type_id_or_400("DELIVERY_NOTE")
 
         # Build SLE intents (only stock items will be yielded by handler)
@@ -248,7 +265,15 @@ class SalesService:
 
             if is_backdated:
                 for item_id, wh_id in pairs:
-                    repost_from(self.s, dn_locked.company_id, item_id, wh_id, start_dt=posting_dt, exclude_doc_types=set())
+                    # ✅ keyword-only call
+                    repost_from(
+                        s=self.s,
+                        company_id=dn_locked.company_id,
+                        item_id=item_id,
+                        warehouse_id=wh_id,
+                        start_dt=posting_dt,
+                        exclude_doc_types=set(),
+                    )
 
             for item_id, wh_id in pairs:
                 derive_bin(self.s, dn_locked.company_id, item_id, wh_id)
@@ -351,7 +376,8 @@ class SalesService:
 
     def update_sales_invoice(self, *, si_id: int, payload: SalesInvoiceUpdate, context: AffiliationContext) -> SalesInvoice:
         si = self.repo.get_si(si_id, for_update=True)
-        if not si: raise NotFound("Sales Invoice not found.")
+        if not si:
+            raise NotFound("Sales Invoice not found.")
         ensure_scope_by_ids(context=context, target_company_id=si.company_id, target_branch_id=si.branch_id)
         if si.doc_status != DocStatusEnum.DRAFT:
             raise V.BizValidationError("Only draft Sales Invoices can be updated.")
@@ -436,15 +462,15 @@ class SalesService:
         - If paid_amount>0: auto-posts a Receipt Entry (DR bank/cash, CR A/R).
         - Sets doc_status to UNPAID / PARTIALLY_PAID / PAID accordingly.
         """
-        from decimal import Decimal, ROUND_HALF_UP
+        from decimal import Decimal as D, ROUND_HALF_UP
 
-        def _D(x) -> Decimal:
-            return Decimal(str(x or 0)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+        def _D(x) -> D:
+            return D(str(x or 0)).quantize(D("0.0001"), rounding=ROUND_HALF_UP)
 
-        def _derive_payment_status(total: Decimal, paid: Decimal) -> DocStatusEnum:
-            if paid <= Decimal("0.0000"):
+        def _derive_payment_status(total: D, paid: D) -> DocStatusEnum:
+            if paid <= D("0.0000"):
                 return DocStatusEnum.UNPAID
-            if paid + Decimal("0.0000") >= total:
+            if paid + D("0.0000") >= total:
                 return DocStatusEnum.PAID
             return DocStatusEnum.PARTIALLY_PAID
 
@@ -470,10 +496,10 @@ class SalesService:
         subtotal = _D(sum(Decimal(str(it.amount)) for it in si.items))
 
         # Income splits (per income account)
-        income_splits: Dict[int, Decimal] = {}
+        income_splits: Dict[int, D] = {}
         for it in si.items:
             acc_id = int(it.income_account_id)
-            income_splits[acc_id] = income_splits.get(acc_id, Decimal("0")) + _D(it.amount)
+            income_splits[acc_id] = income_splits.get(acc_id, D("0")) + _D(it.amount)
 
         # ---- 2) STOCK (if update_stock) ------------------------------------------
         if si.update_stock:
@@ -554,6 +580,7 @@ class SalesService:
                     payload=payload,
                     runtime_accounts={},
                     party_id=si_locked.customer_id, party_type=PartyTypeEnum.CUSTOMER,
+                    # provide AR account for template dynamic account
                     dynamic_account_context={"accounts_receivable_account_id": si_locked.debit_to_account_id}
                 )
                 PostingService(self.s).post(ctx)
@@ -564,23 +591,24 @@ class SalesService:
                         raise V.BizValidationError(
                             "Paid amount provided but mode_of_payment_id or cash_bank_account_id is missing."
                         )
-                    dt_id_receipt = self._get_doc_type_id_or_400("RECEIPT_ENTRY")
+                    # ✅ Corrected to match GL templates you seeded
+                    dt_id_payment = self._get_doc_type_id_or_400("PAYMENT_ENTRY")
                     receipt_payload = {
-                        "amount_received": float(paid_amount)
+                        "AMOUNT_RECEIVED": float(paid_amount)  # PostingService also accepts amount sources overlay
                     }
                     ctx_rcpt = PostingContext(
                         company_id=si_locked.company_id, branch_id=si_locked.branch_id,
-                        source_doctype_id=dt_id_receipt, source_doc_id=si_locked.id,  # linked to SI
+                        source_doctype_id=dt_id_payment, source_doc_id=si_locked.id,  # linked to SI
                         posting_date=posting_dt, created_by_id=context.user_id,
                         is_auto_generated=True, entry_type=None,
                         remarks=f"Receipt on {si_locked.code}",
-                        template_code="RECEIPT_FROM_CUSTOMER",
+                        template_code="PAYMENT_RECEIVE",
                         payload=receipt_payload,
                         runtime_accounts={},
                         party_id=si_locked.customer_id, party_type=PartyTypeEnum.CUSTOMER,
                         dynamic_account_context={
-                            "accounts_receivable_account_id": si_locked.debit_to_account_id,
-                            "cash_bank_account_id": si_locked.cash_bank_account_id
+                            "cash_bank_account_id": si_locked.cash_bank_account_id,   # DR
+                            "party_ledger_account_id": si_locked.debit_to_account_id  # CR (A/R)
                         }
                     )
                     PostingService(self.s).post(ctx_rcpt)
@@ -634,21 +662,21 @@ class SalesService:
                     raise V.BizValidationError(
                         "Paid amount provided but mode_of_payment_id or cash_bank_account_id is missing."
                     )
-                dt_id_receipt = self._get_doc_type_id_or_400("RECEIPT_ENTRY")
-                receipt_payload = {"amount_received": float(_D(si_locked.paid_amount))}
+                dt_id_payment = self._get_doc_type_id_or_400("PAYMENT_ENTRY")
+                receipt_payload = {"AMOUNT_RECEIVED": float(_D(si_locked.paid_amount))}
                 ctx_rcpt = PostingContext(
                     company_id=si_locked.company_id, branch_id=si_locked.branch_id,
-                    source_doctype_id=dt_id_receipt, source_doc_id=si_locked.id,
+                    source_doctype_id=dt_id_payment, source_doc_id=si_locked.id,
                     posting_date=posting_dt, created_by_id=context.user_id,
                     is_auto_generated=True, entry_type=None,
                     remarks=f"Receipt on {si_locked.code}",
-                    template_code="RECEIPT_FROM_CUSTOMER",
+                    template_code="PAYMENT_RECEIVE",
                     payload=receipt_payload,
                     runtime_accounts={},
                     party_id=si_locked.customer_id, party_type=PartyTypeEnum.CUSTOMER,
                     dynamic_account_context={
-                        "accounts_receivable_account_id": si_locked.debit_to_account_id,
-                        "cash_bank_account_id": si_locked.cash_bank_account_id
+                        "cash_bank_account_id": si_locked.cash_bank_account_id,   # DR
+                        "party_ledger_account_id": si_locked.debit_to_account_id  # CR (A/R)
                     }
                 )
                 PostingService(self.s).post(ctx_rcpt)
@@ -696,7 +724,8 @@ class SalesService:
             total_amount = Decimal("0")
             for ln in payload.items:
                 orig = orig_map.get(ln.original_item_id)
-                if not orig: raise V.BizValidationError(f"Original item {ln.original_item_id} not found.")
+                if not orig:
+                    raise V.BizValidationError(f"Original item {ln.original_item_id} not found.")
 
                 already = returned_map.get(ln.original_item_id, Decimal("0"))
                 balance = Decimal(str(orig.quantity)) - already
@@ -741,7 +770,8 @@ class SalesService:
     def submit_credit_note(self, *, cn_id: int, context: AffiliationContext) -> SalesInvoice:
         try:
             cn = self.repo.get_si(cn_id, for_update=False)
-            if not cn or not cn.is_return: raise NotFound("Credit Note not found.")
+            if not cn or not cn.is_return:
+                raise NotFound("Credit Note not found.")
             ensure_scope_by_ids(context=context, target_company_id=cn.company_id, target_branch_id=cn.branch_id)
             V.guard_submittable_state(cn.doc_status)
 
@@ -850,11 +880,11 @@ class SalesService:
             self.s.rollback()
             raise
 
-        # ---------- helpers ----------
-
+    # ---------- helpers ----------
     def _get_already_returned_quantities(self, original_item_ids: List[int]) -> Dict[int, Decimal]:
-        if not original_item_ids: return {}
-        SI = SalesInvoice;
+        if not original_item_ids:
+            return {}
+        SI = SalesInvoice
         SII = SalesInvoiceItem
         stmt = (
             select(

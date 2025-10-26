@@ -201,19 +201,19 @@ TEMPLATE_DEFS: List[Dict[str, Any]] = [
     # --------------------------------------------------------------------------
     dict(
         doctype_code="PAYMENT_ENTRY",
-        code="PAYMENT_RECEIVE",  # Receipt from Customer (or money received from any party)
+        code="PAYMENT_RECEIVE",
         label="Receipt (Receive)",
         description="DR Bank/Cash; CR Party Ledger (A/R for Customer, A/P for Supplier refund if you prefer).",
         is_active=True,
-        is_primary=True,
+        is_primary=True,  # ← keep this True
     ),
     dict(
         doctype_code="PAYMENT_ENTRY",
-        code="PAYMENT_PAY",  # Payment to Supplier (or money paid to any party)
+        code="PAYMENT_PAY",
         label="Payment (Pay)",
         description="DR Party Ledger (A/P for Supplier, A/R for Customer refund if you prefer); CR Bank/Cash.",
         is_active=True,
-        is_primary=True,
+        is_primary=False,  # ← change to False
     ),
     dict(
         doctype_code="PAYMENT_ENTRY",
@@ -221,7 +221,7 @@ TEMPLATE_DEFS: List[Dict[str, Any]] = [
         label="Internal Transfer",
         description="Cash/Bank to Cash/Bank. DR Target; CR Source.",
         is_active=True,
-        is_primary=True,
+        is_primary=False,  # ← change to False
     ),
 
     # --------------------------------------------------------------------------
