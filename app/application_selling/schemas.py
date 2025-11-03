@@ -2,7 +2,8 @@ from __future__ import annotations
 from typing import Optional, List
 from datetime import datetime
 from decimal import Decimal
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Delivery Note (Create/Update)
@@ -40,11 +41,7 @@ class DeliveryNoteItemUpdate(BaseModel):
     unit_price: Optional[Decimal] = Field(None, ge=Decimal(0))
     remarks: Optional[str] = Field(None, max_length=255)
 
-class DeliveryNoteUpdate(BaseModel):
-    posting_date: Optional[datetime] = None
-    customer_id: Optional[int] = None
-    remarks: Optional[str] = None
-    items: Optional[List[DeliveryNoteItemUpdate]] = None  # full sync when provided
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Sales Invoice (Create/Update)
@@ -52,10 +49,10 @@ class DeliveryNoteUpdate(BaseModel):
 
 class SalesInvoiceItemCreate(BaseModel):
     item_id: int
-    uom_id: Optional[int] = None                # Optional; not needed for service items
+    uom_id: Optional[int] = None
     quantity: Decimal
     rate: Decimal = Field(..., ge=Decimal(0))
-    warehouse_id: Optional[int] = None          # Required only for stock lines if update_stock=True
+    warehouse_id: Optional[int] = None
     income_account_id: Optional[int] = None
     delivery_note_item_id: Optional[int] = None
     remarks: Optional[str] = Field(None, max_length=255)
@@ -67,24 +64,29 @@ class SalesInvoiceItemCreate(BaseModel):
         return self
 
 class SalesInvoiceCreate(BaseModel):
+    # Pydantic v2: forbid unknown keys so bad payloads are rejected up front
+    model_config = ConfigDict(extra="forbid")
+
     company_id: Optional[int] = None
     branch_id: Optional[int] = None
     customer_id: int
     posting_date: datetime
 
-    debit_to_account_id: Optional[int] = None   # default to 1131 if missing
+    debit_to_account_id: Optional[int] = None
     vat_account_id: Optional[int] = None
     vat_rate: Optional[Decimal] = None
-    vat_amount: Decimal = Field(default=Decimal("0"), ge=Decimal(0))
+    vat_amount: Decimal = Field(default=Decimal("0"), ge=Decimal(0))  # ignored when vat_rate is provided
+
+    # NEW — payment-at-create support
+    paid_amount: Decimal = Field(default=Decimal("0"), ge=Decimal(0))
+    mode_of_payment_id: Optional[int] = None
+    cash_bank_account_id: Optional[int] = None
 
     due_date: Optional[datetime] = None
     code: Optional[str] = None
     remarks: Optional[str] = None
-
-    # Mode:
-    update_stock: bool = False                  # direct SI with stock movement
-    delivery_note_id: Optional[int] = None      # finance-only against DN
-
+    update_stock: bool = False
+    delivery_note_id: Optional[int] = None
     items: List[SalesInvoiceItemCreate]
 
     @field_validator("items")
@@ -95,27 +97,45 @@ class SalesInvoiceCreate(BaseModel):
 
     @model_validator(mode="after")
     def _validate_mode(self) -> "SalesInvoiceCreate":
-        if self.delivery_note_id:
-            if self.update_stock:
-                raise ValueError("Cannot set 'update_stock' when invoicing against a Delivery Note.")
-        if self.vat_amount and self.vat_amount > 0 and not self.vat_account_id:
-            raise ValueError("VAT account is required when VAT amount > 0.")
+        if self.delivery_note_id and self.update_stock:
+            raise ValueError("Cannot set 'Update Stock' when invoicing against a Delivery Note.")
+        # basic VAT sanity here; full rules in service
+        if self.vat_amount and self.vat_amount > 0 and not self.vat_account_id and self.vat_rate is None:
+            raise ValueError("Add a VAT account when VAT amount > 0.")
         return self
+
+
 
 class SalesInvoiceItemUpdate(SalesInvoiceItemCreate):
     id: Optional[int] = None
 
 class SalesInvoiceUpdate(BaseModel):
+    # still reject unknown keys (prevents silent bugs)
+    model_config = ConfigDict(extra="forbid")
+
     posting_date: Optional[datetime] = None
     customer_id: Optional[int] = None
     debit_to_account_id: Optional[int] = None
     vat_account_id: Optional[int] = None
     vat_rate: Optional[Decimal] = None
     vat_amount: Optional[Decimal] = Field(None, ge=Decimal(0))
+    # payment edits (draft only)
+    paid_amount: Optional[Decimal] = Field(None, ge=Decimal(0))
+    mode_of_payment_id: Optional[int] = None
+    cash_bank_account_id: Optional[int] = None
+
     due_date: Optional[datetime] = None
     remarks: Optional[str] = None
-    items: Optional[List[SalesInvoiceItemUpdate]] = None  # full sync when provided
+    items: Optional[List[SalesInvoiceItemUpdate]] = None
 
+    # NEW: allow toggling update_stock in draft
+    update_stock: Optional[bool] = None
+
+class DeliveryNoteUpdate(BaseModel):
+    posting_date: Optional[datetime] = None
+    customer_id: Optional[int] = None
+    remarks: Optional[str] = None
+    items: Optional[List[DeliveryNoteItemUpdate]] = None  # full sync when provided
 # ─────────────────────────────────────────────────────────────────────────────
 # Credit Note (Return)
 # ─────────────────────────────────────────────────────────────────────────────

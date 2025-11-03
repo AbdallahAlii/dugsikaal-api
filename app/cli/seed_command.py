@@ -13,6 +13,7 @@ from app.seed_data.core.seeder import seed_initial_organization
 from app.seed_data.doctypes.seeder import seed_document_types
 from app.seed_data.gl_templates.seeder import seed_gl_templates
 from app.seed_data.navigation_workspace.seeder import seed_navigation_workspaces
+from app.seed_data.pricing.seeder import seed_price_lists
 # Your Flask-SQLAlchemy db
 from config.database import db
 
@@ -223,4 +224,25 @@ def seed_nav_only():
         db.session.rollback()
         logger.error("Navigation seeding failed", exc_info=True)
         click.secho(f"❌ Error seeding Navigation Workspaces: {e}", fg="red")
+        raise SystemExit(1)
+
+
+
+@seed_cli.command("price-lists")
+@with_appcontext
+@click.option("--company", "company_ids", multiple=True, type=int,
+              help="Company IDs to seed Price Lists for (repeatable). If omitted, uses 1.")
+def seed_price_lists_only(company_ids: tuple[int, ...]):
+    """Run only the Price List seeder."""
+    try:
+        ids = list(company_ids) or [1]
+        click.echo(f"🌱 Seeding Price Lists for: {ids}")
+        for cid in ids:
+            seed_price_lists(db.session, company_id=cid)
+        db.session.commit()  # harmless if already committed inside
+        click.secho("✅ Price Lists seeded successfully!", fg="green")
+    except Exception as e:
+        db.session.rollback()
+        logger.error("Price List seeding failed", exc_info=True)
+        click.secho(f"❌ Error seeding Price Lists: {e}", fg="red")
         raise SystemExit(1)

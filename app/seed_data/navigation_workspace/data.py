@@ -19,15 +19,29 @@ WORKSPACES: list[dict] = [
              "perm": "Sales Quotation:READ"},
 
 
-
-            {"label": "Delivery Note", "path": "/selling/delivery-note/list", "icon": "truck",
-             "perm": "Delivery Note:READ"},
+            #
+            # {"label": "Delivery Note", "path": "/selling/delivery-note/list", "icon": "truck",
+            #  "perm": "Delivery Note:READ"},
             {"label": "Sales Invoice", "path": "/selling/sales-invoice/list", "icon": "receipt",
              "perm": "Sales Invoice:READ"}
 
         ],
 
-        "sections": [],
+        "sections": [
+            {
+                "label": "Reports",
+                "order_index": 30,
+                "links": [
+
+                    {"label": "Accounts Receivable", "path": "/accounts/report/accounts-receivable", "icon": "user-plus",
+                     "perm": "Accounts Receivable Report:READ"},
+                    {"label": "Accounts Receivable Summary","path": "/accounts/report/accounts-receivable-summary", "icon": "users",
+                     "perm": "Accounts Receivable Summary Report:READ"},
+                    {"label": "Sales Item Report", "path": "/accounts/report/gross-profit", "icon": "percent",
+                     "perm": "Gross Profit Report:READ"},
+                ],
+            },
+        ],
     },
 
     # === BUYING ===
@@ -51,26 +65,23 @@ WORKSPACES: list[dict] = [
 
         ],
 
-        "sections": [],
-    },
+        "sections": [
+            {
+                "label": "Reports",
+                "order_index": 30,
+                "links": [
 
-    # === INVENTORY ===
-    {
-        "slug": "inventory",
-        "title": "Inventory",
-        "icon": "boxes",
-        "description": "Items, warehouses, stock",
-        "order_index": 30,
-        "root_links": [
-            {"label": "Item", "path": "/inventory/item/list", "icon": "box", "perm": "Item:READ"},
-            {"label": "Brand", "path": "/inventory/brand/list", "icon": "badge", "perm": "Brand:READ"},
-            {"label": "UOM", "path": "/inventory/uom/list", "icon": "ruler", "perm": "UOM:READ"},
-            # ✅ Singular, matches DocType + RBAC
-            {"label": "UOM Conversion", "path": "/inventory/uom-conversion/list", "icon": "sync",
-             "perm": "UOM Conversion:READ"},
-            {"label": "Item Price", "path": "/inventory/item-price/list", "icon": "tag", "perm": "Item Price:READ"},
+                    {"label": "Accounts Payable", "path": "/accounts/report/accounts-payable", "icon": "user-minus",
+                     "perm": "Accounts Payable Report:READ"},
+                    {"label": "Accounts Payable Summary", "path": "/accounts/report/accounts-payable-summary",
+                     "icon": "users",
+                     "perm": "Accounts Payable Summary Report:READ"},
+                ],
+            },
         ],
     },
+
+
 
     # === STOCK ===
     {
@@ -80,12 +91,26 @@ WORKSPACES: list[dict] = [
         "description": "Stock management",
         "order_index": 35,
         "root_links": [
+            {"label": "Item", "path": "/stock/item/list", "icon": "box", "perm": "Item:READ"},
             {"label": "Stock Entry", "path": "/stock/stock-entry/list", "icon": "arrows-left-right",
              "perm": "Stock Entry:READ"},
             {"label": "Stock Reconciliation", "path": "/stock/stock-reconciliation/list", "icon": "scale",
              "perm": "Stock Reconciliation:READ"},
             {"label": "Bin", "path": "/stock/bin/list", "icon": "cubes", "perm": "Bin:READ"},
             {"label": "Warehouse", "path": "/stock/warehouse/list", "icon": "warehouse", "perm": "Warehouse:READ"},
+        ],
+        "sections": [
+            {
+                "label": "Reports",
+                "order_index": 30,
+                "links": [
+                    {"label": "Total Stock Summary", "path": "/stock/report/total-stock-summary", "icon": "archive",
+                     "perm": "Total Stock Summary Report:READ"},
+                    {"label": "Stock Balance", "path": "/stock/report/stock-balance", "icon": "scale"},
+                    {"label": "Stock Ledger", "path": "/stock/report/stock-ledger", "icon": "book-open",
+                     "perm": "Stock Ledger Report:READ"}
+                ],
+            },
         ],
     },
 
@@ -99,210 +124,108 @@ WORKSPACES: list[dict] = [
         "root_links": [
             {"label": "Chart of Accounts", "path": "/accounts/chart-of-accounts/list", "icon": "tree-pine",
              "perm": "Chart of Accounts:READ"},
-            {"label": "Cost Center", "path": "/accounts/cost-center/list", "icon": "layout-grid",
-             "perm": "Cost Center:READ"},
-            {"label": "Bank Account", "path": "/accounts/bank-account/list", "icon": "credit-card",
-             "perm": "Bank Account:READ"},
             {"label": "Mode of Payment", "path": "/accounts/mode-of-payment/list", "icon": "wallet",
              "perm": "Mode of Payment:READ"},
-            {"label": "Payment Terms", "path": "/accounts/payment-terms/list", "icon": "list-checks",
-             "perm": "Payment Terms:READ"},
-            {"label": "Fiscal Year", "path": "/accounts/fiscal-year/list", "icon": "calendar",
-             "perm": "Fiscal Year:READ"},
+            {"label": "Journal Entry", "path": "/accounts/journal-entry/list", "icon": "book-open",
+             "perm": "Journal Entry:READ"},
+            {"label": "Payment Entry", "path": "/accounts/payment-entry/list", "icon": "wallet",
+             "perm": "Payment Entry:READ"},
+            {"label": "Expense Claim", "path": "/accounts/expense-claim/list", "icon": "receipt",
+             "perm": "Expense Claim:READ"},
         ],
         "sections": [
             {
-                "label": "Transactions",
-                "order_index": 20,
+                "label": "Reports",
+                "order_index": 50, # Placed after core transactions
                 "links": [
-                    {"label": "Journal Entry", "path": "/accounts/journal-entry/list", "icon": "book-open",
-                     "perm": "Journal Entry:READ"},
-                    {"label": "Payment Entry", "path": "/accounts/payment-entry/list", "icon": "wallet",
-                     "perm": "Payment Entry:READ"},
-                    {"label": "Expense Claim", "path": "/accounts/expense-claim/list", "icon": "receipt",
-                     "perm": "Expense Claim:READ"},
+                    # Primary Financial Statements (most important for owner)
+                    {"label": "Profit and Loss", "path": "/accounts/report/profit-and-loss", "icon": "trending-up",
+                     "perm": "Profit and Loss Report:READ"},
+                    {"label": "Balance Sheet", "path": "/accounts/report/balance-sheet", "icon": "landmark",
+                     "perm": "Balance Sheet Report:READ"},
+                    {"label": "Cash Flow Statement", "path": "/accounts/report/cash-flow", "icon": "activity",
+                     "perm": "Cash Flow Report:READ"},
+
+                    # Audit & Control Reports
+                    {"label": "General Ledger", "path": "/accounts/report/gl", "icon": "book-marked",
+                     "perm": "General Ledger Report:READ"},
+                    {"label": "Trial Balance", "path": "/accounts/report/trial-balance", "icon": "scale",
+                     "perm": "Trial Balance Report:READ"},
+
+                    # Operational Overviews
+                    {"label": "Accounts Receivable", "path": "/accounts/report/accounts-receivable", "icon": "user-plus",
+                     "perm": "Accounts Receivable Report:READ"},
+                    {"label": "Accounts Payable", "path": "/accounts/report/accounts-payable", "icon": "user-minus",
+                     "perm": "Accounts Payable Report:READ"},
+                    {"label": "Gross Profit", "path": "/accounts/report/gross-profit", "icon": "percent",
+                     "perm": "Gross Profit Report:READ"},
                 ],
             },
         ],
     },
 
-    # === REPORTS ===
-    {
-        "slug": "reports",
-        "title": "Reports",
-        "icon": "trending-up",
-        "description": "Financial statements & reports",
-        "order_index": 45,
-        "root_links": [
-            # ✅ Matches RBAC: "General Ledger Report" doc with READ
-            {"label": "General Ledger", "path": "/accounts/report/gl", "icon": "book-marked",
-             "perm": "General Ledger Report:READ"},
-            {"label": "Trial Balance", "path": "/accounts/report/trial-balance", "icon": "scale",
-             "perm": "Trial Balance Report:READ"},
-            {"label": "Balance Sheet", "path": "/accounts/report/balance-sheet", "icon": "landmark",
-             "perm": "Balance Sheet Report:READ"},
-            {"label": "Profit and Loss", "path": "/accounts/report/profit-and-loss", "icon": "trending-up",
-             "perm": "Profit and Loss Report:READ"},
-            {"label": "Cash Flow Statement", "path": "/accounts/report/cash-flow", "icon": "activity",
-             "perm": "Cash Flow Report:READ"},
-            {"label": "Gross Profit", "path": "/accounts/report/gross-profit", "icon": "percent",
-             "perm": "Gross Profit Report:READ"},
-            {"label": "Accounts Receivable", "path": "/accounts/report/accounts-receivable", "icon": "user-plus",
-             "perm": "Accounts Receivable Report:READ"},
-            {"label": "Accounts Payable", "path": "/accounts/report/accounts-payable", "icon": "user-minus",
-             "perm": "Accounts Payable Report:READ"},
-        ],
-        "sections": [],
-    },
-
-    # === PARTIES ===
-    # {
-    #     "slug": "parties",
-    #     "title": "Parties",
-    #     "icon": "users",
-    #     "description": "Shared customers/suppliers/partners",
-    #     "order_index": 50,
-    #     "root_links": [
-    #         {"label": "Party", "path": "/parties/party/list", "icon": "users", "perm": "Party:READ"},
-    #     ],
-    #     "sections": [],
-    # },
 
     # === HR ===
     {
         "slug": "hr",
-        "title": "HR",
+        "title": "HR & People",
         "icon": "id-card",
-        "description": "People & payroll",
+        "description": "Employee records and basics.",
         "order_index": 60,
+
+        # Minimal daily-use links only
         "root_links": [
-            {"label": "Employee", "path": "/hr/employee/list", "icon": "user-round", "perm": "Employee:READ"},
-            # Branch lives in System module but useful shortcut here
-            {"label": "Branch", "path": "/hr/branch/list", "icon": "git-fork", "perm": "Branch:READ"},
-            {"label": "Department", "path": "/hr/department/list", "icon": "building-2", "perm": "Department:READ"},
+            {"label": "Employee", "path": "/hr/employee/list", "icon": "user-round",
+             "perm": "Employee:READ"},
+            {"label": "Employee Checkin", "path": "/hr/employee-checkin/list", "icon": "log-in",
+             "perm": "Employee Checkin:READ"},
+            {"label": "Shift Type", "path": "/hr/shift-type/list", "icon": "clock",
+             "perm": "Shift Type:READ"},
+            {"label": "Employee Group", "path": "/hr/employee-group/list", "icon": "users",
+             "perm": "Employee Group:READ"},
+            {"label": "Employee Health Insurance", "path": "/hr/employee-health-insurance/list", "icon": "heart-pulse",
+             "perm": "Employee Health Insurance:READ"},
         ],
-        "sections": [
-            {
-                "label": "Masters",
-                "order_index": 10,
-                "links": [
-                    {"label": "Shift Type", "path": "/hr/shift-type/list", "icon": "clock",
-                     "perm": "Shift Type:READ"},
-                    {"label": "Holiday List", "path": "/hr/holiday-list/list", "icon": "calendar-range",
-                     "perm": "Holiday List:READ"},
-                    {"label": "Leave Type", "path": "/hr/leave-type/list", "icon": "ticket",
-                     "perm": "Leave Type:READ"},
-                ],
-            },
-            {
-                "label": "Operations",
-                "order_index": 20,
-                "links": [
-                    {"label": "Shift Assignment", "path": "/hr/shift-assignment/list", "icon": "calendar-plus",
-                     "perm": "Shift Assignment:READ"},
-                    {"label": "Staff Attendance", "path": "/hr/staff-attendance/list", "icon": "calendar-check-2",
-                     "perm": "Staff Attendance:READ"},
-                    {"label": "Leave Application", "path": "/hr/leave-application/list", "icon": "file-pen",
-                     "perm": "Leave Application:READ"},
-                ],
-            },
-            {
-                "label": "Payroll",
-                "order_index": 30,
-                "links": [
-                    {"label": "Salary Structure", "path": "/hr/salary-structure/list", "icon": "file-cog",
-                     "perm": "Salary Structure:READ"},
-                    {"label": "Payroll Entry", "path": "/hr/payroll-entry/list", "icon": "file-dollar-sign",
-                     "perm": "Payroll Entry:READ"},
-                    {"label": "Salary Slip", "path": "/hr/salary-slip/list", "icon": "file-text",
-                     "perm": "Salary Slip:READ"},
-                ],
-            },
-        ],
-    },
 
-    # === SYSTEM ===
-    # {
-    #     "slug": "system",
-    #     "title": "System",
-    #     "icon": "settings",
-    #     "description": "Company setup & system configuration",
-    #     "order_index": 90,
-    #     "root_links": [
-    #         {"label": "Organization", "path": "/system/organization/list", "icon": "building",
-    #          "perm": "Organization:READ"},
-    #         {"label": "Branch", "path": "/system/branch/list", "icon": "git-branch", "perm": "Branch:READ"},
-    #         {"label": "System Settings", "path": "/system/system-settings/list", "icon": "settings-2",
-    #          "perm": "System Settings:READ"},
-    #     ],
-    #     "sections": [],
-    # },
-
-    # === PLATFORM HOST ADMIN (SYSTEM ADMIN ONLY) ===
-    {
-        "slug": "platform-admin",
-        "title": "Platform Host Admin",
-        "icon": "server-cog",
-        "description": "Multi-tenant/client provisioning, subscriptions, and host-level integrations.",
-        "order_index": 92,  # ← placed between System (90) and Access Control (95)
-        "admin_only": True,  # critical: restricted to System Admin at nav layer
-        "root_links": [
-            {"label": "Tenants (SaaS Accounts)", "path": "/platform-admin/tenant/list", "icon": "building-2",
-             "perm": "Tenant:READ"},
-            {"label": "Organizations (Client Co.)", "path": "/platform-admin/organization/list", "icon": "building",
-             "perm": "Organization:READ"},
-            {"label": "Branches (Client Locations)", "path": "/platform-admin/branch/list", "icon": "git-branch",
-             "perm": "Branch:READ"},
-            {"label": "Subscription Plans", "path": "/platform-admin/subscription-plan/list", "icon": "dollar-sign",
-             "perm": "Subscription Plan:READ"},
-        ],
-        "sections": [
-            {
-                "label": "Host Configuration",
-                "order_index": 10,
-                "links": [
-                    {"label": "Platform Settings", "path": "/platform-admin/platform-settings/form",
-                     "icon": "settings-2",
-                     "perm": "Platform Settings:READ"},
-                    {"label": "Integration Registry", "path": "/platform-admin/integration/list", "icon": "plug-zap",
-                     "perm": "Integration:READ"},
-                ],
-            },
-            {
-                "label": "Gateways",
-                "order_index": 20,
-                "links": [
-                    {"label": "Email Gateway", "path": "/platform-admin/email-gateway/list", "icon": "mail",
-                     "perm": "Email Gateway:READ"},
-                    {"label": "SMS Gateway", "path": "/platform-admin/sms-gateway/list", "icon": "message-square-text",
-                     "perm": "SMS Gateway:READ"},
-                    {"label": "Storage Connection", "path": "/platform-admin/storage-connection/list", "icon": "cloud",
-                     "perm": "Storage Connection:READ"},
-                ],
-            },
-
-        ],
-    },
-
-    # === DATA MANAGEMENT (SYSTEM ADMIN ONLY) ===
-    {
-        "slug": "data",
-        "title": "Data Management",
-        "icon": "hard-drive",
-        "description": "Import templates and import jobs across domains",
-        "order_index": 93,  # just after Platform Admin, before Access Control
-        "admin_only": True,  # restrict initial visibility; can relax later
-        "root_links": [
-            {"label": "Import Templates", "path": "/data/import-template/list", "icon": "file-spreadsheet",
-             "perm": "Import Template:READ"},
-            {"label": "Import Jobs", "path": "/data/import-job/list", "icon": "upload",
-             "perm": "Import Job:READ"},
-            {"label": "Export Jobs", "path": "/data/export-job/list", "icon": "download",
-             "perm": "Export Job:READ"},
-        ],
+        # keep empty—everything else via DocTypes directory
         "sections": [],
-
     },
+
+
+
+
+    # === HOST ADMINISTRATION (SYSTEM ADMIN ONLY) ===
+    {
+        "slug": "host-admin",
+        "title": "Host Administration",
+        "icon": "server-cog",
+        "description": "Client companies and subscription management",
+        "order_index": 92,
+        "admin_only": True,
+
+        "root_links": [
+            # Client Management
+            {"label": "Clients", "path": "/host-admin/tenant/list", "icon": "building-2",
+             "perm": "Tenant:READ"},
+            {"label": "Companies", "path": "/host-admin/company/list", "icon": "building",
+             "perm": "Company:READ"},
+
+            # Branch & Navigation Management
+            {"label": "Branches", "path": "/host-admin/branch/list", "icon": "git-branch",
+             "perm": "Branch:READ"},
+            {"label": "Workspace Setup", "path": "/host-admin/workspace/list", "icon": "layout-dashboard",
+             "perm": "Workspace:READ"},
+
+            # Subscription Management
+            {"label": "Subscription Plans", "path": "/host-admin/subscription-plan/list", "icon": "dollar-sign",
+             "perm": "Subscription Plan:READ"},
+            {"label": "Active Subscriptions", "path": "/host-admin/subscription/list", "icon": "credit-card",
+             "perm": "Subscription:READ"},
+        ],
+
+        "sections": [],
+    },
+
     {
         "slug": "doctype-directory",
         "title": "DocTypes",

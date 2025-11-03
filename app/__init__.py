@@ -160,5 +160,6 @@ def create_app() -> Flask:
 
     app.register_blueprint(docypelist_bp)
 
-
+    from app.application_pricing.api import bp as pricing_bp
+    app.register_blueprint(pricing_bp)
     return app

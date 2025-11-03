@@ -42,22 +42,59 @@ def ensure_balanced(total_debit: Decimal, total_credit: Decimal) -> None:
     if (total_debit or 0) != (total_credit or 0):
         raise PostingValidationError(f"Journal not balanced. DR={total_debit} CR={total_credit}.")
 
+# def ensure_idempotent_absent(
+#     s: Session,
+#     *, company_id: int, source_doctype_id: int, source_doc_id: int, entry_type: str
+# ) -> None:
+#     """
+#     Soft idempotency guard: reject if an AUTO journal already exists for same doc and entry type.
+#     """
+#     exists = s.execute(
+#         select(JournalEntry.id).where(
+#             JournalEntry.company_id == company_id,
+#             JournalEntry.source_doctype_id == source_doctype_id,
+#             JournalEntry.source_doc_id == source_doc_id,
+#             JournalEntry.entry_type == entry_type,
+#             JournalEntry.is_auto_generated == True,   # noqa
+#             JournalEntry.doc_status == DocStatusEnum.SUBMITTED,
+#         ).limit(1)
+#     ).scalar_one_or_none()
+#     if exists:
+#         raise IdempotencyError("An auto-generated journal for this document/action already exists.")
 def ensure_idempotent_absent(
-    s: Session,
-    *, company_id: int, source_doctype_id: int, source_doc_id: int, entry_type: str
+        s: Session,
+        *, company_id: int, source_doctype_id: int, source_doc_id: int, entry_type: str
 ) -> None:
     """
     Soft idempotency guard: reject if an AUTO journal already exists for same doc and entry type.
     """
+    # DEBUG: Log what we're looking for
+    print(
+        f"🔍 IDEMPOTENCY CHECK: Looking for company_id={company_id}, source_doctype_id={source_doctype_id}, source_doc_id={source_doc_id}, entry_type={entry_type}")
+
     exists = s.execute(
         select(JournalEntry.id).where(
             JournalEntry.company_id == company_id,
             JournalEntry.source_doctype_id == source_doctype_id,
             JournalEntry.source_doc_id == source_doc_id,
             JournalEntry.entry_type == entry_type,
-            JournalEntry.is_auto_generated == True,   # noqa
+            JournalEntry.is_auto_generated == True,  # noqa
             JournalEntry.doc_status == DocStatusEnum.SUBMITTED,
         ).limit(1)
     ).scalar_one_or_none()
+
+    # DEBUG: Log what we found
+    if exists:
+        print(f"🚫 IDEMPOTENCY BLOCKED: Found existing Journal Entry ID {exists}")
+        # Let's see what this journal actually is
+        je = s.execute(
+            select(JournalEntry).where(JournalEntry.id == exists)
+        ).scalar_one_or_none()
+        if je:
+            print(
+                f"📄 Existing JE: source_doctype_id={je.source_doctype_id}, source_doc_id={je.source_doc_id}, code={je.code}")
+    else:
+        print(f"✅ IDEMPOTENCY PASSED: No existing journal found")
+
     if exists:
         raise IdempotencyError("An auto-generated journal for this document/action already exists.")

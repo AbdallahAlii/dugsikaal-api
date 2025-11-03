@@ -1,34 +1,40 @@
-# app/application_selling/list_configs.py
 from __future__ import annotations
 
 from app.application_doctypes.core_lists.config import ListConfig, register_list_configs
-from app.application_sales.models import (
-    SalesQuotation, SalesDeliveryNote, SalesInvoice, SalesReturn
+from app.application_selling.models import (
+    SalesQuotation, SalesDeliveryNote, SalesInvoice
 )
 from app.application_parties.parties_models import Party
-from app.application_sales.query_builders.build_selling_queries import (
+from app.application_selling.query_builders.build_selling_queries import (
     build_sales_quotations_query,
     build_sales_delivery_notes_query,
     build_sales_invoices_query,
-    build_sales_returns_query,
 )
-
+from app.application_org.models.company import Branch
 SELLING_LIST_CONFIGS = {
-    "sales_quotations": ListConfig(
-        permission_tag="Sales Quotation",
-        query_builder=build_sales_quotations_query,
-        search_fields=[SalesQuotation.code, Party.name],
+    "sales_invoices": ListConfig(
+        permission_tag="Sales Invoice",
+        query_builder=build_sales_invoices_query,
+        # search by code or customer
+        search_fields=[SalesInvoice.code, Party.name, Branch.name],
+
+    # allow common sorts; expose both "code" and "document_number" for compatibility
         sort_fields={
-            "posting_date": SalesQuotation.posting_date,
-            "document_number": SalesQuotation.code,
-            "id": SalesQuotation.id,
+            "posting_date": SalesInvoice.posting_date,
+            "code": SalesInvoice.code,
+            "document_number": SalesInvoice.code,
+            "total_amount": SalesInvoice.total_amount,
+            "id": SalesInvoice.id,
         },
+        # keep powerful filters even if not returned in columns
         filter_fields={
-            "company_id": SalesQuotation.company_id,
-            "branch_id": SalesQuotation.branch_id,
-            "customer_id": SalesQuotation.customer_id,
-            "status": SalesQuotation.doc_status,
-            "posting_date": SalesQuotation.posting_date,
+            "company_id": SalesInvoice.company_id,
+            "branch_id": SalesInvoice.branch_id,
+            "branch_name": Branch.name,
+            "customer_id": SalesInvoice.customer_id,
+            "status": SalesInvoice.doc_status,
+            "posting_date": SalesInvoice.posting_date,
+            "due_date": SalesInvoice.due_date,
         },
         cache_enabled=False,
     ),
@@ -38,6 +44,7 @@ SELLING_LIST_CONFIGS = {
         search_fields=[SalesDeliveryNote.code, Party.name],
         sort_fields={
             "posting_date": SalesDeliveryNote.posting_date,
+            "code": SalesDeliveryNote.code,
             "document_number": SalesDeliveryNote.code,
             "total_amount": SalesDeliveryNote.total_amount,
             "id": SalesDeliveryNote.id,
@@ -51,43 +58,22 @@ SELLING_LIST_CONFIGS = {
         },
         cache_enabled=False,
     ),
-    "sales_invoices": ListConfig(
-        permission_tag="Sales Invoice",
-        query_builder=build_sales_invoices_query,
-        search_fields=[SalesInvoice.code, Party.name],
+    "sales_quotations": ListConfig(
+        permission_tag="Sales Quotation",
+        query_builder=build_sales_quotations_query,
+        search_fields=[SalesQuotation.code, Party.name],
         sort_fields={
-            "posting_date": SalesInvoice.posting_date,
-            "document_number": SalesInvoice.code,
-            "total_amount": SalesInvoice.total_amount,
-            "amount_paid": SalesInvoice.amount_paid,
-            "balance_due": SalesInvoice.balance_due,
-            "id": SalesInvoice.id,
+            "posting_date": SalesQuotation.posting_date,
+            "code": SalesQuotation.code,
+            "document_number": SalesQuotation.code,
+            "id": SalesQuotation.id,
         },
         filter_fields={
-            "company_id": SalesInvoice.company_id,
-            "branch_id": SalesInvoice.branch_id,
-            "customer_id": SalesInvoice.customer_id,
-            "status": SalesInvoice.doc_status,
-            "posting_date": SalesInvoice.posting_date,
-            "update_stock": SalesInvoice.update_stock,
-        },
-        cache_enabled=False,
-    ),
-    "sales_returns": ListConfig(
-        permission_tag="Sales Return",
-        query_builder=build_sales_returns_query,
-        search_fields=[SalesReturn.code, Party.name],
-        sort_fields={
-            "posting_date": SalesReturn.posting_date,
-            "document_number": SalesReturn.code,
-            "id": SalesReturn.id,
-        },
-        filter_fields={
-            "company_id": SalesReturn.company_id,
-            "branch_id": SalesReturn.branch_id,
-            "customer_id": SalesReturn.customer_id,
-            "status": SalesReturn.doc_status,
-            "posting_date": SalesReturn.posting_date,
+            "company_id": SalesQuotation.company_id,
+            "branch_id": SalesQuotation.branch_id,
+            "customer_id": SalesQuotation.customer_id,
+            "status": SalesQuotation.doc_status,
+            "posting_date": SalesQuotation.posting_date,
         },
         cache_enabled=False,
     ),

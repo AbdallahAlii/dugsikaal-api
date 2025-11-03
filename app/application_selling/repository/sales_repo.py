@@ -75,18 +75,34 @@ class SalesRepository:
             self.s.delete(existing[lid])
 
     def sync_si_lines(self, si: SalesInvoice, lines: List[Dict]) -> None:
+        """
+        Upsert invoice lines. Ignore generated / read-only columns like `amount`.
+        """
+        # Only these fields can be set via app logic
+        UPDATABLE = {
+            "item_id", "uom_id", "warehouse_id",
+            "delivery_note_item_id", "return_against_item_id",
+            "quantity", "rate", "income_account_id",
+            "cost_center_id", "remarks"
+        }
+
         existing = {l.id: l for l in si.items}
         keep: Set[int] = set()
+
         for d in lines:
             lid = d.get("id")
+            payload = {k: v for k, v in d.items() if k in UPDATABLE}
+
             if lid and lid in existing:
                 line = existing[lid]
-                for k, v in d.items():
-                    if hasattr(line, k):
-                        setattr(line, k, v)
+                for k, v in payload.items():
+                    setattr(line, k, v)
                 keep.add(lid)
             else:
-                self.s.add(SalesInvoiceItem(invoice_id=si.id, **d))
+                # insert new line; do NOT pass generated columns like `amount`
+                self.s.add(SalesInvoiceItem(invoice_id=si.id, **payload))
+
+        # delete removed lines
         for lid in set(existing.keys()) - keep:
             self.s.delete(existing[lid])
 

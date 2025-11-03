@@ -264,7 +264,10 @@ class PriceList(BaseModel):
         default=PriceListType.SELLING,
         comment="Determines if this price list is used for Sales, Purchases, or both."
     )
-
+    price_not_uom_dependent: Mapped[bool] = mapped_column(
+        db.Boolean, nullable=False, default=True, index=True,
+        comment="ERP-style: if true, use same price irrespective of txn UOM; convert for display."
+    )
 
     is_active: Mapped[bool] = mapped_column(db.Boolean, default=True, index=True,
                                             comment="A disabled price list cannot be used in new transactions.")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import logging
 from flask import Blueprint, request, g, current_app
 from pydantic import ValidationError
@@ -8,6 +9,7 @@ from werkzeug.exceptions import NotFound, Forbidden, Conflict, BadRequest, HTTPE
 from app.application_stock.schemas.reconciliation_schemas import StockReconciliationCreate
 # Warehouse bits
 from app.application_stock.schemas.warehouse_schemas import WarehouseCreate, WarehouseUpdate, WarehouseOut, IdCode
+from app.application_stock.services.availability_service import StockAvailabilityService
 from app.application_stock.services.reconciliation_service import StockReconciliationService
 from app.application_stock.services.warehouse_service import WarehouseService
 from app.application_stock.helpers.warehouse_validation import WarehouseRuleError
@@ -255,3 +257,56 @@ def submit_stock_reconciliation(recon_id: int):
         if current_app.debug or current_app.config.get("ENV") == "development":
             return api_error(f"[DEV TRACE] {e}", status_code=500)
         return api_error("An unexpected error occurred.", status_code=500)
+
+@bp.post("/availability")
+@require_permission("Item", "READ")
+def availability():
+    """
+    POST /api/stock/availability
+
+    Single:
+    {
+      "item_id": 28,
+      "warehouse_ids": [4],   // one or many leaf warehouses
+      "uom_id": 3,            // optional; only affects 'available_txn' in detail mode
+      "detail": false,        // default false (returns only 'available' in Stock UOM)
+      "at": null              // optional ISO8601 (as-of)
+    }
+
+    Batch:
+    {
+      "lines": [
+        {"row_id": "r1", "item_id": 28, "warehouse_ids": [4], "uom_id": 3},
+        {"row_id": "r2", "item_id": 31, "warehouse_ids": [7]}
+      ],
+      "detail": true,
+      "at": "2025-10-31T12:00:00Z"
+    }
+    """
+    try:
+        ctx = _ctx()
+        raw = request.get_json(silent=True) or {}
+        detail = bool(raw.get("detail", False))
+        at_raw = raw.get("at")
+        at_dt = datetime.fromisoformat(at_raw) if at_raw else None
+
+        svc = StockAvailabilityService()
+
+        if isinstance(raw.get("lines"), list):
+            data = svc.compute_batch(context=ctx, lines=raw["lines"], at=at_dt, detail=detail)
+            return api_success({"lines": data})
+
+        # single
+        item_id = int(raw["item_id"])
+        data = svc.compute_single(
+            context=ctx,
+            item_id=item_id,
+            warehouse_ids=raw.get("warehouse_ids") or [],
+            uom_id=raw.get("uom_id"),
+            at=at_dt,
+            detail=detail,
+        )
+        return api_success(data)
+
+    except Exception as e:
+        return api_error(str(e), status_code=400)

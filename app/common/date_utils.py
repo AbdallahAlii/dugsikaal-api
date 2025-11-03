@@ -1,43 +1,4 @@
-# from __future__ import annotations
-# from datetime import datetime, date
-# from typing import Optional
-# import logging
-#
-# log = logging.getLogger(__name__)
-#
-# # Display format everywhere in API responses (filters, not data rows):
-# _DISPLAY_FMT = "%m/%d/%Y"
-#
-# # Accept these inputs for inbound filters:
-# _DATE_PARSE_PATTERNS = [
-#     "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d", "%Y-%m-%d", "%d-%m-%Y", "%m-%d-%Y",
-# ]
-#
-# def parse_date_flex(s: str) -> date | None:
-#     """Flexible date parser that handles multiple formats"""
-#     s = (s or "").strip()
-#     if not s:
-#         return None
-#     # Try parsing date with the patterns
-#     for fmt in _DATE_PARSE_PATTERNS:
-#         try:
-#             return datetime.strptime(s, fmt).date()
-#         except Exception:
-#             continue
-#     # Final attempt: raw ISO date
-#     try:
-#         return datetime.fromisoformat(s).date()
-#     except Exception:
-#         return None
-#
-# def format_date_out(d: date | datetime | None) -> str | None:
-#     """Format date for API responses"""
-#     if d is None:
-#         return None
-#     if isinstance(d, datetime):
-#         d = d.date()
-#     return d.strftime(_DISPLAY_FMT)
-#
+
 from __future__ import annotations
 from datetime import datetime, date
 from typing import Optional, Any

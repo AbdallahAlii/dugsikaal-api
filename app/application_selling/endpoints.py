@@ -132,7 +132,7 @@ def create_si():
         return api_error("Unexpected error.", status_code=500)
 
 
-@bp.post("/invoice/<int:si_id>/update")
+@bp.put("/invoice/<int:si_id>/update")
 @require_permission("Sales Invoice", "EDIT")
 def update_si(si_id: int):
     try:

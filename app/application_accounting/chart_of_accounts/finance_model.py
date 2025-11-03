@@ -75,12 +75,10 @@ class PaymentEntry(BaseModel):
     party_id: Mapped[Optional[int]] = mapped_column(db.BigInteger, nullable=True, index=True)
 
     # Accounts (ERPNext semantics as described above)
-    paid_from_account_id: Mapped[int] = mapped_column(
-        db.BigInteger, db.ForeignKey("accounts.id"), nullable=False, index=True
-    )
-    paid_to_account_id: Mapped[int] = mapped_column(
-        db.BigInteger, db.ForeignKey("accounts.id"), nullable=False, index=True
-    )
+    paid_from_account_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("accounts.id"), nullable=False,
+                                                      index=True)
+    paid_to_account_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("accounts.id"), nullable=False,
+                                                    index=True)
 
     # Amounts
     paid_amount: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False, default=Decimal("0"))
@@ -141,6 +139,7 @@ class PaymentEntry(BaseModel):
 
     def __repr__(self) -> str:
         return f"<PaymentEntry {self.code} {self.payment_type} paid={self.paid_amount}>"
+
 
 
 # ──────────────────────────────────────────────────────────────────────────────

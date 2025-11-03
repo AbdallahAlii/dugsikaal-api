@@ -253,6 +253,15 @@ TEMPLATE_DEFS: List[Dict[str, Any]] = [
         is_active=True,
         is_primary=True,
     ),
+
+    dict(
+        doctype_code="EXPENSE_CLAIM",
+        code="EXPENSE_DIRECT_LINE",
+        label="Direct Expense",
+        description="Records direct expense payments. DR Expense Account; CR Cash/Bank Account.",
+        is_active=True,
+        is_primary=True,
+    ),
 ]
 
 # ==============================================================================
@@ -409,5 +418,14 @@ TEMPLATE_ITEMS: List[Dict[str, Any]] = [
     dict(template_code="DEPRECIATION_STANDARD", sequence=10, effect=DEBIT,  account_code="5119", amount_source="DEPRECIATION_AMOUNT", is_required=True, requires_dynamic_account=False, context_key=None),
     dict(template_code="DEPRECIATION_STANDARD", sequence=20, effect=CREDIT, account_code="1230", amount_source="DEPRECIATION_AMOUNT", is_required=True, requires_dynamic_account=False, context_key=None),
 
+    # --------------------------------------------------------------------------
+    # --- expense related ---
+    # --------------------------------------------------------------------------
+    dict(template_code="EXPENSE_DIRECT_LINE", sequence=10, effect=DEBIT,
+         account_code=None, amount_source="DOCUMENT_TOTAL",
+         is_required=True, requires_dynamic_account=True, context_key="expense_account_id"),
+    dict(template_code="EXPENSE_DIRECT_LINE", sequence=20, effect=CREDIT,
+         account_code=None, amount_source="DOCUMENT_TOTAL",
+         is_required=True, requires_dynamic_account=True, context_key="cash_bank_account_id"),
     # Manual Journal: no default items
 ]
