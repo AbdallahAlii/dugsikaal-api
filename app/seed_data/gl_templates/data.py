@@ -43,6 +43,9 @@ AMOUNT_SOURCES = {
     "STOCK_VALUE_DIFFERENCE": "Value difference for stock reconciliation (positive for gains, negative for losses)",
     # Stock Reconciliation
     "STOCK_RECON_DIFFERENCE": "Absolute value difference for stock reconciliation",
+    # --- NEW for PCV ---
+    "PROFIT_AMOUNT": "Positive net P&L (profit)",
+    "LOSS_AMOUNT": "Positive net loss",
 }
 
 
@@ -57,6 +60,15 @@ TEMPLATE_DEFS: List[Dict[str, Any]] = [
     # --------------------------------------------------------------------------
     # --- Sales & Accounts Receivable ---
     # --------------------------------------------------------------------------
+    # --- NEW: Period Closing Voucher ---
+    dict(
+        doctype_code="PERIOD_CLOSING_VOUCHER",
+        code="PERIOD_CLOSING",
+        label="Period Closing Voucher",
+        description="Transfers net P&L to Retained Earnings using P&L Summary account.",
+        is_active=True,
+        is_primary=True,
+    ),
     dict(
         doctype_code="SALES_INVOICE",
         code="SALES_INV_AR",
@@ -82,12 +94,12 @@ TEMPLATE_DEFS: List[Dict[str, Any]] = [
         is_primary=True,
     ),
 
-    # --- Sales Returns, Cancellations & Write-Offs ---
+    # Sales Returns & Cancellations
     dict(
-        doctype_code="SALES_RETURN",
+        doctype_code="SALES_INVOICE",
         code="SALES_RETURN_CREDIT",
         label="Sales Return (Credit Note)",
-        description="Handles customer returns. Reverses income and A/R. Optionally reverses COGS if items are restocked.",
+        description="Reverse income and AR. Optionally reverse COGS if restocked.",
         is_active=True,
         is_primary=True,
     ),
@@ -95,7 +107,7 @@ TEMPLATE_DEFS: List[Dict[str, Any]] = [
         doctype_code="SALES_INVOICE",
         code="CANCEL_SALES_INVOICE",
         label="Cancel Sales Invoice",
-        description="A full and exact reversal of a submitted Sales Invoice. Used to correct errors.",
+        description="Exact reversal of a submitted Sales Invoice.",
         is_active=True,
         is_primary=False,
     ),
@@ -103,7 +115,7 @@ TEMPLATE_DEFS: List[Dict[str, Any]] = [
         doctype_code="DELIVERY_NOTE",
         code="CANCEL_DELIVERY_NOTE",
         label="Cancel Delivery Note",
-        description="A full and exact reversal of a submitted Delivery Note.",
+        description="Exact reversal of a submitted Delivery Note.",
         is_active=True,
         is_primary=False,
     ),
@@ -117,13 +129,13 @@ TEMPLATE_DEFS: List[Dict[str, Any]] = [
     ),
 
     # --------------------------------------------------------------------------
-    # --- Purchasing & Accounts Payable ---
+    # --- Purchasing & Accounts Payable --- Buying
     # --------------------------------------------------------------------------
     dict(
         doctype_code="PURCHASE_RECEIPT",
         code="PURCHASE_RECEIPT_GRNI",
         label="Purchase Receipt (Inventory + GRNI)",
-        description="Records received stock and accrues a liability in 'Goods Received Not Invoiced'. DR Inventory; CR GRNI.",
+        description="DR Inventory; CR GRNI on receipt. No A/P yet.",
         is_active=True,
         is_primary=True,
     ),
@@ -131,7 +143,7 @@ TEMPLATE_DEFS: List[Dict[str, Any]] = [
         doctype_code="PURCHASE_INVOICE",
         code="PURCHASE_INVOICE_AGAINST_RECEIPT",
         label="Purchase Invoice (Clear GRNI)",
-        description="Books the supplier's bill against a prior receipt. DR GRNI; DR Tax; CR A/P.",
+        description="DR GRNI; DR Tax; CR A/P (+ variance lines).",
         is_active=True,
         is_primary=True,
     ),
@@ -139,33 +151,41 @@ TEMPLATE_DEFS: List[Dict[str, Any]] = [
         doctype_code="PURCHASE_INVOICE",
         code="PURCHASE_INVOICE_DIRECT",
         label="Purchase Invoice (Direct)",
-        description="Books a bill for services or items without a prior receipt. DR Expense/Inventory; DR Tax; CR A/P.",
+        description="No prior receipt. DR Inventory (stock) and/or DR Expense (services); DR Tax; CR A/P.",
         is_active=True,
         is_primary=False,
     ),
 
-    # --- Purchase Returns, Cancellations & Write-Offs ---
+    # Purchase Returns & Cancellations
     dict(
-        doctype_code="PURCHASE_RETURN",
+        doctype_code="PURCHASE_INVOICE",
         code="PURCHASE_RETURN_INVOICED",
         label="Purchase Return (After Invoice / Debit Note)",
-        description="Returns goods after invoicing. Creates a debit note against the supplier. DR A/P; CR Inventory; CR Tax.",
+        description="DR A/P; CR Inventory; CR Tax (debit note).",
         is_active=True,
         is_primary=True,
     ),
     dict(
-        doctype_code="PURCHASE_RETURN",
+        doctype_code="PURCHASE_RECEIPT",
         code="PURCHASE_RETURN_GRNI",
         label="Purchase Return (Before Invoice / GRNI)",
-        description="Returns goods before the supplier's invoice is booked. Reverses the GRNI entry. DR GRNI; CR Inventory.",
+        description="Reverse GRNI: DR GRNI; CR Inventory.",
         is_active=True,
         is_primary=False,
     ),
     dict(
         doctype_code="PURCHASE_INVOICE",
         code="CANCEL_PURCHASE_INVOICE",
-        label="Cancel Purchase Invoice",
-        description="A full and exact reversal of a submitted Purchase Invoice.",
+        label="Cancel Purchase Invoice (Against Receipt)",
+        description="Exact reversal of PI posted against GRNI.",
+        is_active=True,
+        is_primary=False,
+    ),
+    dict(
+        doctype_code="PURCHASE_INVOICE",
+        code="CANCEL_PURCHASE_INVOICE_DIRECT",
+        label="Cancel Purchase Invoice (Direct)",
+        description="Exact reversal of direct PI (no receipt).",
         is_active=True,
         is_primary=False,
     ),
@@ -173,15 +193,7 @@ TEMPLATE_DEFS: List[Dict[str, Any]] = [
         doctype_code="PURCHASE_RECEIPT",
         code="CANCEL_PURCHASE_RECEIPT",
         label="Cancel Purchase Receipt",
-        description="A full and exact reversal of a submitted Purchase Receipt.",
-        is_active=True,
-        is_primary=False,
-    ),
-    dict(
-        doctype_code="PURCHASE_INVOICE",
-        code="AP_WRITE_OFF",
-        label="Write-off Supplier Balance",
-        description="DR A/P; CR Write-off Income for unpayable balances.",
+        description="Exact reversal of a submitted Purchase Receipt.",
         is_active=True,
         is_primary=False,
     ),
@@ -268,6 +280,21 @@ TEMPLATE_DEFS: List[Dict[str, Any]] = [
 # 2) TEMPLATE LINES (TEMPLATE_ITEMS)
 # ==============================================================================
 TEMPLATE_ITEMS: List[Dict[str, Any]] = [
+    # --- NEW: Period Closing Voucher rules ---
+    # LOSS: DR Retained Earnings; CR P&L Summary
+    dict(template_code="PERIOD_CLOSING", sequence=10, effect=DEBIT,
+         account_code=None, amount_source="LOSS_AMOUNT",
+         is_required=False, requires_dynamic_account=True, context_key="retained_earnings_account_id"),
+    dict(template_code="PERIOD_CLOSING", sequence=20, effect=CREDIT,
+         account_code=None, amount_source="LOSS_AMOUNT",
+         is_required=False, requires_dynamic_account=True, context_key="pl_summary_account_id"),
+    # PROFIT: DR P&L Summary; CR Retained Earnings
+    dict(template_code="PERIOD_CLOSING", sequence=30, effect=DEBIT,
+         account_code=None, amount_source="PROFIT_AMOUNT",
+         is_required=False, requires_dynamic_account=True, context_key="pl_summary_account_id"),
+    dict(template_code="PERIOD_CLOSING", sequence=40, effect=CREDIT,
+         account_code=None, amount_source="PROFIT_AMOUNT",
+         is_required=False, requires_dynamic_account=True, context_key="retained_earnings_account_id"),
     # --------------------------------------------------------------------------
     # --- Sales & A/R Items ---
     # --------------------------------------------------------------------------
@@ -280,6 +307,13 @@ TEMPLATE_ITEMS: List[Dict[str, Any]] = [
     dict(template_code="SALES_INV_AR", sequence=40, effect=DEBIT,  account_code="5116", amount_source="DISCOUNT_AMOUNT", is_required=False, requires_dynamic_account=False, context_key=None),
     dict(template_code="SALES_INV_AR", sequence=50, effect=DEBIT,  account_code="5113", amount_source="ROUND_OFF_POSITIVE", is_required=False, requires_dynamic_account=False, context_key=None),
     dict(template_code="SALES_INV_AR", sequence=60, effect=CREDIT, account_code="4153", amount_source="ROUND_OFF_NEGATIVE", is_required=False, requires_dynamic_account=False, context_key=None),
+    # Inline receipt on SI: DR Cash/Bank; CR A/R (party ledger)
+    dict(template_code="SALES_INV_AR", sequence=65, effect=DEBIT,
+         account_code=None, amount_source="AMOUNT_RECEIVED",
+         is_required=False, requires_dynamic_account=True, context_key="cash_bank_account_id"),
+    dict(template_code="SALES_INV_AR", sequence=70, effect=CREDIT,
+         account_code=None, amount_source="AMOUNT_RECEIVED",
+         is_required=False, requires_dynamic_account=True, context_key="party_ledger_account_id"),
 
     # Sales Invoice (Stock and Financials)
     dict(template_code="SALES_INV_WITH_STOCK", sequence=10, effect=DEBIT,  account_code=None, amount_source="DOCUMENT_TOTAL", is_required=True, requires_dynamic_account=True, context_key="accounts_receivable_account_id"),
@@ -293,81 +327,186 @@ TEMPLATE_ITEMS: List[Dict[str, Any]] = [
     dict(template_code="SALES_INV_WITH_STOCK", sequence=70, effect=DEBIT,  account_code="5113", amount_source="ROUND_OFF_POSITIVE", is_required=False, requires_dynamic_account=False, context_key=None),
     dict(template_code="SALES_INV_WITH_STOCK", sequence=80, effect=CREDIT, account_code="4153", amount_source="ROUND_OFF_NEGATIVE", is_required=False, requires_dynamic_account=False, context_key=None),
 
-    # Delivery Note (Stock Only)
-    dict(template_code="DELIVERY_NOTE_COGS", sequence=10, effect=DEBIT,  account_code="5011", amount_source="COST_OF_GOODS_SOLD", is_required=True, requires_dynamic_account=False, context_key=None),
-    dict(template_code="DELIVERY_NOTE_COGS", sequence=20, effect=CREDIT, account_code="1141", amount_source="COST_OF_GOODS_SOLD", is_required=True, requires_dynamic_account=False, context_key=None),
 
-    # --- Sales Returns, Cancellations & Write-Off Items ---
-    # Sales Return (Credit Note)
-    dict(template_code="SALES_RETURN_CREDIT", sequence=10, effect=DEBIT,  account_code=None, amount_source="DOCUMENT_SUBTOTAL", is_required=True, requires_dynamic_account=True, context_key="income_account_id"),
+
+    # Inline receipt on SI: DR Cash/Bank; CR A/R (party ledger)
+    dict(template_code="SALES_INV_WITH_STOCK", sequence=85, effect=DEBIT,
+         account_code=None, amount_source="AMOUNT_RECEIVED",
+         is_required=False, requires_dynamic_account=True, context_key="cash_bank_account_id"),
+    dict(template_code="SALES_INV_WITH_STOCK", sequence=90, effect=CREDIT,
+         account_code=None, amount_source="AMOUNT_RECEIVED",
+         is_required=False, requires_dynamic_account=True, context_key="party_ledger_account_id"),
+
+    # Delivery Note (Stock Only)
+    dict(template_code="DELIVERY_NOTE_COGS", sequence=10, effect=DEBIT, account_code="5011",
+         amount_source="COST_OF_GOODS_SOLD", is_required=True, requires_dynamic_account=False, context_key=None),
+    dict(template_code="DELIVERY_NOTE_COGS", sequence=20, effect=CREDIT, account_code="1141",
+         amount_source="COST_OF_GOODS_SOLD", is_required=True, requires_dynamic_account=False, context_key=None),
+
+    # -- Sales Return (Credit Note) – SI is_return=True
+    dict(template_code="SALES_RETURN_CREDIT", sequence=10, effect=DEBIT,
+         account_code=None, amount_source="DOCUMENT_SUBTOTAL",
+         is_required=True, requires_dynamic_account=True, context_key="income_account_id"),
     dict(template_code="SALES_RETURN_CREDIT", sequence=20, effect=DEBIT,
          account_code=None, amount_source="TAX_AMOUNT",
          is_required=False, requires_dynamic_account=True, context_key="tax_account_id"),
-    dict(template_code="SALES_RETURN_CREDIT", sequence=30, effect=CREDIT, account_code=None, amount_source="DOCUMENT_TOTAL", is_required=True, requires_dynamic_account=True, context_key="accounts_receivable_account_id"),
-    dict(template_code="SALES_RETURN_CREDIT", sequence=40, effect=DEBIT,  account_code="1141", amount_source="COGS_REVERSAL", is_required=False, requires_dynamic_account=False, context_key=None), # Optional if restocked
-    dict(template_code="SALES_RETURN_CREDIT", sequence=50, effect=CREDIT, account_code="5011", amount_source="COGS_REVERSAL", is_required=False, requires_dynamic_account=False, context_key=None), # Optional if restocked
+    dict(template_code="SALES_RETURN_CREDIT", sequence=30, effect=CREDIT,
+         account_code=None, amount_source="DOCUMENT_TOTAL",
+         is_required=True, requires_dynamic_account=True, context_key="accounts_receivable_account_id"),
+    dict(template_code="SALES_RETURN_CREDIT", sequence=40, effect=DEBIT,
+         account_code="1141", amount_source="COGS_REVERSAL",
+         is_required=False, requires_dynamic_account=False, context_key=None),
+    dict(template_code="SALES_RETURN_CREDIT", sequence=50, effect=CREDIT,
+         account_code="5011", amount_source="COGS_REVERSAL",
+         is_required=False, requires_dynamic_account=False, context_key=None),
 
-    # Cancel Sales Invoice (Exact reversal of SALES_INV_AR)
-    dict(template_code="CANCEL_SALES_INVOICE", sequence=10, effect=CREDIT, account_code=None, amount_source="DOCUMENT_TOTAL", is_required=True, requires_dynamic_account=True, context_key="accounts_receivable_account_id"),
-    dict(template_code="CANCEL_SALES_INVOICE", sequence=20, effect=DEBIT,  account_code=None, amount_source="DOCUMENT_SUBTOTAL", is_required=True, requires_dynamic_account=True, context_key="income_account_id"),
+    # -- Cancel Sales Invoice (exact reversal of SI_AR)
+    dict(template_code="CANCEL_SALES_INVOICE", sequence=10, effect=CREDIT,
+         account_code=None, amount_source="DOCUMENT_TOTAL",
+         is_required=True, requires_dynamic_account=True, context_key="accounts_receivable_account_id"),
+    dict(template_code="CANCEL_SALES_INVOICE", sequence=20, effect=DEBIT,
+         account_code=None, amount_source="DOCUMENT_SUBTOTAL",
+         is_required=True, requires_dynamic_account=True, context_key="income_account_id"),
     dict(template_code="CANCEL_SALES_INVOICE", sequence=30, effect=DEBIT,
          account_code=None, amount_source="TAX_AMOUNT",
          is_required=False, requires_dynamic_account=True, context_key="tax_account_id"),
 
-    # Cancel Delivery Note (Exact reversal of DELIVERY_NOTE_COGS)
-    dict(template_code="CANCEL_DELIVERY_NOTE", sequence=10, effect=CREDIT, account_code="5011", amount_source="COST_OF_GOODS_SOLD", is_required=True, requires_dynamic_account=False, context_key=None),
-    dict(template_code="CANCEL_DELIVERY_NOTE", sequence=20, effect=DEBIT,  account_code="1141", amount_source="COST_OF_GOODS_SOLD", is_required=True, requires_dynamic_account=False, context_key=None),
-
-    # A/R Write-Off
-    dict(template_code="AR_WRITE_OFF", sequence=10, effect=DEBIT,  account_code="5118", amount_source="WRITE_OFF_AMOUNT", is_required=True, requires_dynamic_account=False, context_key=None),
-    dict(template_code="AR_WRITE_OFF", sequence=20, effect=CREDIT, account_code=None, amount_source="WRITE_OFF_AMOUNT", is_required=True, requires_dynamic_account=True, context_key="accounts_receivable_account_id"),
+    # -- Cancel Delivery Note (exact reversal of DELIVERY_NOTE_COGS)
+    dict(template_code="CANCEL_DELIVERY_NOTE", sequence=10, effect=CREDIT,
+         account_code="5011", amount_source="COST_OF_GOODS_SOLD",
+         is_required=True, requires_dynamic_account=False, context_key=None),
+    dict(template_code="CANCEL_DELIVERY_NOTE", sequence=20, effect=DEBIT,
+         account_code="1141", amount_source="COST_OF_GOODS_SOLD",
+         is_required=True, requires_dynamic_account=False, context_key=None),
 
     # --------------------------------------------------------------------------
     # --- Purchasing & A/P Items ---
     # --------------------------------------------------------------------------
-    # Purchase Receipt (GRNI)
-    dict(template_code="PURCHASE_RECEIPT_GRNI", sequence=10, effect=DEBIT,  account_code="1141", amount_source="INVENTORY_PURCHASE_COST", is_required=True, requires_dynamic_account=False, context_key=None),
-    dict(template_code="PURCHASE_RECEIPT_GRNI", sequence=20, effect=CREDIT, account_code="2210", amount_source="INVENTORY_PURCHASE_COST", is_required=True, requires_dynamic_account=False, context_key=None),
+      # -- Purchase Receipt (GRNI)
+        dict(template_code="PURCHASE_RECEIPT_GRNI", sequence=10, effect=DEBIT,
+             account_code="1141", amount_source="INVENTORY_PURCHASE_COST",
+             is_required=True, requires_dynamic_account=False, context_key=None),
+        dict(template_code="PURCHASE_RECEIPT_GRNI", sequence=20, effect=CREDIT,
+             account_code="2210", amount_source="INVENTORY_PURCHASE_COST",
+             is_required=True, requires_dynamic_account=False, context_key=None),
 
-    # Purchase Invoice (Against Receipt)
-    dict(template_code="PURCHASE_INVOICE_AGAINST_RECEIPT", sequence=10, effect=DEBIT,  account_code="2210", amount_source="INVOICE_MATCHED_GRNI_VALUE", is_required=True, requires_dynamic_account=False, context_key=None),
-    dict(template_code="PURCHASE_INVOICE_AGAINST_RECEIPT", sequence=20, effect=CREDIT, account_code=None, amount_source="DOCUMENT_TOTAL", is_required=True, requires_dynamic_account=True, context_key="accounts_payable_account_id"),
-    dict(template_code="PURCHASE_INVOICE_AGAINST_RECEIPT", sequence=30, effect=DEBIT,  account_code="2311", amount_source="TAX_AMOUNT", is_required=False, requires_dynamic_account=False, context_key=None),
-    dict(template_code="PURCHASE_INVOICE_AGAINST_RECEIPT", sequence=40, effect=DEBIT,  account_code="5012", amount_source="PURCHASE_VARIANCE_DEBIT", is_required=False, requires_dynamic_account=False, context_key=None),
-    dict(template_code="PURCHASE_INVOICE_AGAINST_RECEIPT", sequence=50, effect=CREDIT, account_code="5012", amount_source="PURCHASE_VARIANCE_CREDIT", is_required=False, requires_dynamic_account=False, context_key=None),
-    dict(template_code="PURCHASE_INVOICE_AGAINST_RECEIPT", sequence=60, effect=DEBIT,  account_code="5113", amount_source="ROUND_OFF_POSITIVE", is_required=False, requires_dynamic_account=False, context_key=None),
-    dict(template_code="PURCHASE_INVOICE_AGAINST_RECEIPT", sequence=70, effect=CREDIT, account_code="4153", amount_source="ROUND_OFF_NEGATIVE", is_required=False, requires_dynamic_account=False, context_key=None),
+        # -- Purchase Invoice (Against Receipt)
+        dict(template_code="PURCHASE_INVOICE_AGAINST_RECEIPT", sequence=10, effect=DEBIT,
+             account_code="2210", amount_source="INVOICE_MATCHED_GRNI_VALUE",
+             is_required=True, requires_dynamic_account=False, context_key=None),
+        dict(template_code="PURCHASE_INVOICE_AGAINST_RECEIPT", sequence=20, effect=CREDIT,
+             account_code=None, amount_source="DOCUMENT_TOTAL",
+             is_required=True, requires_dynamic_account=True, context_key="accounts_payable_account_id"),
+        dict(template_code="PURCHASE_INVOICE_AGAINST_RECEIPT", sequence=30, effect=DEBIT,
+             account_code="2311", amount_source="TAX_AMOUNT",
+             is_required=False, requires_dynamic_account=False, context_key=None),
+        dict(template_code="PURCHASE_INVOICE_AGAINST_RECEIPT", sequence=40, effect=DEBIT,
+             account_code="5012", amount_source="PURCHASE_VARIANCE_DEBIT",
+             is_required=False, requires_dynamic_account=False, context_key=None),
+        dict(template_code="PURCHASE_INVOICE_AGAINST_RECEIPT", sequence=50, effect=CREDIT,
+             account_code="5012", amount_source="PURCHASE_VARIANCE_CREDIT",
+             is_required=False, requires_dynamic_account=False, context_key=None),
+        dict(template_code="PURCHASE_INVOICE_AGAINST_RECEIPT", sequence=60, effect=DEBIT,
+             account_code="5113", amount_source="ROUND_OFF_POSITIVE",
+             is_required=False, requires_dynamic_account=False, context_key=None),
+        dict(template_code="PURCHASE_INVOICE_AGAINST_RECEIPT", sequence=70, effect=CREDIT,
+             account_code="4153", amount_source="ROUND_OFF_NEGATIVE",
+             is_required=False, requires_dynamic_account=False, context_key=None),
 
-    # Purchase Invoice (Direct)
-    dict(template_code="PURCHASE_INVOICE_DIRECT", sequence=10, effect=DEBIT,  account_code="1141", amount_source="INVOICE_STOCK_VALUE", is_required=False, requires_dynamic_account=False, context_key=None),
-    dict(template_code="PURCHASE_INVOICE_DIRECT", sequence=20, effect=DEBIT,  account_code="5014", amount_source="INVOICE_SERVICE_VALUE", is_required=False, requires_dynamic_account=False, context_key=None),
-    dict(template_code="PURCHASE_INVOICE_DIRECT", sequence=30, effect=CREDIT, account_code=None, amount_source="DOCUMENT_TOTAL", is_required=True, requires_dynamic_account=True, context_key="accounts_payable_account_id"),
-    dict(template_code="PURCHASE_INVOICE_DIRECT", sequence=40, effect=DEBIT,  account_code="2311", amount_source="TAX_AMOUNT", is_required=False, requires_dynamic_account=False, context_key=None),
-    dict(template_code="PURCHASE_INVOICE_DIRECT", sequence=50, effect=DEBIT,  account_code="5113", amount_source="ROUND_OFF_POSITIVE", is_required=False, requires_dynamic_account=False, context_key=None),
-    dict(template_code="PURCHASE_INVOICE_DIRECT", sequence=60, effect=CREDIT, account_code="4153", amount_source="ROUND_OFF_NEGATIVE", is_required=False, requires_dynamic_account=False, context_key=None),
+        # Inline payment on PI (Against Receipt): DR A/P; CR Cash/Bank
+        dict(template_code="PURCHASE_INVOICE_AGAINST_RECEIPT", sequence=75, effect=DEBIT,
+             account_code=None, amount_source="AMOUNT_PAID",
+             is_required=False, requires_dynamic_account=True, context_key="accounts_payable_account_id"),
+        dict(template_code="PURCHASE_INVOICE_AGAINST_RECEIPT", sequence=80, effect=CREDIT,
+             account_code=None, amount_source="AMOUNT_PAID",
+             is_required=False, requires_dynamic_account=True, context_key="cash_bank_account_id"),
 
-    # --- Purchase Returns, Cancellations & Write-Off Items ---
-    # Purchase Return (After Invoice / Debit Note)
-    dict(template_code="PURCHASE_RETURN_INVOICED", sequence=10, effect=DEBIT,  account_code=None, amount_source="RETURN_DOCUMENT_TOTAL", is_required=True, requires_dynamic_account=True, context_key="accounts_payable_account_id"),
-    dict(template_code="PURCHASE_RETURN_INVOICED", sequence=20, effect=CREDIT, account_code="1141", amount_source="RETURN_STOCK_VALUE", is_required=True, requires_dynamic_account=False, context_key=None),
-    dict(template_code="PURCHASE_RETURN_INVOICED", sequence=30, effect=CREDIT, account_code="2311", amount_source="RETURN_TAX_AMOUNT", is_required=False, requires_dynamic_account=False, context_key=None),
+        # -- Purchase Invoice (Direct)
+        dict(template_code="PURCHASE_INVOICE_DIRECT", sequence=10, effect=DEBIT,
+             account_code="1141", amount_source="INVOICE_STOCK_VALUE",
+             is_required=False, requires_dynamic_account=False, context_key=None),
+        dict(template_code="PURCHASE_INVOICE_DIRECT", sequence=20, effect=DEBIT,
+             account_code="5014", amount_source="INVOICE_SERVICE_VALUE",
+             is_required=False, requires_dynamic_account=False, context_key=None),
+        dict(template_code="PURCHASE_INVOICE_DIRECT", sequence=30, effect=CREDIT,
+             account_code=None, amount_source="DOCUMENT_TOTAL",
+             is_required=True, requires_dynamic_account=True, context_key="accounts_payable_account_id"),
+        dict(template_code="PURCHASE_INVOICE_DIRECT", sequence=40, effect=DEBIT,
+             account_code="2311", amount_source="TAX_AMOUNT",
+             is_required=False, requires_dynamic_account=False, context_key=None),
+        dict(template_code="PURCHASE_INVOICE_DIRECT", sequence=50, effect=DEBIT,
+             account_code="5113", amount_source="ROUND_OFF_POSITIVE",
+             is_required=False, requires_dynamic_account=False, context_key=None),
+        dict(template_code="PURCHASE_INVOICE_DIRECT", sequence=60, effect=CREDIT,
+             account_code="4153", amount_source="ROUND_OFF_NEGATIVE",
+             is_required=False, requires_dynamic_account=False, context_key=None),
 
-    # Purchase Return (Before Invoice / GRNI)
-    dict(template_code="PURCHASE_RETURN_GRNI", sequence=10, effect=DEBIT,  account_code="2210", amount_source="RETURN_STOCK_VALUE", is_required=True, requires_dynamic_account=False, context_key=None),
-    dict(template_code="PURCHASE_RETURN_GRNI", sequence=20, effect=CREDIT, account_code="1141", amount_source="RETURN_STOCK_VALUE", is_required=True, requires_dynamic_account=False, context_key=None),
+        # Inline payment on PI (Direct): DR A/P; CR Cash/Bank
+        dict(template_code="PURCHASE_INVOICE_DIRECT", sequence=75, effect=DEBIT,
+             account_code=None, amount_source="AMOUNT_PAID",
+             is_required=False, requires_dynamic_account=True, context_key="accounts_payable_account_id"),
+        dict(template_code="PURCHASE_INVOICE_DIRECT", sequence=80, effect=CREDIT,
+             account_code=None, amount_source="AMOUNT_PAID",
+             is_required=False, requires_dynamic_account=True, context_key="cash_bank_account_id"),
 
-    # Cancel Purchase Invoice (Exact reversal of PURCHASE_INVOICE_AGAINST_RECEIPT)
-    dict(template_code="CANCEL_PURCHASE_INVOICE", sequence=10, effect=CREDIT, account_code="2210", amount_source="INVOICE_MATCHED_GRNI_VALUE", is_required=True, requires_dynamic_account=False, context_key=None),
-    dict(template_code="CANCEL_PURCHASE_INVOICE", sequence=20, effect=DEBIT,  account_code=None, amount_source="DOCUMENT_TOTAL", is_required=True, requires_dynamic_account=True, context_key="accounts_payable_account_id"),
-    dict(template_code="CANCEL_PURCHASE_INVOICE", sequence=30, effect=CREDIT, account_code="2311", amount_source="TAX_AMOUNT", is_required=False, requires_dynamic_account=False, context_key=None),
+        # -- Purchase Return (After Invoice / PI is_return=True → Debit Note)
+        dict(template_code="PURCHASE_RETURN_INVOICED", sequence=10, effect=DEBIT,
+             account_code=None, amount_source="RETURN_DOCUMENT_TOTAL",
+             is_required=True, requires_dynamic_account=True, context_key="accounts_payable_account_id"),
+        dict(template_code="PURCHASE_RETURN_INVOICED", sequence=20, effect=CREDIT,
+             account_code="1141", amount_source="RETURN_STOCK_VALUE",
+             is_required=True, requires_dynamic_account=False, context_key=None),
+        dict(template_code="PURCHASE_RETURN_INVOICED", sequence=30, effect=CREDIT,
+             account_code="2311", amount_source="RETURN_TAX_AMOUNT",
+             is_required=False, requires_dynamic_account=False, context_key=None),
 
-    # Cancel Purchase Receipt (Exact reversal of PURCHASE_RECEIPT_GRNI)
-    dict(template_code="CANCEL_PURCHASE_RECEIPT", sequence=10, effect=CREDIT, account_code="1141", amount_source="INVENTORY_PURCHASE_COST", is_required=True, requires_dynamic_account=False, context_key=None),
-    dict(template_code="CANCEL_PURCHASE_RECEIPT", sequence=20, effect=DEBIT,  account_code="2210", amount_source="INVENTORY_PURCHASE_COST", is_required=True, requires_dynamic_account=False, context_key=None),
+        # -- Purchase Return (Before Invoice / PR is_return=True → reverse GRNI)
+        dict(template_code="PURCHASE_RETURN_GRNI", sequence=10, effect=DEBIT,
+             account_code="2210", amount_source="RETURN_STOCK_VALUE",
+             is_required=True, requires_dynamic_account=False, context_key=None),
+        dict(template_code="PURCHASE_RETURN_GRNI", sequence=20, effect=CREDIT,
+             account_code="1141", amount_source="RETURN_STOCK_VALUE",
+             is_required=True, requires_dynamic_account=False, context_key=None),
 
-    # A/P Write-Off
-    dict(template_code="AP_WRITE_OFF", sequence=10, effect=DEBIT,  account_code=None, amount_source="WRITE_OFF_AMOUNT", is_required=True, requires_dynamic_account=True, context_key="accounts_payable_account_id"),
-    dict(template_code="AP_WRITE_OFF", sequence=20, effect=CREDIT, account_code="4153", amount_source="WRITE_OFF_AMOUNT", is_required=True, requires_dynamic_account=False, context_key=None),
+        # -- Cancel Purchase Invoice (Against Receipt)
+        dict(template_code="CANCEL_PURCHASE_INVOICE", sequence=10, effect=CREDIT,
+             account_code="2210", amount_source="INVOICE_MATCHED_GRNI_VALUE",
+             is_required=True, requires_dynamic_account=False, context_key=None),
+        dict(template_code="CANCEL_PURCHASE_INVOICE", sequence=20, effect=DEBIT,
+             account_code=None, amount_source="DOCUMENT_TOTAL",
+             is_required=True, requires_dynamic_account=True, context_key="accounts_payable_account_id"),
+        dict(template_code="CANCEL_PURCHASE_INVOICE", sequence=30, effect=CREDIT,
+             account_code="2311", amount_source="TAX_AMOUNT",
+             is_required=False, requires_dynamic_account=False, context_key=None),
+
+        # -- Cancel Purchase Invoice (Direct)
+        dict(template_code="CANCEL_PURCHASE_INVOICE_DIRECT", sequence=10, effect=DEBIT,
+             account_code=None, amount_source="DOCUMENT_TOTAL",
+             is_required=True, requires_dynamic_account=True, context_key="accounts_payable_account_id"),
+        dict(template_code="CANCEL_PURCHASE_INVOICE_DIRECT", sequence=20, effect=CREDIT,
+             account_code="1141", amount_source="INVOICE_STOCK_VALUE",
+             is_required=False, requires_dynamic_account=False, context_key=None),
+        dict(template_code="CANCEL_PURCHASE_INVOICE_DIRECT", sequence=30, effect=CREDIT,
+             account_code="5014", amount_source="INVOICE_SERVICE_VALUE",
+             is_required=False, requires_dynamic_account=False, context_key=None),
+        dict(template_code="CANCEL_PURCHASE_INVOICE_DIRECT", sequence=40, effect=CREDIT,
+             account_code="2311", amount_source="TAX_AMOUNT",
+             is_required=False, requires_dynamic_account=False, context_key=None),
+        dict(template_code="CANCEL_PURCHASE_INVOICE_DIRECT", sequence=50, effect=CREDIT,
+             account_code="5113", amount_source="ROUND_OFF_POSITIVE",
+             is_required=False, requires_dynamic_account=False, context_key=None),
+        dict(template_code="CANCEL_PURCHASE_INVOICE_DIRECT", sequence=60, effect=DEBIT,
+             account_code="4153", amount_source="ROUND_OFF_NEGATIVE",
+             is_required=False, requires_dynamic_account=False, context_key=None),
+
+        # -- Cancel Purchase Receipt (reverse PR GRNI)
+        dict(template_code="CANCEL_PURCHASE_RECEIPT", sequence=10, effect=CREDIT,
+             account_code="1141", amount_source="INVENTORY_PURCHASE_COST",
+             is_required=True, requires_dynamic_account=False, context_key=None),
+        dict(template_code="CANCEL_PURCHASE_RECEIPT", sequence=20, effect=DEBIT,
+             account_code="2210", amount_source="INVENTORY_PURCHASE_COST",
+             is_required=True, requires_dynamic_account=False, context_key=None),
+
     # --------------------------------------------------------------------------
     # --- Stock Reconciliation Items ---
     # --------------------------------------------------------------------------

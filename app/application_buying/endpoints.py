@@ -1,248 +1,201 @@
 # app/application_buying/endpoints.py
 from __future__ import annotations
-from flask import Blueprint, request, g
+
+import logging
+from flask import Blueprint, request, g, current_app
 from pydantic import ValidationError
 from werkzeug.exceptions import NotFound, Conflict, Forbidden, BadRequest
 
-# Project Imports
 from app.application_buying.schemas import (
     PurchaseReceiptCreate, PurchaseReceiptUpdate,
-    PurchaseInvoiceCreate, PurchaseReturnCreate, PurchaseDebitNoteCreate,
+    PurchaseInvoiceCreate, PurchaseInvoiceUpdate,
 )
-from app.application_buying.services.invoice_service import PurchaseInvoiceService
 from app.application_buying.services.receipt_service import PurchaseReceiptService
+from app.application_buying.services.invoice_service import PurchaseInvoiceService
 from app.business_validation.item_validation import BizValidationError
 from app.common.api_response import api_success, api_error
 from app.security.rbac_guards import require_permission
 from app.security.rbac_effective import AffiliationContext
 from app.auth.deps import get_current_user
 
-bp = Blueprint("buying", __name__, url_prefix="/api/buying")
-import logging
 logger = logging.getLogger(__name__)
-def _get_context() -> AffiliationContext:
-    _ = get_current_user()  # Ensures user is authenticated
+
+bp = Blueprint("buying", __name__, url_prefix="/api/buying")
+
+
+def _ctx() -> AffiliationContext:
+    _ = get_current_user()
     ctx: AffiliationContext = getattr(g, "auth", None)
     if not ctx:
         raise PermissionError("Authentication context not found.")
     return ctx
 
-# ------------------------- Purchase Receipt -------------------------
 
-# @bp.post("/receipt/create")
-# @require_permission("Purchase Receipt", "CREATE")
-# def create_purchase_receipt():
-#     try:
-#         ctx = _get_context()
-#         payload = PurchaseReceiptCreate.model_validate(request.get_json(silent=True) or {})
-#         svc = PurchaseReceiptService()
-#         pr = svc.create_purchase_receipt(payload=payload, context=ctx)
-#         return api_success(
-#             data={"id": pr.id, "code": pr.code},
-#             message="Purchase Receipt created successfully.",
-#             status_code=201,
-#         )
-#
-#     except ValidationError as e:
-#         return api_error(str(e), status_code=422)
-#     except (BadRequest, Forbidden, NotFound) as e:
-#         return api_error(e.description, status_code=e.code)
-#     except (BizValidationError, Conflict) as e:
-#         return api_error(str(e), status_code=400)
-#     except PermissionError:
-#         return api_error("Unauthorized", status_code=401)
-#     except Exception:
-#         return api_error("An unexpected error occurred.", status_code=500)
+# ──────────────────────────────────────────────────────────────────────────────
+# Purchase Receipts
+# ──────────────────────────────────────────────────────────────────────────────
+
 @bp.post("/receipt/create")
 @require_permission("Purchase Receipt", "CREATE")
 def create_purchase_receipt():
-    """Creates a normal purchase receipt (not a return)."""
     try:
-        ctx = _get_context()
         payload = PurchaseReceiptCreate.model_validate(request.get_json(silent=True) or {})
-        logger.debug("Payload received: %s", payload)
-
         svc = PurchaseReceiptService()
-        pr = svc.create_purchase_receipt(payload=payload, context=ctx)
-        return api_success(
-            data={"id": pr.id, "code": pr.code},
-            message="Purchase Receipt created in Draft status.",
-            status_code=201,
-        )
+        pr = svc.create_purchase_receipt(payload=payload, context=_ctx())
+        return api_success({"id": pr.id, "code": pr.code}, "Purchase Receipt created (Draft).", status_code=201)
 
     except ValidationError as e:
-        logger.error("ValidationError: %s", str(e))
+        logger.error("ValidationError (PR create): %s", str(e))
         return api_error(str(e), status_code=422)
-    except (BadRequest, Forbidden, NotFound) as e:
-        logger.error("BadRequest/Forbidden/NotFound: %s", e.description)
-        return api_error(e.description, status_code=e.code)
-    except (BizValidationError, Conflict) as e:
-        logger.error("BizValidationError: %s", str(e))
+    except (BadRequest, Forbidden, NotFound, Conflict) as e:
+        msg = e.description if hasattr(e, "description") else str(e)
+        logger.error("HTTP error (PR create): %s", msg)
+        return api_error(msg, status_code=e.code)
+    except BizValidationError as e:
+        logger.error("BizValidationError (PR create): %s", str(e))
         return api_error(str(e), status_code=400)
     except PermissionError:
-        logger.error("PermissionError: Unauthorized access")
+        logger.error("PermissionError (PR create): Unauthorized")
         return api_error("Unauthorized", status_code=401)
     except Exception as e:
-        logger.exception("Unexpected error: %s", str(e))
-        return api_error("An unexpected error occurred.", status_code=500)
-
+        logger.exception("Unexpected error creating Purchase Receipt")
+        if current_app.debug or current_app.config.get("ENV") == "development":
+            return api_error(f"[DEV TRACE] {e}", status_code=500)
+        return api_error("Unexpected error.", status_code=500)
 
 
 @bp.post("/receipt/<int:receipt_id>/submit")
 @require_permission("Purchase Receipt", "SUBMIT")
 def submit_purchase_receipt(receipt_id: int):
     try:
-        ctx = _get_context()
         svc = PurchaseReceiptService()
-        pr = svc.submit_purchase_receipt(receipt_id=receipt_id, context=ctx)
-        return api_success(
-            data={"id": pr.id, "code": pr.code},
-            message="Purchase Receipt submitted successfully.",
-            status_code=200,
-        )
+        pr = svc.submit_purchase_receipt(receipt_id=receipt_id, context=_ctx())
+        return api_success({"id": pr.id, "code": pr.code}, "Purchase Receipt submitted.", status_code=200)
 
-    except Forbidden as e:
+    except (Forbidden, NotFound) as e:
         return api_error(e.description, status_code=e.code)
     except BizValidationError as e:
         return api_error(str(e), status_code=400)
-    except NotFound as e:
-        return api_error(str(e), status_code=404)
     except PermissionError:
         return api_error("Unauthorized", status_code=401)
     except Exception as e:
-        # 🔥 LOG FULL STACK
-        logger.exception("Unhandled error submitting Purchase Receipt", extra={"receipt_id": receipt_id})
-        # In dev, return the exception message to speed up debugging
-        from flask import current_app
+        logger.exception("Unhandled error submitting Purchase Receipt")
         if current_app.debug or current_app.config.get("ENV") == "development":
             return api_error(f"[DEV TRACE] {e}", status_code=500)
-        return api_error("An unexpected error occurred.", status_code=500)
+        return api_error("Unexpected error.", status_code=500)
 
-
-@bp.post("/invoice/return/<int:original_invoice_id>/create")
-@require_permission("Purchase Invoice", "CREATE")
-def create_purchase_debit_note(original_invoice_id: int):
-    """Creates a Purchase Debit Note (Return) against a submitted Purchase Invoice."""
-    try:
-        ctx = _get_context()
-        payload = PurchaseDebitNoteCreate.model_validate(request.get_json(silent=True) or {})
-        svc = PurchaseInvoiceService()
-        debit_note = svc.create_purchase_debit_note(
-            original_invoice_id=original_invoice_id,
-            payload=payload,
-            context=ctx
-        )
-        return api_success(
-            data={"id": debit_note.id, "code": debit_note.code},
-            message="Purchase Debit Note created successfully.",
-            status_code=201,
-        )
-    except ValidationError as e:
-        return api_error(str(e), status_code=422)
-    except BizValidationError as e:
-        return api_error(str(e), status_code=400)
-    except Forbidden as e:
-        return api_error(e.description, status_code=e.code)
-    except PermissionError:
-        return api_error("Unauthorized", status_code=401)
-    except Exception:
-        return api_error("An unexpected server error occurred.", status_code=500)
 
 @bp.post("/receipt/<int:receipt_id>/cancel")
 @require_permission("Purchase Receipt", "CANCEL")
 def cancel_purchase_receipt(receipt_id: int):
     try:
-        ctx = _get_context()
         svc = PurchaseReceiptService()
-        pr = svc.cancel_purchase_receipt(receipt_id=receipt_id, context=ctx)
-        return api_success(
-            data={"id": pr.id, "code": pr.code},
-            message="Purchase Receipt cancelled successfully.",
-            status_code=200,
-        )
+        pr = svc.cancel_purchase_receipt(receipt_id=receipt_id, context=_ctx())
+        return api_success({"id": pr.id, "code": pr.code}, "Purchase Receipt cancelled.", status_code=200)
 
-    except Forbidden as e:
+    except (Forbidden, NotFound) as e:
         return api_error(e.description, status_code=e.code)
     except BizValidationError as e:
         return api_error(str(e), status_code=400)
-    except NotFound as e:
-        return api_error(str(e), status_code=404)
     except PermissionError:
         return api_error("Unauthorized", status_code=401)
-    except Exception:
-        return api_error("An unexpected error occurred.", status_code=500)
+    except Exception as e:
+        logger.exception("Unhandled error cancelling Purchase Receipt")
+        if current_app.debug or current_app.config.get("ENV") == "development":
+            return api_error(f"[DEV TRACE] {e}", status_code=500)
+        return api_error("Unexpected error.", status_code=500)
 
-# ------------------------- Purchase Invoice -------------------------
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Purchase Invoices
+# ──────────────────────────────────────────────────────────────────────────────
 
 @bp.post("/invoice/create")
 @require_permission("Purchase Invoice", "CREATE")
 def create_purchase_invoice():
     try:
-        ctx = _get_context()
         payload = PurchaseInvoiceCreate.model_validate(request.get_json(silent=True) or {})
         svc = PurchaseInvoiceService()
-        pi = svc.create_purchase_invoice(payload=payload, context=ctx)
-        return api_success(
-            data={"id": pi.id, "code": pi.code},
-            message="Purchase Invoice created successfully.",
-            status_code=201,
-        )
+        pi = svc.create_purchase_invoice(payload=payload, context=_ctx())
+        return api_success({"id": pi.id, "code": pi.code}, "Purchase Invoice created (Draft).", status_code=201)
 
     except ValidationError as e:
         return api_error(str(e), status_code=422)
-    except Forbidden as e:
-        return api_error(e.description, status_code=e.code)
-    except (BizValidationError, Conflict) as e:
+    except (BadRequest, Forbidden, NotFound, Conflict) as e:
+        msg = e.description if hasattr(e, "description") else str(e)
+        return api_error(msg, status_code=e.code)
+    except BizValidationError as e:
         return api_error(str(e), status_code=400)
     except PermissionError:
         return api_error("Unauthorized", status_code=401)
-    except Exception:
-        return api_error("An unexpected server error occurred.", status_code=500)
+    except Exception as e:
+        logger.exception("Unexpected error creating Purchase Invoice")
+        if current_app.debug or current_app.config.get("ENV") == "development":
+            return api_error(f"[DEV TRACE] {e}", status_code=500)
+        return api_error("Unexpected error.", status_code=500)
+
+
+@bp.patch("/invoice/<int:invoice_id>/update")
+@require_permission("Purchase Invoice", "UPDATE")
+def update_purchase_invoice(invoice_id: int):
+    try:
+        payload = PurchaseInvoiceUpdate.model_validate(request.get_json(silent=True) or {})
+        svc = PurchaseInvoiceService()
+        pi = svc.update_purchase_invoice(invoice_id=invoice_id, payload=payload, context=_ctx())
+        return api_success({"id": pi.id, "code": pi.code}, "Purchase Invoice updated.", status_code=200)
+
+    except ValidationError as e:
+        return api_error(str(e), status_code=422)
+    except (Forbidden, NotFound) as e:
+        return api_error(e.description, status_code=e.code)
+    except BizValidationError as e:
+        return api_error(str(e), status_code=400)
+    except PermissionError:
+        return api_error("Unauthorized", status_code=401)
+    except Exception as e:
+        logger.exception("Unexpected error updating Purchase Invoice")
+        if current_app.debug or current_app.config.get("ENV") == "development":
+            return api_error(f"[DEV TRACE] {e}", status_code=500)
+        return api_error("Unexpected error.", status_code=500)
+
 
 @bp.post("/invoice/<int:invoice_id>/submit")
 @require_permission("Purchase Invoice", "SUBMIT")
 def submit_purchase_invoice(invoice_id: int):
     try:
-        ctx = _get_context()
         svc = PurchaseInvoiceService()
-        pi = svc.submit_purchase_invoice(invoice_id=invoice_id, context=ctx)
-        return api_success(
-            data={"id": pi.id, "code": pi.code},
-            message="Purchase Invoice submitted successfully.",
-            status_code=200,
-        )
+        pi = svc.submit_purchase_invoice(invoice_id=invoice_id, context=_ctx())
+        return api_success({"id": pi.id, "code": pi.code}, "Purchase Invoice submitted.", status_code=200)
 
-    except Forbidden as e:
+    except (Forbidden, NotFound) as e:
         return api_error(e.description, status_code=e.code)
     except BizValidationError as e:
         return api_error(str(e), status_code=400)
-    except NotFound as e:
-        return api_error(str(e), status_code=404)
     except PermissionError:
         return api_error("Unauthorized", status_code=401)
-    except Exception:
-        return api_error("An unexpected server error occurred.", status_code=500)
+    except Exception as e:
+        logger.exception("Unhandled error submitting Purchase Invoice")
+        if current_app.debug or current_app.config.get("ENV") == "development":
+            return api_error(f"[DEV TRACE] {e}", status_code=500)
+        return api_error("Unexpected error.", status_code=500)
+
 
 @bp.post("/invoice/<int:invoice_id>/cancel")
 @require_permission("Purchase Invoice", "CANCEL")
 def cancel_purchase_invoice(invoice_id: int):
     try:
-        ctx = _get_context()
         svc = PurchaseInvoiceService()
-        pi = svc.cancel_purchase_invoice(invoice_id=invoice_id, context=ctx)
-        return api_success(
-            data={"id": pi.id, "code": pi.code},
-            message="Purchase Invoice cancelled successfully.",
-            status_code=200,
-        )
+        pi = svc.cancel_purchase_invoice(invoice_id=invoice_id, context=_ctx())
+        return api_success({"id": pi.id, "code": pi.code}, "Purchase Invoice cancelled.", status_code=200)
 
-    except Forbidden as e:
+    except (Forbidden, NotFound) as e:
         return api_error(e.description, status_code=e.code)
     except BizValidationError as e:
         return api_error(str(e), status_code=400)
-    except NotFound as e:
-        return api_error(str(e), status_code=404)
     except PermissionError:
         return api_error("Unauthorized", status_code=401)
-    except Exception:
-        return api_error("An unexpected server error occurred.", status_code=500)
+    except Exception as e:
+        logger.exception("Unhandled error cancelling Purchase Invoice")
+        if current_app.debug or current_app.config.get("ENV") == "development":
+            return api_error(f"[DEV TRACE] {e}", status_code=500)
+        return api_error("Unexpected error.", status_code=500)

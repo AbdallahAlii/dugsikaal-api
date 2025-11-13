@@ -1,4 +1,5 @@
--- app/application_reports/sql/stock_ledger_query.sql
+
+-- -- app/application_reports/sql/stock_ledger_query.sql
 -- Frappe-style stock ledger (by names), voucher-aware, Postgres-safe
 
 SELECT
@@ -34,12 +35,14 @@ LEFT JOIN document_types  dt       ON dt.id       = sle.doc_type_id
 LEFT JOIN LATERAL (
     SELECT COALESCE(
         CASE dt.code
-            WHEN 'PURCHASE_RECEIPT' THEN (SELECT pr.code  FROM purchase_receipts pr WHERE pr.id = sle.doc_id)
-            WHEN 'PURCHASE_INVOICE' THEN (SELECT pi.code  FROM purchase_invoices pi WHERE pi.id = sle.doc_id)
-            WHEN 'SALES_INVOICE'    THEN (SELECT si.code  FROM sales_invoices   si WHERE si.id = sle.doc_id)
-            WHEN 'STOCK_ENTRY'      THEN (SELECT se.code  FROM stock_entries    se WHERE se.id = sle.doc_id)
-            WHEN 'PURCHASE_RETURN'  THEN (SELECT prt.code FROM purchase_receipts prt WHERE prt.id = sle.doc_id)
-            WHEN 'SALES_RETURN'     THEN (SELECT srt.code FROM sales_invoices   srt WHERE srt.id = sle.doc_id)
+            WHEN 'PURCHASE_RECEIPT'     THEN (SELECT pr.code  FROM purchase_receipts     pr  WHERE pr.id = sle.doc_id)
+            WHEN 'PURCHASE_INVOICE'     THEN (SELECT pi.code  FROM purchase_invoices     pi  WHERE pi.id = sle.doc_id)
+            WHEN 'SALES_INVOICE'        THEN (SELECT si.code  FROM sales_invoices        si  WHERE si.id = sle.doc_id)
+            WHEN 'SALES_DELIVERY_NOTE'  THEN (SELECT sdn.code FROM sales_delivery_notes  sdn WHERE sdn.id = sle.doc_id)
+            WHEN 'DELIVERY_NOTE'        THEN (SELECT dn.code  FROM sales_delivery_notes  dn  WHERE dn.id = sle.doc_id)
+            WHEN 'STOCK_ENTRY'          THEN (SELECT se.code  FROM stock_entries         se  WHERE se.id = sle.doc_id)
+            WHEN 'STOCK_RECONCILIATION' THEN (SELECT sr.code  FROM stock_reconciliations sr  WHERE sr.id = sle.doc_id)
+            WHEN 'LANDED_COST_VOUCHER'  THEN (SELECT lcv.code FROM landed_cost_vouchers lcv WHERE lcv.id = sle.doc_id)
             ELSE NULL
         END,
         /* Fallback if doc_type_id is NULL but stock_entry_id is set */

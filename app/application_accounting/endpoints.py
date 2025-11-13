@@ -16,6 +16,10 @@ from app.application_accounting.query_builders.coa_tree_builders import (
 
 bp = Blueprint("accounts_coa", __name__, url_prefix="/api/v1/coa")
 
+
+
+
+
 @bp.get("/<int:company_id>/tree")
 @require_permission("Account", "Read")
 def get_coa_tree(company_id: int):

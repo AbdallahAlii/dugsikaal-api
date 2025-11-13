@@ -9,10 +9,14 @@ from app.application_accounting.chart_of_accounts.account_policies import (
     ModeOfPayment, AccountAccessPolicy
 )
 from app.application_accounting.chart_of_accounts.models import (
-    FiscalYear, CostCenter, Account
+    FiscalYear, CostCenter, Account, PartyTypeEnum
 )
 from app.application_org.models.company import Branch, Company
-
+from app.application_accounting.chart_of_accounts.finance_model import ExpenseType, ExpenseItem,Expense
+from app.application_accounting.chart_of_accounts.models import Account, AccountTypeEnum  # adjust path if different
+from app.application_accounting.chart_of_accounts.finance_model import ExpenseType,PaymentEntry
+from app.application_parties.parties_models import Party,PartyRoleEnum
+from app.application_hr.models.hr import Employee,EmployeeAssignment
 
 def _ymd(col):
     """Render a date-only ISO string (YYYY-MM-DD) for UI."""
@@ -214,5 +218,132 @@ def build_account_access_policies_query(session: Session, context: AffiliationCo
             q = q.where((AAP.branch_id.is_(None)) | (AAP.branch_id.in_(branch_ids)))
         else:
             q = q.where(AAP.branch_id.is_(None))
+
+    return q
+
+
+# ───────────────────────── Expenses (LIST) ─────────────────────────
+def build_expenses_query(session: Session, context: AffiliationContext):
+    """
+    Minimal list for Expense headers (direct expense):
+      id, code, status, expense_type_name, amount
+
+    Notes:
+      * expense_type_name = the single type name if all items share one; otherwise "Mixed".
+      * posting_date, company/branch names, etc. are available in the *detail* endpoint.
+    """
+    co_id = getattr(context, "company_id", None)
+    if co_id is None:
+        return select(Expense.id).where(false())
+
+    E = Expense
+    EI = ExpenseItem
+    ET = ExpenseType
+
+    agg = (
+        select(
+            EI.expense_id.label("expense_id"),
+            func.count(func.distinct(EI.expense_type_id)).label("type_count"),
+            func.min(EI.expense_type_id).label("single_type_id"),
+        )
+        .group_by(EI.expense_id)
+        .subquery("ei_agg")
+    )
+
+    q = (
+        select(
+            E.id.label("id"),
+            E.code.label("code"),
+            E.doc_status.label("status"),
+            E.total_amount.label("amount"),
+            case((agg.c.type_count == 1, ET.name), else_="Mixed").label("expense_type_name"),
+        )
+        .select_from(E)
+        .outerjoin(agg, agg.c.expense_id == E.id)
+        .outerjoin(ET, ET.id == agg.c.single_type_id)
+        .where(E.company_id == co_id)
+    )
+    return q
+# ───────────────────────── Expense Types (LIST) ─────────────────────────
+def build_expense_types_query(session: Session, context: AffiliationContext):
+    """
+    Minimal list for Expense Types:
+      id, name, enabled
+
+    Full default account info is provided by the *detail* loader.
+    """
+    co_id = getattr(context, "company_id", None)
+    if co_id is None:
+        return select(ExpenseType.id).where(false())
+
+    ET = ExpenseType
+
+    q = (
+        select(
+            ET.id.label("id"),
+            ET.name.label("name"),
+            ET.enabled.label("enabled"),
+        )
+        .select_from(ET)
+        .where(ET.company_id == co_id)
+    )
+    return q
+
+
+def build_payments_query(session: Session, context: AffiliationContext):
+    """
+    Clean list payload for Payment Entry - ERP-style minimal fields
+    """
+    co_id = getattr(context, "company_id", None)
+    if co_id is None:
+        return select(PaymentEntry.id).where(false())
+
+    PE = PaymentEntry
+    MOP = ModeOfPayment
+
+    # Get party name based on party_type - optimized single query approach
+    party_name_case = case(
+        # Customer
+        (PE.party_type == PartyTypeEnum.CUSTOMER,
+         select(Party.name)
+         .where(Party.id == PE.party_id)
+         .scalar_subquery()),
+        # Supplier
+        (PE.party_type == PartyTypeEnum.SUPPLIER,
+         select(Party.name)
+         .where(Party.id == PE.party_id)
+         .scalar_subquery()),
+        # Employee
+        (PE.party_type == PartyTypeEnum.EMPLOYEE,
+         select(Employee.full_name)
+         .where(Employee.id == PE.party_id)
+         .scalar_subquery()),
+        else_=None
+    ).label("party_name")
+
+    q = (
+        select(
+            PE.id.label("id"),
+            PE.code.label("code"),
+            PE.payment_type.label("payment_type"),
+            PE.doc_status.label("status"),
+            party_name_case,
+            PE.paid_amount.label("paid_amount"),
+            _ymd(PE.posting_date).label("posting_date"),
+            MOP.name.label("mode_of_payment_name"),
+            # Removed company_name and branch_name from list - not needed
+        )
+        .select_from(PE)
+        .outerjoin(MOP, MOP.id == PE.mode_of_payment_id)
+        .where(PE.company_id == co_id)
+    )
+
+    # Branch scope filtering
+    if not _has_company_wide_access(context):
+        branch_ids = list(getattr(context, "branch_ids", []) or [])
+        if branch_ids:
+            q = q.where(PE.branch_id.in_(branch_ids))
+        else:
+            q = q.where(false())
 
     return q

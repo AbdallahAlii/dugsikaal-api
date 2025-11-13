@@ -142,7 +142,8 @@ def create_app() -> Flask:
     app.register_blueprint(accounting_bp)
     from app.application_nventory.endpoints import bp as inventory_bp
     app.register_blueprint(inventory_bp, url_prefix="/api/inventory")
-
+    from app.application_data_import.api import bp as data_imports_bp
+    app.register_blueprint(data_imports_bp)
     from app.application_parties.endpoints import bp as parties_bp
     app.register_blueprint(parties_bp, url_prefix="/api/parties")
 

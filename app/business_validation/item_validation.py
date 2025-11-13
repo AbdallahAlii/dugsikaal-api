@@ -154,7 +154,57 @@ def validate_non_negative_rate(rate: Optional[Decimal]) -> None:
         if rate < 0:
             raise BizValidationError(ERR_RATE_MUST_BE_NON_NEGATIVE)
 
+def validate_paid_writeoff_ceiling(
+    *, grand_total: Decimal, paid_amount: Decimal, write_off_amount: Decimal
+) -> None:
+    """
+    ERPNext-style: Paid + Write Off must not exceed Grand Total.
+    This function is SIGN-AWARE:
+      - Normal invoices (grand_total >= 0): enforce paid + writeoff <= grand_total
+      - Returns (grand_total < 0): enforce |paid| + |writeoff| <= |grand_total|
+    """
+    zero = Decimal("0")
+    paid = Decimal(str(paid_amount or zero))
+    woff = Decimal(str(write_off_amount or zero))
+    gt = Decimal(str(grand_total or zero))
 
+    # paid can't be negative for normal invoices; can't be positive for returns
+    if gt >= zero and paid < zero:
+        raise BizValidationError("Paid amount cannot be negative for normal invoices.")
+    if gt < zero and paid > zero:
+        raise BizValidationError("Paid amount must be negative for returns (refund to customer).")
+
+    if gt >= zero:
+        if paid + woff > gt + Decimal("0.0000001"):
+            raise BizValidationError("Paid Amount + Write Off Amount cannot be greater than Grand Total.")
+    else:
+        # returns: compare absolute values
+        if (abs(paid) + abs(woff)) > abs(gt) + Decimal("0.0000001"):
+            raise BizValidationError("Paid Amount + Write Off Amount cannot exceed absolute Grand Total for returns.")
+def guard_updatable_state(status: DocStatusEnum):
+    if status != DocStatusEnum.DRAFT:
+        raise BizValidationError("Only DRAFT documents can be updated.")
+
+def validate_return_requirements(
+    *, is_return: bool, return_against_id: Optional[int]
+) -> None:
+    if is_return and not return_against_id:
+        raise BizValidationError("Return Against is required for a return Sales Invoice.")
+
+
+def validate_items_quantity_direction(is_return: bool, items: List[Dict[str, Any]]) -> None:
+    """
+    Enforce ERPNext sign convention:
+      - Normal invoice: quantities MUST be positive.
+      - Return (credit note): quantities MUST be negative.
+    """
+    zero = Decimal("0")
+    for it in items:
+        q = Decimal(str(it.get("quantity", zero)))
+        if is_return and q >= zero:
+            raise BizValidationError("Return invoice items must have negative quantities.")
+        if not is_return and q <= zero:
+            raise BizValidationError("Sales invoice items must have positive quantities.")
 # --- Master-Data & Business Logic Gates (Purchasing/Inventory) ---
 
 

@@ -1,9 +1,9 @@
-# app/application_reports/core/engine.py
+# # app/application_reports/core/engine.py
+
 from __future__ import annotations
 import logging
 import time
-import os
-from typing import Dict, Any, List, Optional, Protocol, TypedDict
+from typing import Dict, Any, List, Optional, TypedDict
 from datetime import datetime, date
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -65,6 +65,9 @@ class ReportMeta:
     category: str
     version: str = "1.0.0"
     is_standard: bool = True
+    # ---- per-report cache controls (new) ----
+    cache_enabled: Optional[bool] = None       # None => routes decide; True/False forces
+    cache_ttl_s: Optional[int] = None          # override TTL for this report (seconds)
 
 
 class BaseReport(ABC):
@@ -73,11 +76,11 @@ class BaseReport(ABC):
 
     @abstractmethod
     def get_columns(self, filters: Optional[Dict[str, Any]] = None) -> List[ColumnDefinition]:
-        pass
+        ...
 
     @abstractmethod
     def execute(self, filters: Dict[str, Any], session: Session, context: AffiliationContext) -> ReportResult:
-        pass
+        ...
 
     def get_filters(self) -> List[FilterDefinition]:
         return []
@@ -144,10 +147,19 @@ class QueryReport(BaseReport):
         return self._base_columns
 
     def _apply_default_filters(self, filters: Dict[str, Any], context: AffiliationContext) -> None:
+        # Ensure company is INT for DB bind compatibility
         if 'company' not in filters:
             company_id = getattr(context, 'company_id', None)
-            if company_id:
-                filters['company'] = str(company_id)
+            if company_id is not None:
+                try:
+                    filters['company'] = int(company_id)
+                except Exception:
+                    filters['company'] = company_id
+        else:
+            try:
+                filters['company'] = int(filters['company'])
+            except Exception:
+                log.warning("company filter not int-convertible: %s", filters.get('company'))
 
         if 'from_date' not in filters:
             filters['from_date'] = date.today().replace(day=1)
@@ -247,8 +259,8 @@ class ReportEngine:
 
         try:
             return report.execute(filters, self.session, context)
-        except Exception as e:
-            log.error(f"Report execution failed: {name}", exc_info=True)
+        except Exception:
+            log.error("Report execution failed: %s", name, exc_info=True)
             raise
 
     def get_report_meta(self, name: str) -> ReportMeta:
@@ -282,7 +294,10 @@ class ReportEngine:
                 "module": meta.module,
                 "category": meta.category,
                 "is_standard": meta.is_standard,
-                "version": meta.version
+                "version": meta.version,
+                # expose cache controls
+                "cache_enabled": meta.cache_enabled,
+                "cache_ttl_s": meta.cache_ttl_s,
             })
 
         return reports
@@ -303,6 +318,7 @@ def _enhance_gl_filters(self, filters: Dict[str, Any]) -> Dict[str, Any]:
             # Don't remove voucher_no filter as it might also match journal entry codes
 
     return enhanced_filters
+
 
 def create_report_engine(session: Session) -> ReportEngine:
     return ReportEngine(session)

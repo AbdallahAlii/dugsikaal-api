@@ -13,8 +13,8 @@ class PaymentReferenceRow(BaseModel):
     allocated_amount: Decimal = Field(ge=0)
 
 class PaymentCreateSchema(BaseModel):
-    company_id: int
-    branch_id: int
+    company_id: Optional[int] = None  # Make optional
+    branch_id: Optional[int] = None   # Make optional
     code: Optional[str] = None
     payment_type: PaymentType
     posting_date: date

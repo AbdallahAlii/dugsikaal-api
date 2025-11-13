@@ -175,3 +175,24 @@ def submit_si(si_id: int):
         if current_app.debug or current_app.config.get("ENV") == "development":
             return api_error(f"[DEV TRACE] {e}", status_code=500)
         return api_error("Unexpected error.", status_code=500)
+
+# Cancel Sales Invoice
+@bp.post("/invoice/<int:si_id>/cancel")
+@require_permission("Sales Invoice", "CANCEL")
+def cancel_si(si_id: int):
+    try:
+        svc = SalesService()
+        si = svc.cancel_sales_invoice(si_id=si_id, context=_ctx())
+        return api_success({"id": si.id, "code": si.code}, "Sales Invoice cancelled.", status_code=200)
+
+    except (Forbidden, NotFound) as e:
+        return api_error(e.description, status_code=e.code)
+    except BizValidationError as e:
+        return api_error(str(e), status_code=400)
+    except PermissionError:
+        return api_error("Unauthorized", status_code=401)
+    except Exception as e:
+        logger.exception("Unhandled error cancelling Sales Invoice")
+        if current_app.debug or current_app.config.get("ENV") == "development":
+            return api_error(f"[DEV TRACE] {e}", status_code=500)
+        return api_error("Unexpected error.", status_code=500)

@@ -32,7 +32,14 @@ from app.application_accounting.chart_of_accounts.models import (
     AccountBalance, PartyAccountBalance, PartyTypeEnum,
     GLEntryTemplate, GLTemplateItem,
 )
+# ==============================================================================
+# DATA IMPORT MODELS (Add this section - Import after core models)
+# ==============================================================================
 
+from app.application_data_import.models import (
+    DataImport, DataImportTemplateField, DataImportLog,
+    ImportStatus, ImportType, FileType
+)
 # Assets & Fixed Assets
 
 from app.application_accounting.chart_of_accounts.assets_model import (
@@ -117,7 +124,9 @@ __all__ = [
     'Company', 'Branch', 'Department', 'City',
     'User', 'UserAffiliation', 'UserType',
     'Role', 'Permission', 'UserRole',
-
+    # ==================== DATA IMPORT MODELS ====================
+    'DataImport', 'DataImportTemplateField', 'DataImportLog',
+    'ImportStatus', 'ImportType', 'FileType',
     # ==================== INVENTORY & STOCK ====================
     # Stock Models
     'Warehouse', 'Bin', 'StockEntry', 'StockEntryItem',

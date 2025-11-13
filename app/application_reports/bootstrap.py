@@ -133,6 +133,42 @@ def bootstrap_reports(engine: ReportEngine) -> None:
     ar_report = ScriptReport(meta=ar_meta, script_class=AccountsReceivableReport)
     engine.register_report(ar_report)
 
+    # Accounts Receivable (detail)
+    ar_det_meta = ReportMeta(
+        name="Accounts Receivable",
+        description="Per-invoice receivable with paid, credits, outstanding and ageing",
+        report_type=ReportType.SCRIPT,
+        module="Accounts",
+        category="Receivable Reports",
+    )
+    from app.application_reports.scripts.accounts_receivable_detail import AccountsReceivableDetailReport
+    ar_det_report = ScriptReport(meta=ar_det_meta, script_class=AccountsReceivableDetailReport)
+    engine.register_report(ar_det_report)
+
+    # Accounts Payable Summary
+    ap_meta = ReportMeta(
+        name="Accounts Payable Summary",
+        description="Supplier outstanding with ageing analysis",
+        report_type=ReportType.SCRIPT,
+        module="Accounts",
+        category="Payable Reports"
+    )
+    from app.application_reports.scripts.accounts_payable import AccountsPayableReport
+    ap_report = ScriptReport(meta=ap_meta, script_class=AccountsPayableReport)
+    engine.register_report(ap_report)
+
+    # Accounts Payable (detail)
+    ap_det_meta = ReportMeta(
+        name="Accounts Payable",
+        description="Per-invoice payable with paid, debit notes, outstanding and ageing",
+        report_type=ReportType.SCRIPT,
+        module="Accounts",
+        category="Payable Reports",
+    )
+    from app.application_reports.scripts.accounts_payable_detail import AccountsPayableDetailReport
+    ap_det_report = ScriptReport(meta=ap_det_meta, script_class=AccountsPayableDetailReport)
+    engine.register_report(ap_det_report)
+
     # Profit and Loss Statement
     pl_meta = ReportMeta(
         name="Profit and Loss Statement",

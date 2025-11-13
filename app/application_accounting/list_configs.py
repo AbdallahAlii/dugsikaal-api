@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.application_doctypes.core_lists.config import ListConfig, register_list_configs
-
+from app.application_accounting.chart_of_accounts.finance_model import ExpenseType, ExpenseItem,Expense
 from app.application_accounting.chart_of_accounts.account_policies import (
     ModeOfPayment, AccountAccessPolicy
 )
@@ -13,9 +13,10 @@ from app.application_accounting.query_builders.build_accounting_queries import (
     build_fiscal_years_query,
     build_cost_centers_query,
     build_accounts_query,
-    build_account_access_policies_query,  # keep if you still expose AAP lists
+    build_account_access_policies_query, build_expenses_query,
+    build_expense_types_query, build_payments_query,  # keep if you still expose AAP lists
 )
-
+from app.application_accounting.chart_of_accounts.finance_model import ExpenseType,PaymentEntry
 ACCOUNTING_LIST_CONFIGS = {
     # ─────────────────── Modes of Payment ───────────────────
     "modes_of_payment": ListConfig(
@@ -123,6 +124,71 @@ ACCOUNTING_LIST_CONFIGS = {
         cache_enabled=True,
         cache_ttl=900,
     ),
+
+    # ─────────────────── Expense Types ───────────────────
+    "expense_types": ListConfig(
+        permission_tag="Expense Type",
+        query_builder=build_expense_types_query,
+        search_fields=[ExpenseType.name, ExpenseType.description],
+        sort_fields={
+            "name": ExpenseType.name,
+            "enabled": ExpenseType.enabled,
+            "id": ExpenseType.id,
+        },
+        filter_fields={
+            "company_id": ExpenseType.company_id,
+            "enabled": ExpenseType.enabled,
+            # optional UI switch: ensure_has_default_account handled in builder if you add it later
+        },
+        cache_enabled=True,
+        cache_ttl=86400,  # master rarely changes → cache longer
+    ),
+
+    # ─────────────────── Expenses (Direct Expense) ───────────────────
+    "expenses": ListConfig(
+        permission_tag="Expense",
+        query_builder=build_expenses_query,
+        search_fields=[Expense.code, Expense.remarks],
+        sort_fields={
+            "code": Expense.code,
+            "posting_date": Expense.posting_date,
+            "amount": Expense.total_amount,
+            "status": Expense.doc_status,
+            "id": Expense.id,
+        },
+        filter_fields={
+            "company_id": Expense.company_id,
+            "branch_id": Expense.branch_id,
+            "doc_status": Expense.doc_status,
+            "posting_date": Expense.posting_date,
+        },
+        cache_enabled=True,
+        cache_ttl=600,  # transactions change more often
+    ),
+# ─────────────────── Payment Entries ───────────────────
+"payments": ListConfig(
+    permission_tag="PaymentEntry",
+    query_builder=build_payments_query,
+    search_fields=[PaymentEntry.code, "party_name", "mode_of_payment_name"],
+    sort_fields={
+        "code": PaymentEntry.code,
+        "payment_type": PaymentEntry.payment_type,
+        "status": PaymentEntry.doc_status,
+        "posting_date": PaymentEntry.posting_date,
+        "paid_amount": PaymentEntry.paid_amount,
+        "id": PaymentEntry.id,
+    },
+    filter_fields={
+        "company_id": PaymentEntry.company_id,
+        "branch_id": PaymentEntry.branch_id,
+        "doc_status": PaymentEntry.doc_status,
+        "payment_type": PaymentEntry.payment_type,
+        "posting_date": PaymentEntry.posting_date,
+        "party_type": PaymentEntry.party_type,
+        "mode_of_payment_id": PaymentEntry.mode_of_payment_id,
+    },
+    cache_enabled=False,
+),
 }
 
 def register_module_lists() -> None:

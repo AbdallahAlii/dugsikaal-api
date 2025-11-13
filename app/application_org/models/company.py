@@ -53,6 +53,12 @@ class Company(BaseModel):
         comment="IANA Timezone string (e.g., 'America/New_York') for company operations",
     )
     # relationships
+    data_imports: Mapped[list["DataImport"]] = db.relationship(
+        "DataImport",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        lazy="selectin"
+    )
     city: Mapped["City"] = db.relationship("City", back_populates="companies", lazy="selectin")
     branches: Mapped[list["Branch"]] = db.relationship(
         "Branch",
@@ -218,6 +224,13 @@ class Branch(BaseModel):
     )
 
     # relationships
+    data_imports: Mapped[list["DataImport"]] = db.relationship(
+        "DataImport",
+        back_populates="branch",
+        cascade="all, delete-orphan",
+        lazy="selectin"
+    )
+
     company: Mapped["Company"] = db.relationship("Company", back_populates="branches")
 
     # Accounting relationships

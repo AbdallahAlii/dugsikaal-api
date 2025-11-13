@@ -174,8 +174,12 @@ def bump_coa_balance_company(company_id: int) -> int:
 
 # ---- generic detail bump (entity-only namespace in detail cache) ------------
 def bump_accounting_detail(entity: str, record_id: int) -> int:
-    """Bump the versioned detail cache for a single record."""
-    return bump_detail(entity, record_id)
+    """
+    Bump the versioned detail cache for a single Accounting record.
+    Readers use namespaced keys like 'accounting:<entity>'.
+    """
+    return bump_detail(f"accounting:{entity}", record_id)
+
 
 # ---- Modes of Payment (company scope) ---------------------------------------
 def bump_mop_list_company(company_id: int) -> int:
@@ -207,3 +211,5 @@ def bump_accounts_list_company(company_id: int) -> int:
 
 def bump_account_detail(account_id: int) -> int:
     return bump_accounting_detail("accounts", account_id)
+
+

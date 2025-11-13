@@ -1,3 +1,4 @@
+# app/application_selling/list_config.py
 from __future__ import annotations
 
 from app.application_doctypes.core_lists.config import ListConfig, register_list_configs

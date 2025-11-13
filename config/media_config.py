@@ -9,7 +9,7 @@ load_dotenv()
 class MediaSettings(BaseSettings):
     MEDIA_BACKEND: str = "local"
     MEDIA_ALLOWED_EXTS: List[str] = Field(
-        default_factory=lambda: ["png", "jpg", "jpeg", "webp"]
+        default_factory=lambda: ["png", "jpg", "jpeg", "webp","csv", "xlsx", "xls"]
     )
     MEDIA_MAX_MB: int = 5
     S3_ENDPOINT_URL: Optional[str] = None

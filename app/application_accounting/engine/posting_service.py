@@ -265,14 +265,14 @@ class PostingService:
                     JournalEntry.company_id == ctx.company_id,
                     JournalEntry.source_doctype_id == ctx.source_doctype_id,
                     JournalEntry.source_doc_id == ctx.source_doc_id,
-                    JournalEntry.is_auto_generated == True,   # noqa
+                    JournalEntry.is_auto_generated == True,  # noqa
                     JournalEntry.doc_status == DocStatusEnum.SUBMITTED,
                 ).order_by(JournalEntry.id.desc()).limit(1)
             ).scalar_one_or_none()
             if not original:
                 raise PostingValidationError("No submitted auto journal found to cancel.")
 
-            # Reverse on the original accounting DATE
+            # Reverse on the original accounting DATE (your existing rule)
             rev_date = _as_accounting_date(original.posting_date, tz_hint=tz_hint)
             fiscal_year_id = ensure_fiscal_year_open(self.s, ctx.company_id, rev_date)
 
@@ -314,11 +314,13 @@ class PostingService:
                 )
                 self.s.add(rli)
 
+                # ✅ FIX: set fiscal_year_id on the GLE reversal line
                 gle = GeneralLedgerEntry(
                     company_id=ctx.company_id,
                     branch_id=ctx.branch_id,
                     account_id=ol.account_id,
                     cost_center_id=ol.cost_center_id,
+                    fiscal_year_id=fiscal_year_id,  # <-- was missing
                     party_id=ol.party_id,
                     party_type=ol.party_type,
                     journal_entry_id=rev.id,
@@ -331,6 +333,7 @@ class PostingService:
                     entry_type=rev.entry_type,
                 )
                 self.s.add(gle)
+
                 apply_balances(
                     self.s,
                     account_id=gle.account_id,
@@ -342,3 +345,4 @@ class PostingService:
 
             self.s.flush()
             return rev
+

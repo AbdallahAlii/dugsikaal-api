@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from app.application_reports.hook.invalidation import invalidate_financial_reports_for_company
+from app.common.cache.cache_invalidator import bump_list_cache_company, bump_accounting_detail, bump_coa_balance_company
 from config.database import db
 from app.common.generate_code.service import ensure_manual_code_is_next_and_bump, generate_next_code
 from app.application_stock.stock_models import DocumentType, DocStatusEnum
@@ -133,9 +135,27 @@ class PaymentEntryService:
         return pe
 
     # ----------------------------- CREATE --------------------------------
-
     def create(self, *, payload: Dict, context: AffiliationContext) -> PaymentEntry:
-        company_id = int(payload["company_id"]); branch_id = int(payload["branch_id"])
+        # FIX: Get company_id from payload or fall back to context
+        company_id = payload.get("company_id")
+        if company_id is None:
+            if not context.company_id:
+                raise BizValidationError(
+                    "Company is required. Please provide company_id or ensure user has a company affiliation.")
+            company_id = context.company_id
+        else:
+            company_id = int(company_id)
+
+        # FIX: Get branch_id from payload or fall back to context
+        branch_id = payload.get("branch_id")
+        if branch_id is None:
+            if not context.branch_id:
+                raise BizValidationError(
+                    "Branch is required. Please provide branch_id or ensure user has a branch affiliation.")
+            branch_id = context.branch_id
+        else:
+            branch_id = int(branch_id)
+
         ensure_scope_by_ids(context=context, target_company_id=company_id, target_branch_id=branch_id)
 
         code = self._gen_code(company_id, branch_id, payload.get("code"))
@@ -184,7 +204,8 @@ class PaymentEntryService:
             raise BizValidationError("Could not save Payment Entry due to invalid references.")
 
         items = payload.get("items") or []
-        direction = "IN" if pe.payment_type == PaymentTypeEnum.RECEIVE else ("OUT" if pe.payment_type == PaymentTypeEnum.PAY else "X")
+        direction = "IN" if pe.payment_type == PaymentTypeEnum.RECEIVE else (
+            "OUT" if pe.payment_type == PaymentTypeEnum.PAY else "X")
         if items and pe.payment_type != PaymentTypeEnum.INTERNAL_TRANSFER:
             self._validate_allocation_rows(
                 company_id=company_id,
@@ -216,6 +237,20 @@ class PaymentEntryService:
         if "code" in payload and payload["code"] and payload["code"] != pe.code:
             raise BizValidationError("Code cannot be changed after creation.")
 
+        # FIX: Handle company_id/branch_id with fallbacks
+        company_id = payload.get("company_id", pe.company_id)
+        branch_id = payload.get("branch_id", pe.branch_id)
+
+        # Convert to int if provided
+        if isinstance(company_id, str):
+            company_id = int(company_id)
+        if isinstance(branch_id, str):
+            branch_id = int(branch_id)
+
+        # Ensure scope if company/branch changed
+        if company_id != pe.company_id or branch_id != pe.branch_id:
+            ensure_scope_by_ids(context=context, target_company_id=company_id, target_branch_id=branch_id)
+
         if "party_type" in payload and payload["party_type"]:
             payload["party_type"] = PartyTypeEnum(payload["party_type"])
         if "payment_type" in payload and payload["payment_type"]:
@@ -233,7 +268,7 @@ class PaymentEntryService:
 
         if "posting_date" in payload and payload["posting_date"]:
             _ = PostingDateValidator.validate_standalone_document(
-                self.s, payload["posting_date"], pe.company_id, created_at=pe.created_at, treat_midnight_as_date=True
+                self.s, payload["posting_date"], company_id, created_at=pe.created_at, treat_midnight_as_date=True
             )
 
         if payload.get("party_type") or payload.get("party_id"):
@@ -243,28 +278,36 @@ class PaymentEntryService:
                 try:
                     ptype_label = ptype.value if not isinstance(ptype, str) else ptype
                     self.repo.ensure_party_accessible(
-                        company_id=pe.company_id, branch_id=pe.branch_id,
+                        company_id=company_id, branch_id=branch_id,
                         party_type_label=ptype_label, party_id=int(pid)
                     )
                 except ValueError as ex:
                     raise BizValidationError(str(ex))
 
         if "paid_from_account_id" in payload and payload["paid_from_account_id"]:
-            self.repo.ensure_accounts_accessible(company_id=pe.company_id, account_ids=[payload["paid_from_account_id"]])
+            self.repo.ensure_accounts_accessible(company_id=company_id, account_ids=[payload["paid_from_account_id"]])
 
         if "paid_to_account_id" in payload and payload["paid_to_account_id"]:
-            self.repo.ensure_accounts_accessible(company_id=pe.company_id, account_ids=[payload["paid_to_account_id"]])
+            self.repo.ensure_accounts_accessible(company_id=company_id, account_ids=[payload["paid_to_account_id"]])
 
-        self.repo.update_header(pe, payload)
+        # Update the payload with determined company_id/branch_id
+        update_payload = payload.copy()
+        if company_id != pe.company_id:
+            update_payload["company_id"] = company_id
+        if branch_id != pe.branch_id:
+            update_payload["branch_id"] = branch_id
+
+        self.repo.update_header(pe, update_payload)
 
         if "items" in payload and payload["items"] is not None:
             items = payload["items"] or []
             if pe.payment_type == PaymentTypeEnum.INTERNAL_TRANSFER and items:
                 raise BizValidationError("Internal transfers cannot reference invoices.")
-            direction = "IN" if pe.payment_type == PaymentTypeEnum.RECEIVE else ("OUT" if pe.payment_type == PaymentTypeEnum.PAY else "X")
+            direction = "IN" if pe.payment_type == PaymentTypeEnum.RECEIVE else (
+                "OUT" if pe.payment_type == PaymentTypeEnum.PAY else "X")
             if items and pe.payment_type != PaymentTypeEnum.INTERNAL_TRANSFER:
                 self._validate_allocation_rows(
-                    company_id=pe.company_id,
+                    company_id=company_id,
                     party_kind=pe.party_type.value if pe.party_type else None,
                     party_id=pe.party_id,
                     rows=items,
@@ -282,6 +325,7 @@ class PaymentEntryService:
         self.repo.recompute_allocations(pe.id)
         self.s.commit()
         return pe
+
 
     # ----------------------------- SUBMIT --------------------------------
 
@@ -343,6 +387,17 @@ class PaymentEntryService:
                     self.repo.mark_submitted(pe_locked.id)
 
             self.s.commit()
+
+            # 🔥 Invalidate financial reports ONLY (payments never affect stock)
+            try:
+                invalidate_financial_reports_for_company(pe.company_id)
+                # Optional cache bumps for UI
+                bump_list_cache_company("accounting", "payment_entries", pe.company_id)
+                bump_accounting_detail("payment_entries", pe.id)
+                bump_coa_balance_company(pe.company_id)
+            except Exception:
+                log.warning("Post-commit cache invalidation failed for payment %s", pe.id, exc_info=True)
+
             return pe
 
         except PostingValidationError as e:
@@ -391,6 +446,15 @@ class PaymentEntryService:
                     self.repo.mark_cancelled(pe.id)
 
             self.s.commit()
+            # 🔥 Invalidate after commit
+            try:
+                invalidate_financial_reports_for_company(pe.company_id)
+                bump_list_cache_company("accounting", "payment_entries", pe.company_id)
+                bump_accounting_detail("payment_entries", pe.id)
+                bump_coa_balance_company(pe.company_id)
+            except Exception:
+                log.warning("Post-commit cache invalidation failed for cancel payment %s", pe.id, exc_info=True)
+
             return pe
 
         except PostingValidationError as e:

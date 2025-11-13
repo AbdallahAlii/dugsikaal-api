@@ -71,11 +71,15 @@ class SalesInvoiceCreate(BaseModel):
     branch_id: Optional[int] = None
     customer_id: int
     posting_date: datetime
-
+    is_return: bool = False
+    return_against_id: Optional[int] = None
     debit_to_account_id: Optional[int] = None
     vat_account_id: Optional[int] = None
     vat_rate: Optional[Decimal] = None
     vat_amount: Decimal = Field(default=Decimal("0"), ge=Decimal(0))  # ignored when vat_rate is provided
+
+    # NEW — write-off (validation only; not stored in DB)
+    write_off_amount: Decimal = Field(default=Decimal("0"), ge=Decimal(0))
 
     # NEW — payment-at-create support
     paid_amount: Decimal = Field(default=Decimal("0"), ge=Decimal(0))
@@ -99,9 +103,10 @@ class SalesInvoiceCreate(BaseModel):
     def _validate_mode(self) -> "SalesInvoiceCreate":
         if self.delivery_note_id and self.update_stock:
             raise ValueError("Cannot set 'Update Stock' when invoicing against a Delivery Note.")
-        # basic VAT sanity here; full rules in service
         if self.vat_amount and self.vat_amount > 0 and not self.vat_account_id and self.vat_rate is None:
             raise ValueError("Add a VAT account when VAT amount > 0.")
+        if self.is_return and not self.return_against_id:
+            raise ValueError("Return Against is required for a return Sales Invoice.")
         return self
 
 
@@ -119,11 +124,15 @@ class SalesInvoiceUpdate(BaseModel):
     vat_account_id: Optional[int] = None
     vat_rate: Optional[Decimal] = None
     vat_amount: Optional[Decimal] = Field(None, ge=Decimal(0))
+    write_off_amount: Optional[Decimal] = Field(default=None, ge=Decimal(0))
+
     # payment edits (draft only)
     paid_amount: Optional[Decimal] = Field(None, ge=Decimal(0))
     mode_of_payment_id: Optional[int] = None
     cash_bank_account_id: Optional[int] = None
-
+    # NEW — return support (immutable once created, but allow idempotent PATCH if same)
+    is_return: Optional[bool] = None
+    return_against_id: Optional[int] = None
     due_date: Optional[datetime] = None
     remarks: Optional[str] = None
     items: Optional[List[SalesInvoiceItemUpdate]] = None

@@ -1,3 +1,4 @@
+# app/application_selling/queris_bulider/selling_bulider.py
 from __future__ import annotations
 from sqlalchemy import select, false, func
 from sqlalchemy.orm import Session

@@ -12,8 +12,7 @@ from app.application_accounting.chart_of_accounts.schemas.fiscal_year_schemas im
     FiscalYearUpdate,
 )
 from app.application_accounting.chart_of_accounts.schemas.journal_schemas import JournalEntryCreateSchema, \
-    JournalEntryUpdateSchema, JournalEntrySubmitSchema, JournalEntryCancelSchema, PeriodClosingVoucherCreateSchema, \
-    PeriodClosingVoucherUpdateSchema, PeriodClosingVoucherSubmitSchema, PeriodClosingVoucherCancelSchema
+    JournalEntryUpdateSchema, JournalEntrySubmitSchema, JournalEntryCancelSchema
 from app.application_accounting.chart_of_accounts.schemas.payment_schemas import ExpenseCreateSchema, \
     ExpenseUpdateSchema, ExpenseCancelSchema, PaymentCreateSchema, PaymentUpdateSchema, PaymentSubmitSchema, \
     PaymentCancelSchema, OutstandingFilter, ExpenseTypeCreate, ExpenseTypeUpdate, ExpenseSubmitSchema
@@ -22,6 +21,14 @@ from app.application_accounting.chart_of_accounts.services.expense_service impor
 from app.application_accounting.chart_of_accounts.services.fiscal_year_services import (
     FiscalYearService,
 )
+from app.application_accounting.chart_of_accounts.schemas.pcv_schemas import (
+    PCVCreate as PeriodClosingVoucherCreateSchema,
+    PCVUpdate as PeriodClosingVoucherUpdateSchema,
+    PCVOut as PeriodClosingVoucherOutSchema,
+)
+
+from app.application_accounting.chart_of_accounts.services.pcv_service import PeriodClosingVoucherService
+
 from app.application_accounting.chart_of_accounts.schemas.cost_center_schemas import (
     CostCenterCreate,
     CostCenterUpdate,
@@ -29,8 +36,8 @@ from app.application_accounting.chart_of_accounts.schemas.cost_center_schemas im
 from app.application_accounting.chart_of_accounts.services.cost_center_services import (
     CostCenterService,
 )
-from app.application_accounting.chart_of_accounts.services.journal_service import JournalEntryService, \
-    PeriodClosingVoucherService
+from app.application_accounting.chart_of_accounts.services.journal_service import JournalEntryService
+
 from app.application_accounting.chart_of_accounts.services.payment_service import PaymentEntryService
 from app.business_validation.error_handling import format_validation_error
 from app.business_validation.item_validation import BizValidationError
@@ -54,6 +61,106 @@ def _get_context() -> AffiliationContext:
     if not ctx:
         raise PermissionError("Authentication context not found.")
     return ctx
+
+# ======================= Period Closing Voucher =======================
+
+
+@bp.post("/period-closing-vouchers/create")
+@require_permission("PeriodClosingVoucher", "CREATE")
+def create_period_closing_voucher():
+    try:
+        ctx = _get_context()
+        payload = PeriodClosingVoucherCreateSchema.model_validate(request.get_json(silent=True) or {})
+        svc = PeriodClosingVoucherService(db.session)
+        pcv = svc.create(payload=payload, ctx=ctx)
+        return api_success(
+            message="Period Closing Voucher created.",
+            data={"id": pcv.id, "code": pcv.code, "doc_status": str(pcv.doc_status)},
+            status_code=201,
+        )
+    except ValidationError as e:
+        return api_error(format_validation_error(e), status_code=422)
+    except BizValidationError as e:
+        return api_error(str(e), status_code=422)
+    except (BadRequest, Forbidden, NotFound, Conflict) as e:
+        return api_error(e.description if hasattr(e, "description") else str(e), status_code=getattr(e, "code", 400))
+    except Exception as e:
+        logger.exception("create_period_closing_voucher: %s", str(e))
+        return api_error("An unexpected error occurred.", status_code=500)
+
+@bp.put("/period-closing-vouchers/<int:pcv_id>/update")
+@require_permission("PeriodClosingVoucher", "UPDATE")
+def update_period_closing_voucher(pcv_id: int):
+    try:
+        ctx = _get_context()
+        payload = PeriodClosingVoucherUpdateSchema.model_validate(request.get_json(silent=True) or {})
+        svc = PeriodClosingVoucherService(db.session)
+        pcv = svc.update(pcv_id=pcv_id, payload=payload, ctx=ctx)
+        return api_success(
+            message="Period Closing Voucher updated.",
+            data={"id": pcv.id, "code": pcv.code, "doc_status": str(pcv.doc_status)},
+            status_code=200,
+        )
+    except ValidationError as e:
+        return api_error(format_validation_error(e), status_code=422)
+    except BizValidationError as e:
+        return api_error(str(e), status_code=422)
+    except (BadRequest, Forbidden, NotFound, Conflict) as e:
+        return api_error(e.description if hasattr(e, "description") else str(e), status_code=getattr(e, "code", 400))
+    except Exception as e:
+        logger.exception("update_period_closing_voucher: %s", str(e))
+        return api_error("An unexpected error occurred.", status_code=500)
+
+# @bp.post("/period-closing-vouchers/<int:pcv_id>/submit")
+# @require_permission("PeriodClosingVoucher", "SUBMIT")
+# def submit_period_closing_voucher(pcv_id: int):
+#     try:
+#         ctx = _get_context()
+#         _ = PeriodClosingVoucherSubmitSchema.model_validate(request.get_json(silent=True) or {})
+#         svc = PeriodClosingVoucherService(db.session)
+#         pcv = svc.submit(pcv_id=pcv_id, ctx=ctx)
+#         return api_success(
+#             message="Period Closing Voucher submitted.",
+#             data={
+#                 "id": pcv.id,
+#                 "code": pcv.code,
+#                 "doc_status": str(pcv.doc_status),
+#                 "generated_journal_entry_id": pcv.generated_journal_entry_id,
+#             },
+#             status_code=200,
+#         )
+#     except ValidationError as e:
+#         return api_error(format_validation_error(e), status_code=422)
+#     except BizValidationError as e:
+#         return api_error(str(e), status_code=422)
+#     except (BadRequest, Forbidden, NotFound, Conflict) as e:
+#         return api_error(e.description if hasattr(e, "description") else str(e), status_code=getattr(e, "code", 400))
+#     except Exception as e:
+#         logger.exception("submit_period_closing_voucher: %s", str(e))
+#         return api_error("An unexpected error occurred.", status_code=500)
+#
+# @bp.post("/period-closing-vouchers/<int:pcv_id>/cancel")
+# @require_permission("PeriodClosingVoucher", "CANCEL")
+# def cancel_period_closing_voucher(pcv_id: int):
+#     try:
+#         ctx = _get_context()
+#         payload = PeriodClosingVoucherCancelSchema.model_validate(request.get_json(silent=True) or {})
+#         svc = PeriodClosingVoucherService(db.session)
+#         pcv = svc.cancel(pcv_id=pcv_id, ctx=ctx, reason=payload.reason)
+#         return api_success(
+#             message="Period Closing Voucher cancelled.",
+#             data={"id": pcv.id, "code": pcv.code, "doc_status": str(pcv.doc_status)},
+#             status_code=200,
+#         )
+#     except ValidationError as e:
+#         return api_error(format_validation_error(e), status_code=422)
+#     except BizValidationError as e:
+#         return api_error(str(e), status_code=422)
+#     except (BadRequest, Forbidden, NotFound, Conflict) as e:
+#         return api_error(e.description if hasattr(e, "description") else str(e), status_code=getattr(e, "code", 400))
+#     except Exception as e:
+#         logger.exception("cancel_period_closing_voucher: %s", str(e))
+#         return api_error("An unexpected error occurred.", status_code=500)
 
 
 # ------------------------- Fiscal Year -------------------------
@@ -326,8 +433,6 @@ def _format_payment_validation_error(e: ValidationError) -> str:
     if others:
         return "; ".join(others)
     return "Missing or invalid values."
-
-
 @bp.post("/payments/create")
 @require_permission("PaymentEntry", "CREATE")
 def create_payment_entry():
@@ -347,12 +452,10 @@ def create_payment_entry():
     except BizValidationError as e:
         return api_error(str(e), status_code=422)
     except IntegrityError:
-        # Very rare now (we pre-validate), but keep a friendly fallback
         return api_error("Invalid reference: check accounts and party.", status_code=422)
     except Exception as e:
         logger.exception("create_payment_entry: %s", str(e))
         return api_error("An unexpected error occurred.", status_code=500)
-
 
 @bp.put("/payments/<int:payment_id>/update")
 @require_permission("PaymentEntry", "UPDATE")
@@ -376,6 +479,55 @@ def update_payment_entry(payment_id: int):
     except Exception as e:
         logger.exception("update_payment_entry: %s", str(e))
         return api_error("An unexpected error occurred.", status_code=500)
+
+# @bp.post("/payments/create")
+# @require_permission("PaymentEntry", "CREATE")
+# def create_payment_entry():
+#     try:
+#         ctx = _get_context()
+#         payload = PaymentCreateSchema.model_validate(request.get_json(silent=True) or {})
+#         svc = PaymentEntryService()
+#         pe = svc.create(payload=payload.model_dump(), context=ctx)
+#         return api_success(
+#             message="Payment Entry created.",
+#             data={"id": pe.id, "code": pe.code},
+#             status_code=201
+#         )
+#     except ValidationError as e:
+#         friendly = _format_payment_validation_error(e)
+#         return api_error(friendly, status_code=422)
+#     except BizValidationError as e:
+#         return api_error(str(e), status_code=422)
+#     except IntegrityError:
+#         # Very rare now (we pre-validate), but keep a friendly fallback
+#         return api_error("Invalid reference: check accounts and party.", status_code=422)
+#     except Exception as e:
+#         logger.exception("create_payment_entry: %s", str(e))
+#         return api_error("An unexpected error occurred.", status_code=500)
+#
+#
+# @bp.put("/payments/<int:payment_id>/update")
+# @require_permission("PaymentEntry", "UPDATE")
+# def update_payment_entry(payment_id: int):
+#     try:
+#         ctx = _get_context()
+#         payload = PaymentUpdateSchema.model_validate(request.get_json(silent=True) or {})
+#         svc = PaymentEntryService()
+#         pe = svc.update(payment_id=payment_id, payload=payload.model_dump(exclude_unset=True), context=ctx)
+#         return api_success(
+#             message="Payment Entry updated.",
+#             data={"id": pe.id, "code": pe.code}
+#         )
+#     except ValidationError as e:
+#         friendly = _format_payment_validation_error(e)
+#         return api_error(friendly, status_code=422)
+#     except BizValidationError as e:
+#         return api_error(str(e), status_code=422)
+#     except IntegrityError:
+#         return api_error("Invalid reference: check accounts and party.", status_code=422)
+#     except Exception as e:
+#         logger.exception("update_payment_entry: %s", str(e))
+#         return api_error("An unexpected error occurred.", status_code=500)
 
 
 @bp.post("/payments/<int:payment_id>/submit")
@@ -813,77 +965,3 @@ def cancel_journal_entry(je_id: int):
         logger.exception("cancel_journal_entry: %s", str(e))
         return api_error("An unexpected error occurred.", status_code=500)
 
-# ======================= Period Closing Voucher =======================
-
-@bp.post("/period-closing-vouchers/create")
-@require_permission("PeriodClosingVoucher", "CREATE")
-def create_period_closing_voucher():
-    try:
-        ctx = _get_context()
-        payload = PeriodClosingVoucherCreateSchema.model_validate(request.get_json(silent=True) or {})
-        svc = PeriodClosingVoucherService(db.session)
-        pcv = svc.create(payload=payload, ctx=ctx)
-        return api_success(message="Period Closing Voucher created.",
-                           data={"id": pcv.id, "code": pcv.code, "doc_status": str(pcv.doc_status)},
-                           status_code=201)
-    except ValidationError as e:
-        return api_error(format_validation_error(e), status_code=422)
-    except BizValidationError as e:
-        return api_error(str(e), status_code=422)
-    except Exception as e:
-        logger.exception("create_period_closing_voucher: %s", str(e))
-        return api_error("An unexpected error occurred.", status_code=500)
-
-@bp.put("/period-closing-vouchers/<int:pcv_id>/update")
-@require_permission("PeriodClosingVoucher", "UPDATE")
-def update_period_closing_voucher(pcv_id: int):
-    try:
-        ctx = _get_context()
-        payload = PeriodClosingVoucherUpdateSchema.model_validate(request.get_json(silent=True) or {})
-        svc = PeriodClosingVoucherService(db.session)
-        pcv = svc.update(pcv_id=pcv_id, payload=payload, ctx=ctx)
-        return api_success(message="Period Closing Voucher updated.",
-                           data={"id": pcv.id, "code": pcv.code, "doc_status": str(pcv.doc_status)})
-    except ValidationError as e:
-        return api_error(format_validation_error(e), status_code=422)
-    except BizValidationError as e:
-        return api_error(str(e), status_code=422)
-    except Exception as e:
-        logger.exception("update_period_closing_voucher: %s", str(e))
-        return api_error("An unexpected error occurred.", status_code=500)
-
-@bp.post("/period-closing-vouchers/<int:pcv_id>/submit")
-@require_permission("PeriodClosingVoucher", "SUBMIT")
-def submit_period_closing_voucher(pcv_id: int):
-    try:
-        ctx = _get_context()
-        _ = PeriodClosingVoucherSubmitSchema.model_validate(request.get_json(silent=True) or {})
-        svc = PeriodClosingVoucherService(db.session)
-        pcv = svc.submit(pcv_id=pcv_id, ctx=ctx)
-        return api_success(message="Period Closing Voucher submitted.",
-                           data={"id": pcv.id, "code": pcv.code, "doc_status": str(pcv.doc_status), "generated_journal_entry_id": pcv.generated_journal_entry_id})
-    except ValidationError as e:
-        return api_error(format_validation_error(e), status_code=422)
-    except BizValidationError as e:
-        return api_error(str(e), status_code=422)
-    except Exception as e:
-        logger.exception("submit_period_closing_voucher: %s", str(e))
-        return api_error("An unexpected error occurred.", status_code=500)
-
-@bp.post("/period-closing-vouchers/<int:pcv_id>/cancel")
-@require_permission("PeriodClosingVoucher", "CANCEL")
-def cancel_period_closing_voucher(pcv_id: int):
-    try:
-        ctx = _get_context()
-        payload = PeriodClosingVoucherCancelSchema.model_validate(request.get_json(silent=True) or {})
-        svc = PeriodClosingVoucherService(db.session)
-        pcv = svc.cancel(pcv_id=pcv_id, ctx=ctx, reason=payload.reason)
-        return api_success(message="Period Closing Voucher cancelled.",
-                           data={"id": pcv.id, "code": pcv.code, "doc_status": str(pcv.doc_status)})
-    except ValidationError as e:
-        return api_error(format_validation_error(e), status_code=422)
-    except BizValidationError as e:
-        return api_error(str(e), status_code=422)
-    except Exception as e:
-        logger.exception("cancel_period_closing_voucher: %s", str(e))
-        return api_error("An unexpected error occurred.", status_code=500)

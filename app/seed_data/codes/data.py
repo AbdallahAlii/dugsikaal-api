@@ -35,6 +35,15 @@ CODE_TYPES: List[Dict] = [
     dict(name="Payment",            prefix="PAY",    pattern="{PREFIX}-{YYYY}-{SEQ}",    scope="BRANCH",  reset_policy="YEARLY", padding=5),
     dict(name="Expense",            prefix="EXP",    pattern="{PREFIX}-{YYYY}-{SEQ}",    scope="BRANCH",  reset_policy="YEARLY", padding=5),
 
+    # Accounting / Period Closing (company-scoped, yearly)
+    dict(
+        name="Period Closing Voucher",
+        prefix="PCV",
+        pattern="{PREFIX}-{YYYY}-{SEQ}",
+        scope="COMPANY",  # company-level code, not branch
+        reset_policy="YEARLY",
+        padding=5,
+    ),
     # Stock / Inventory (branch-scoped)
     dict(name="Journal Entry", prefix="JE", pattern="{PREFIX}-{YYYY}-{SEQ}", scope="BRANCH", reset_policy="YEARLY",
          padding=5),

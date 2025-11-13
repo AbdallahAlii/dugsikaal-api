@@ -117,6 +117,18 @@ STOCK_LEDGER_COLUMNS = [
 
 
 
+ACCOUNTS_PAYABLE_COLUMNS = [
+    link_column("supplier", "Supplier", "Supplier"),
+    data_column("supplier_name", "Supplier Name"),
+    currency_column("total_invoiced", "Total Invoiced"),
+    currency_column("total_paid", "Total Paid"),
+    currency_column("total_debit_note", "Debit Notes"),
+    currency_column("outstanding_amount", "Outstanding"),
+    currency_column("range1", "0-30 Days"),
+    currency_column("range2", "31-60 Days"),
+    currency_column("range3", "61-90 Days"),
+    currency_column("range4", "90+ Days"),
+]
 
 # --- Stock Balance (Single Item) ---------------------------------------------
 STOCK_BALANCE_SINGLE_ITEM_COLUMNS_FULL = [

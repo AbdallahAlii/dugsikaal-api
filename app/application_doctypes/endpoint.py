@@ -1,4 +1,4 @@
-
+# # app/application_doctypes/core_lists/endpoint.py
 from __future__ import annotations
 
 import json
