@@ -79,18 +79,21 @@ GL_COLUMNS = [
 
     currency_column("debit", "Debit (Dr)"),
     currency_column("credit", "Credit (Cr)"),
-    currency_column("balance", "Balance"),
+    currency_column("running_balance", "Running Balance"),
 
-    data_column("party_type", "Party Type"),
-    int_column("party_id", "Party ID", 100),
-    data_column("party_name", "Party Name"),
-    ColumnDefinition(fieldname="branch_name", label="Branch", fieldtype="Data", width=150),
+    data_column("voucher_type", "Voucher Type", 140),
+    data_column("voucher_no", "Voucher No", 160),
 
-    data_column("voucher_type", "Voucher Type"),  # source type or JE type
-    data_column("voucher_no", "Voucher No"),      # source code or JE code
+    data_column("against_account", "Against Account", 200),
 
-    link_column("cost_center", "Cost Center", "Cost Center"),
-    data_column("remarks", "Remarks", 200),
+    data_column("party_type", "Party Type", 110),
+    int_column("party_id", "Party ID", 90),
+    data_column("party_name", "Party Name", 160),
+
+    data_column("cost_center", "Cost Center", 150),
+    data_column("branch_name", "Branch", 150),
+
+    data_column("remarks", "Remarks", 220),
 ]
 STOCK_LEDGER_COLUMNS = [
     date_column("posting_date", "Date"),
@@ -100,8 +103,8 @@ STOCK_LEDGER_COLUMNS = [
     data_column("warehouse", "Warehouse"),
 
     data_column("stock_uom", "Stock UOM"),
-    data_column("transaction_uom_name", "Transaction UOM"),
-    float_column("transaction_quantity", "Transaction Qty", precision=6),
+    data_column("transaction_uom", "Transaction UOM"),
+    float_column("transaction_qty", "Transaction Qty", precision=6),
 
     data_column("voucher_type", "Voucher Type"),
     data_column("voucher_no", "Voucher No"),
@@ -111,24 +114,35 @@ STOCK_LEDGER_COLUMNS = [
     float_column("balance_qty", "Balance Qty", precision=6),
 
     currency_column("incoming_rate", "Incoming Rate", precision=6),
+    currency_column("outgoing_rate", "Outgoing Rate", precision=6),
     currency_column("valuation_rate", "Valuation Rate", precision=6),
-    currency_column("stock_value", "Stock Value", precision=6),
+
+    currency_column("stock_value_difference", "Stock Value Diff", precision=6),
+    currency_column("running_stock_value", "Value After Txn", precision=6),
+
+    data_column("branch", "Branch"),
+    data_column("remarks", "Remarks", 200),
 ]
 
 
 
+# app/application_reports/core/columns.py
 ACCOUNTS_PAYABLE_COLUMNS = [
     link_column("supplier", "Supplier", "Supplier"),
     data_column("supplier_name", "Supplier Name"),
+    data_column("supplier_group", "Supplier Group"),  # stays blank until you wire a real group table
     currency_column("total_invoiced", "Total Invoiced"),
     currency_column("total_paid", "Total Paid"),
     currency_column("total_debit_note", "Debit Notes"),
+    currency_column("advance_amount", "Advance"),
     currency_column("outstanding_amount", "Outstanding"),
     currency_column("range1", "0-30 Days"),
     currency_column("range2", "31-60 Days"),
     currency_column("range3", "61-90 Days"),
     currency_column("range4", "90+ Days"),
 ]
+
+
 
 # --- Stock Balance (Single Item) ---------------------------------------------
 STOCK_BALANCE_SINGLE_ITEM_COLUMNS_FULL = [
