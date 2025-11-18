@@ -1,3 +1,5 @@
+
+# app/application_selling/schemas.py
 from __future__ import annotations
 from typing import Optional, List
 from datetime import datetime
@@ -17,6 +19,7 @@ class DeliveryNoteItemCreate(BaseModel):
     unit_price: Optional[Decimal] = Field(None, ge=Decimal(0))
     remarks: Optional[str] = Field(None, max_length=255)
 
+
 class DeliveryNoteCreate(BaseModel):
     company_id: Optional[int] = None
     branch_id: Optional[int] = None
@@ -32,6 +35,7 @@ class DeliveryNoteCreate(BaseModel):
             raise ValueError("Delivery Note must have at least one item.")
         return v
 
+
 class DeliveryNoteItemUpdate(BaseModel):
     id: Optional[int] = None
     item_id: int
@@ -41,6 +45,12 @@ class DeliveryNoteItemUpdate(BaseModel):
     unit_price: Optional[Decimal] = Field(None, ge=Decimal(0))
     remarks: Optional[str] = Field(None, max_length=255)
 
+
+class DeliveryNoteUpdate(BaseModel):
+    posting_date: Optional[datetime] = None
+    customer_id: Optional[int] = None
+    remarks: Optional[str] = None
+    items: Optional[List[DeliveryNoteItemUpdate]] = None  # full sync when provided
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -55,6 +65,8 @@ class SalesInvoiceItemCreate(BaseModel):
     warehouse_id: Optional[int] = None
     income_account_id: Optional[int] = None
     delivery_note_item_id: Optional[int] = None
+    # NEW: needed for returns to know which original row this line belongs to
+    return_against_item_id: Optional[int] = None
     remarks: Optional[str] = Field(None, max_length=255)
 
     @model_validator(mode="after")
@@ -62,6 +74,7 @@ class SalesInvoiceItemCreate(BaseModel):
         if self.quantity == 0:
             raise ValueError("Item quantity cannot be zero.")
         return self
+
 
 class SalesInvoiceCreate(BaseModel):
     # Pydantic v2: forbid unknown keys so bad payloads are rejected up front
@@ -78,11 +91,12 @@ class SalesInvoiceCreate(BaseModel):
     vat_rate: Optional[Decimal] = None
     vat_amount: Decimal = Field(default=Decimal("0"), ge=Decimal(0))  # ignored when vat_rate is provided
 
-    # NEW — write-off (validation only; not stored in DB)
+    # write-off (validation only; not stored in DB)
     write_off_amount: Decimal = Field(default=Decimal("0"), ge=Decimal(0))
 
-    # NEW — payment-at-create support
-    paid_amount: Decimal = Field(default=Decimal("0"), ge=Decimal(0))
+    # payment-at-create support
+    # NOTE: allow negative for returns; business rules handled in service
+    paid_amount: Decimal = Field(default=Decimal("0"))
     mode_of_payment_id: Optional[int] = None
     cash_bank_account_id: Optional[int] = None
 
@@ -110,9 +124,9 @@ class SalesInvoiceCreate(BaseModel):
         return self
 
 
-
 class SalesInvoiceItemUpdate(SalesInvoiceItemCreate):
     id: Optional[int] = None
+
 
 class SalesInvoiceUpdate(BaseModel):
     # still reject unknown keys (prevents silent bugs)
@@ -126,25 +140,22 @@ class SalesInvoiceUpdate(BaseModel):
     vat_amount: Optional[Decimal] = Field(None, ge=Decimal(0))
     write_off_amount: Optional[Decimal] = Field(default=None, ge=Decimal(0))
 
-    # payment edits (draft only)
-    paid_amount: Optional[Decimal] = Field(None, ge=Decimal(0))
+    # payment edits (draft only) — can be negative for returns
+    paid_amount: Optional[Decimal] = Field(None)
     mode_of_payment_id: Optional[int] = None
     cash_bank_account_id: Optional[int] = None
-    # NEW — return support (immutable once created, but allow idempotent PATCH if same)
+
+    # return support (immutable once created, but allow idempotent PATCH if same)
     is_return: Optional[bool] = None
     return_against_id: Optional[int] = None
     due_date: Optional[datetime] = None
     remarks: Optional[str] = None
     items: Optional[List[SalesInvoiceItemUpdate]] = None
 
-    # NEW: allow toggling update_stock in draft
+    # allow toggling update_stock in draft
     update_stock: Optional[bool] = None
 
-class DeliveryNoteUpdate(BaseModel):
-    posting_date: Optional[datetime] = None
-    customer_id: Optional[int] = None
-    remarks: Optional[str] = None
-    items: Optional[List[DeliveryNoteItemUpdate]] = None  # full sync when provided
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Credit Note (Return)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -153,6 +164,7 @@ class SalesCreditNoteItemCreate(BaseModel):
     original_item_id: int
     return_qty: Decimal = Field(..., gt=Decimal(0))
     remarks: Optional[str] = None
+
 
 class SalesCreditNoteCreate(BaseModel):
     posting_date: datetime

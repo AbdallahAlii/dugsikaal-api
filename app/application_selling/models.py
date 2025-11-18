@@ -271,18 +271,79 @@ class SalesInvoice(BaseModel):
         Index("ix_sin_mode_of_payment", "mode_of_payment_id"),
         Index("ix_sin_cash_bank_account", "cash_bank_account_id"),
 
-        CheckConstraint("(is_return = true AND return_against_id IS NOT NULL) OR (is_return = false)", name="ck_sin_return_requires_original"),
-        CheckConstraint("paid_amount >= 0 AND outstanding_amount >= 0", name="ck_sin_amounts_non_negative"),
-        CheckConstraint("total_amount = paid_amount + outstanding_amount", name="ck_sin_amount_consistency"),
+        # Core amount relationship (works for positive or negative)
         CheckConstraint(
-            "(paid_amount = 0 AND mode_of_payment_id IS NULL AND cash_bank_account_id IS NULL) OR "
-            "(paid_amount > 0 AND mode_of_payment_id IS NOT NULL AND cash_bank_account_id IS NOT NULL)",
-            name="ck_sin_payment_consistency"
+            "total_amount = paid_amount + outstanding_amount",
+            name="ck_sin_amount_consistency",
         ),
+
+        # Sign-by-return (ERPNext-style):
+        # - Normal invoices: totals and balances are >= 0
+        # - Returns (credit notes): totals and balances are <= 0
         CheckConstraint(
-            "(vat_amount = 0 AND vat_account_id IS NULL AND vat_rate IS NULL) OR "
-            "(vat_amount > 0 AND vat_account_id IS NOT NULL AND vat_rate IS NOT NULL)",
-            name="ck_sin_vat_consistency"
+            """
+            (
+                is_return = false
+                AND total_amount >= 0
+                AND paid_amount >= 0
+                AND outstanding_amount >= 0
+            )
+            OR
+            (
+                is_return = true
+                AND total_amount <= 0
+                AND paid_amount <= 0
+                AND outstanding_amount <= 0
+            )
+            """,
+            name="ck_sin_amounts_sign_by_return",
+        ),
+
+        # Payment consistency (supports refunds with negative paid_amount):
+        # - No payment: paid_amount = 0 → no MOP / cash-bank
+        # - Normal invoice: paid_amount > 0 → require MOP + cash-bank
+        # - Return: paid_amount < 0 (refund) → require MOP + cash-bank
+        CheckConstraint(
+            """
+            (
+                paid_amount = 0
+                AND mode_of_payment_id IS NULL
+                AND cash_bank_account_id IS NULL
+            )
+            OR
+            (
+                is_return = false
+                AND paid_amount > 0
+                AND mode_of_payment_id IS NOT NULL
+                AND cash_bank_account_id IS NOT NULL
+            )
+            OR
+            (
+                is_return = true
+                AND paid_amount < 0
+                AND mode_of_payment_id IS NOT NULL
+                AND cash_bank_account_id IS NOT NULL
+            )
+            """,
+            name="ck_sin_payment_consistency_signed",
+        ),
+
+        # VAT consistency: any non-zero VAT (positive or negative) needs account + rate
+        CheckConstraint(
+            """
+            (
+                vat_amount = 0
+                AND vat_account_id IS NULL
+                AND vat_rate IS NULL
+            )
+            OR
+            (
+                vat_amount <> 0
+                AND vat_account_id IS NOT NULL
+                AND vat_rate IS NOT NULL
+            )
+            """,
+            name="ck_sin_vat_consistency_signed",
         ),
     )
 

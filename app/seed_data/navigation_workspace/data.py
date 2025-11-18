@@ -147,16 +147,24 @@ WORKSPACES: list[dict] = [
                      "perm": "Cash Flow Report:READ"},
 
                     # Audit & Control Reports
-                    {"label": "General Ledger", "path": "/accounts/report/gl", "icon": "book-marked",
+                    {"label": "General Ledger", "path": "/accounts/report/general-ledger", "icon": "book-marked",
                      "perm": "General Ledger Report:READ"},
                     {"label": "Trial Balance", "path": "/accounts/report/trial-balance", "icon": "scale",
                      "perm": "Trial Balance Report:READ"},
+                    {"label": "Stock Ledger", "path": "/stock/report/stock-ledger", "icon": "book-open",
+                     "perm": "Stock Ledger Report:READ"},
 
                     # Operational Overviews
                     {"label": "Accounts Receivable", "path": "/accounts/report/accounts-receivable", "icon": "user-plus",
                      "perm": "Accounts Receivable Report:READ"},
+                    {"label": "Accounts Receivable Summary", "path": "/accounts/report/accounts-receivable-summary",
+                     "icon": "users",
+                     "perm": "Accounts Receivable Summary Report:READ"},
                     {"label": "Accounts Payable", "path": "/accounts/report/accounts-payable", "icon": "user-minus",
                      "perm": "Accounts Payable Report:READ"},
+                    {"label": "Accounts Payable Summary", "path": "/accounts/report/accounts-payable-summary",
+                     "icon": "users",
+                     "perm": "Accounts Payable Summary Report:READ"},
                     {"label": "Gross Profit", "path": "/accounts/report/gross-profit", "icon": "percent",
                      "perm": "Gross Profit Report:READ"},
                 ],

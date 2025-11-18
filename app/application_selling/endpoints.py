@@ -130,7 +130,34 @@ def create_si():
         if current_app.debug or current_app.config.get("ENV") == "development":
             return api_error(f"[DEV TRACE] {e}", status_code=500)
         return api_error("Unexpected error.", status_code=500)
-
+@bp.get("/invoice/<int:si_id>/make-return-template")
+@require_permission("Sales Invoice", "CREATE")
+def make_return_template(si_id: int):
+    """
+    Build a mapped RETURN template for given Sales Invoice ID.
+    Used by UI to pre-fill the Sales Invoice Create form.
+    """
+    try:
+        svc = SalesService()
+        tmpl = svc.build_sales_invoice_return_template(
+            original_si_id=si_id,
+            context=_ctx(),
+        )
+        return api_success(tmpl, "Return template built.")
+    except (BadRequest, Forbidden, NotFound, Conflict) as e:
+        return api_error(
+            e.description if hasattr(e, "description") else str(e),
+            status_code=e.code,
+        )
+    except BizValidationError as e:
+        return api_error(str(e), status_code=400)
+    except PermissionError:
+        return api_error("Unauthorized", status_code=401)
+    except Exception as e:
+        current_app.logger.exception("Unexpected error building SI return template")
+        if current_app.debug or current_app.config.get("ENV") == "development":
+            return api_error(f"[DEV TRACE] {e}", status_code=500)
+        return api_error("Unexpected error.", status_code=500)
 
 @bp.put("/invoice/<int:si_id>/update")
 @require_permission("Sales Invoice", "EDIT")

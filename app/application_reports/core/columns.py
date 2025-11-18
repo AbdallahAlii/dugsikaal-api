@@ -232,13 +232,6 @@ ITEM_STOCK_LEDGER_COLUMNS_COMPACT = [
 
 
 
-BALANCE_SHEET_COLUMNS = [
-    data_column("account", "Account", 250),
-    currency_column("balance", "Balance"),
-    int_column("indent", "Indent", 60),
-    data_column("account_code", "Account Code", 100),
-    data_column("account_type", "Type", 80),
-]
 
 ACCOUNTS_RECEIVABLE_COLUMNS = [
     link_column("customer", "Customer", "Customer"),

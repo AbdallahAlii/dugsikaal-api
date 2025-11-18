@@ -330,17 +330,58 @@ def validate_vat_consistency(vat_amount: Decimal, vat_account_id: Optional[int])
         raise BizValidationError("VAT account should not be set when VAT amount is zero")
 
 
-def validate_payment_consistency(paid_amount: Decimal, mode_of_payment_id: Optional[int],
-                                 cash_bank_account_id: Optional[int]) -> None:
-    """Validates payment method consistency."""
-    if paid_amount > Decimal("0"):
-        if not mode_of_payment_id:
-            raise BizValidationError("Payment method is required when amount is paid")
-        if not cash_bank_account_id:
-            raise BizValidationError("Cash/Bank account is required when amount is paid")
-    else:
+# def validate_payment_consistency(paid_amount: Decimal, mode_of_payment_id: Optional[int],
+#                                  cash_bank_account_id: Optional[int]) -> None:
+#     """Validates payment method consistency."""
+#     if paid_amount > Decimal("0"):
+#         if not mode_of_payment_id:
+#             raise BizValidationError("Payment method is required when amount is paid")
+#         if not cash_bank_account_id:
+#             raise BizValidationError("Cash/Bank account is required when amount is paid")
+#     else:
+#         if mode_of_payment_id or cash_bank_account_id:
+#             raise BizValidationError("Payment method and account should not be set when no amount is paid")
+# app/business_validation/item_validation.py  (just this function)
+
+from decimal import Decimal
+from typing import Optional
+
+# ... existing code & BizValidationError, etc.
+
+
+def validate_payment_consistency(
+    paid_amount: Decimal,
+    mode_of_payment_id: Optional[int],
+    cash_bank_account_id: Optional[int],
+) -> None:
+    """
+    Validates payment method consistency.
+
+    - If paid_amount == 0: no mode_of_payment_id / cash_bank_account_id allowed.
+    - If paid_amount != 0 (positive for normal invoice, negative for return):
+        both mode_of_payment_id and cash_bank_account_id are required.
+
+    Sign rules (positive vs negative) are handled separately by:
+      - _coerce_signed_paid_for_return (service layer)
+      - DB constraints (ck_sin_payment_consistency_signed).
+    """
+    paid = Decimal(str(paid_amount or 0))
+
+    # No payment / no refund
+    if paid == 0:
         if mode_of_payment_id or cash_bank_account_id:
-            raise BizValidationError("Payment method and account should not be set when no amount is paid")
+            raise BizValidationError(
+                "Payment method and account should not be set when no amount is paid"
+            )
+        return
+
+    # Some payment or refund exists → require both IDs
+    if not mode_of_payment_id:
+        raise BizValidationError("Payment method is required when amount is paid")
+    if not cash_bank_account_id:
+        raise BizValidationError(
+            "Cash/Bank account is required when amount is paid"
+        )
 
 
 def validate_quantity_direction(is_return: bool, quantity: Decimal) -> None:

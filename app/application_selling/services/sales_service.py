@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional, List, Dict, Tuple, Set
+from typing import Optional, List, Dict, Tuple, Set, Any
 from decimal import Decimal, ROUND_HALF_UP
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import select, func, and_
 from sqlalchemy.orm import Session
-from werkzeug.exceptions import NotFound, Conflict
+from werkzeug.exceptions import NotFound, Conflict, BadRequest
 
 from app.application_reports.hook.invalidation import invalidate_financial_reports_for_company, \
     invalidate_all_core_reports_for_company
@@ -357,12 +357,122 @@ class SalesService:
         """
         if vat_rate is None:
             return Decimal("0.00")
-        return (Decimal(subtotal) * Decimal(vat_rate) / Decimal("100")).quantize(Decimal("0.01"),
-                                                                                 rounding=ROUND_HALF_UP)
+        return (
+            Decimal(subtotal) * Decimal(vat_rate) / Decimal("100")
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     # ---- Sales Invoice (Create / Update) ------------------------------------
 
-    def create_sales_invoice(self, *, payload: SalesInvoiceCreate, context: AffiliationContext) -> SalesInvoice:
+    # def create_sales_invoice(self, *, payload: SalesInvoiceCreate, context: AffiliationContext) -> SalesInvoice:
+    #     company_id, branch_id = resolve_company_branch_and_scope(
+    #         context=context,
+    #         payload_company_id=payload.company_id,
+    #         branch_id=payload.branch_id or getattr(context, "branch_id", None),
+    #         get_branch_company_id=self.repo.get_branch_company_id,
+    #         require_branch=True,
+    #     )
+    #
+    #     # Normalize/validate posting datetime
+    #     norm_dt = PostingDateValidator.validate_standalone_document(
+    #         self.s, payload.posting_date, company_id, created_at=None, treat_midnight_as_date=True
+    #     )
+    #
+    #     # Party + warehouse checks
+    #     self._validate_party_and_warehouses(
+    #         company_id=company_id,
+    #         branch_id=branch_id,
+    #         customer_id=payload.customer_id,
+    #         warehouse_ids=[ln.warehouse_id for ln in payload.items if ln.warehouse_id],
+    #     )
+    #
+    #     # Items activity + UOM compat
+    #     item_ids = [ln.item_id for ln in payload.items]
+    #     details = self.repo.get_item_details_batch(company_id, item_ids)
+    #     V.validate_items_are_active([(iid, details.get(iid, {}).get("is_active", False)) for iid in item_ids])
+    #
+    #     uom_pairs = [(ln.item_id, ln.uom_id) for ln in payload.items if ln.uom_id]
+    #     if uom_pairs:
+    #         compat = self.repo.get_compatible_uom_pairs(company_id, uom_pairs)
+    #         for item_id, uom_id in uom_pairs:
+    #             if details.get(item_id, {}).get("is_stock_item", False) and (item_id, uom_id) not in compat:
+    #                 raise V.BizValidationError(f"UOM not compatible for item_id={item_id}")
+    #
+    #     # ERPNext-style: enforce sign of quantities for normal vs return
+    #     V.validate_items_quantity_direction(payload.is_return, [
+    #         {"quantity": ln.quantity} for ln in payload.items
+    #     ])
+    #     # Return requires return_against_id
+    #     V.validate_return_requirements(is_return=payload.is_return, return_against_id=payload.return_against_id)
+    #
+    #     # Income account fallback per line
+    #     group_defaults = self.repo.get_item_group_defaults(
+    #         list({details[i]["item_group_id"] for i in item_ids if details.get(i)})
+    #     )
+    #
+    #     invoice_items: List[SalesInvoiceItem] = []
+    #     subtotal = Decimal("0")
+    #     for ln in payload.items:
+    #         det = details.get(ln.item_id, {})
+    #         income_acc = self._resolve_income_account_id(company_id, det, group_defaults, ln.income_account_id)
+    #
+    #         # If updating stock and line is stock item → warehouse is required
+    #         if payload.update_stock and det.get("is_stock_item", False) and not ln.warehouse_id:
+    #             raise V.BizValidationError("Warehouse is required for stock items when 'Update Stock' is enabled.")
+    #
+    #         invoice_items.append(SalesInvoiceItem(
+    #             item_id=ln.item_id,
+    #             uom_id=ln.uom_id,
+    #             quantity=ln.quantity,  # already sign-checked
+    #             rate=ln.rate,
+    #             warehouse_id=ln.warehouse_id if payload.update_stock and det.get("is_stock_item", False) else None,
+    #             income_account_id=income_acc,
+    #             delivery_note_item_id=ln.delivery_note_item_id if payload.delivery_note_id else None,
+    #             remarks=ln.remarks
+    #         ))
+    #         subtotal += Decimal(str(ln.quantity)) * Decimal(str(ln.rate))
+    #
+    #     # VAT: rate beats amount
+    #     vat_amount = self._compute_vat_amount(subtotal, payload.vat_rate) if payload.vat_rate is not None \
+    #         else (payload.vat_amount or Decimal("0"))
+    #     if vat_amount > 0 and not payload.vat_account_id:
+    #         raise V.BizValidationError("Add a VAT account to book taxes.")
+    #
+    #     total_amount = subtotal + vat_amount
+    #
+    #     # Paid & write-off rules (sign-aware): for returns, paid must be <= 0 (refund)
+    #     paid_amount = self._coerce_signed_paid_for_return(payload.is_return, payload.paid_amount)
+    #     V.validate_payment_consistency(paid_amount, payload.mode_of_payment_id, payload.cash_bank_account_id)
+    #     self._validate_paid_and_writeoff(total_amount=total_amount, paid_amount=paid_amount,
+    #                                      write_off_amount=(payload.write_off_amount or Decimal("0")))
+    #
+    #     debit_to = payload.debit_to_account_id or self.repo.get_default_receivable_account(company_id)
+    #     code = self._generate_or_validate_code(self.SI_PREFIX, company_id, branch_id, payload.code,
+    #                                            self.repo.code_exists_si)
+    #
+    #     si = SalesInvoice(
+    #         company_id=company_id, branch_id=branch_id, created_by_id=context.user_id,
+    #         customer_id=payload.customer_id,
+    #         debit_to_account_id=debit_to,
+    #         code=code, posting_date=norm_dt,
+    #         doc_status=DocStatusEnum.DRAFT,
+    #         update_stock=payload.update_stock,
+    #         is_return=payload.is_return,
+    #         return_against_id=payload.return_against_id if payload.is_return else None,
+    #         vat_account_id=payload.vat_account_id, vat_rate=payload.vat_rate, vat_amount=vat_amount,
+    #         total_amount=total_amount,
+    #         paid_amount=paid_amount,
+    #         outstanding_amount=total_amount - paid_amount,
+    #         due_date=payload.due_date, remarks=payload.remarks,
+    #         mode_of_payment_id=payload.mode_of_payment_id, cash_bank_account_id=payload.cash_bank_account_id,
+    #         items=invoice_items
+    #     )
+    #     self.repo.save(si)
+    #     self.s.commit()
+    #     return si
+    def create_sales_invoice(
+        self, *, payload: SalesInvoiceCreate, context: AffiliationContext
+    ) -> SalesInvoice:
+        # 1) Resolve company/branch with scope checks
         company_id, branch_id = resolve_company_branch_and_scope(
             context=context,
             payload_company_id=payload.company_id,
@@ -371,12 +481,75 @@ class SalesService:
             require_branch=True,
         )
 
-        # Normalize/validate posting datetime
+        # 2) Normalize/validate posting datetime
         norm_dt = PostingDateValidator.validate_standalone_document(
-            self.s, payload.posting_date, company_id, created_at=None, treat_midnight_as_date=True
+            self.s,
+            payload.posting_date,
+            company_id,
+            created_at=None,
+            treat_midnight_as_date=True,
         )
 
-        # Party + warehouse checks
+        # 3) If this is a RETURN, load original invoice and enforce rules
+        original_si = None
+        if payload.is_return:
+            if not payload.return_against_id:
+                raise V.BizValidationError(
+                    "Return Against is required for a return Sales Invoice."
+                )
+
+            original_si = self.repo.get_si_with_items(payload.return_against_id)
+            if not original_si:
+                raise V.BizValidationError(
+                    "Original Sales Invoice not found or not eligible for return."
+                )
+
+            # Do not allow return against a return
+            if original_si.is_return:
+                raise V.BizValidationError(
+                    "Cannot create a return against a return invoice."
+                )
+
+            # Allowed statuses for making a return
+            allowed_statuses = {
+                DocStatusEnum.UNPAID,
+                DocStatusEnum.PARTIALLY_PAID,
+                DocStatusEnum.PAID,
+            }
+            if original_si.doc_status not in allowed_statuses:
+                raise V.BizValidationError(
+                    f"Original Sales Invoice not eligible for return (status = {original_si.doc_status.name})."
+                )
+
+            # Posting date relative to original
+            PostingDateValidator.validate_return_against_original(
+                s=self.s,
+                current_posting_date=payload.posting_date,
+                original_document_date=original_si.posting_date,
+                company_id=original_si.company_id,
+            )
+
+            # Same company check
+            if company_id != original_si.company_id:
+                raise V.BizValidationError(
+                    "Return must belong to the same company as the original invoice."
+                )
+
+            # Branch must also belong to the same company
+            branch_company = self.repo.get_branch_company_id(branch_id)
+            if branch_company != original_si.company_id:
+                raise V.BizValidationError(
+                    "Branch must belong to the same company as the original invoice."
+                )
+
+            # Ensure user has scope on the original invoice branch as well
+            ensure_scope_by_ids(
+                context=context,
+                target_company_id=original_si.company_id,
+                target_branch_id=original_si.branch_id,
+            )
+
+        # 4) Party + warehouse checks
         self._validate_party_and_warehouses(
             company_id=company_id,
             branch_id=branch_id,
@@ -384,91 +557,400 @@ class SalesService:
             warehouse_ids=[ln.warehouse_id for ln in payload.items if ln.warehouse_id],
         )
 
-        # Items activity + UOM compat
+        # 5) Items activity + UOM compat
         item_ids = [ln.item_id for ln in payload.items]
         details = self.repo.get_item_details_batch(company_id, item_ids)
-        V.validate_items_are_active([(iid, details.get(iid, {}).get("is_active", False)) for iid in item_ids])
+        V.validate_items_are_active(
+            [
+                (iid, details.get(iid, {}).get("is_active", False))
+                for iid in item_ids
+            ]
+        )
 
         uom_pairs = [(ln.item_id, ln.uom_id) for ln in payload.items if ln.uom_id]
         if uom_pairs:
             compat = self.repo.get_compatible_uom_pairs(company_id, uom_pairs)
             for item_id, uom_id in uom_pairs:
-                if details.get(item_id, {}).get("is_stock_item", False) and (item_id, uom_id) not in compat:
-                    raise V.BizValidationError(f"UOM not compatible for item_id={item_id}")
+                if (
+                    details.get(item_id, {}).get("is_stock_item", False)
+                    and (item_id, uom_id) not in compat
+                ):
+                    raise V.BizValidationError(
+                        f"UOM not compatible for item_id={item_id}"
+                    )
 
-        # ERPNext-style: enforce sign of quantities for normal vs return
-        V.validate_items_quantity_direction(payload.is_return, [
-            {"quantity": ln.quantity} for ln in payload.items
-        ])
-        # Return requires return_against_id
-        V.validate_return_requirements(is_return=payload.is_return, return_against_id=payload.return_against_id)
+        # 6) ERPNext-style: enforce sign of quantities for normal vs return
+        V.validate_items_quantity_direction(
+            payload.is_return,
+            [{"quantity": ln.quantity} for ln in payload.items],
+        )
 
-        # Income account fallback per line
+        # 7) High-level return requirements
+        V.validate_return_requirements(
+            is_return=payload.is_return,
+            return_against_id=payload.return_against_id,
+        )
+
+        # 8) Over-return protection (if this is a RETURN)
+        if payload.is_return and original_si is not None:
+            orig_lines_map = {it.id: it for it in original_si.items}
+            returned_map = self._get_already_returned_quantities(
+                list(orig_lines_map.keys())
+            )
+
+            for idx, ln in enumerate(payload.items, start=1):
+                orig_line_id = getattr(ln, "return_against_item_id", None)
+                if not orig_line_id or orig_line_id not in orig_lines_map:
+                    raise V.BizValidationError(
+                        f"Row #{idx}: Return Against Item is required and must reference an original invoice row."
+                    )
+
+                orig_line = orig_lines_map[orig_line_id]
+                already = returned_map.get(orig_line_id, Decimal("0"))
+                orig_qty = Decimal(str(orig_line.quantity))  # original is positive
+                remaining = orig_qty - already
+
+                if remaining <= Decimal("0"):
+                    item_label = getattr(
+                        getattr(orig_line, "item", None),
+                        "name",
+                        str(orig_line.item_id),
+                    )
+                    raise V.BizValidationError(
+                        f"Row #{idx}: Item {item_label} has already been fully returned."
+                    )
+
+                requested_abs = abs(Decimal(str(ln.quantity)))  # ln.quantity is negative
+                if requested_abs > remaining:
+                    item_label = getattr(
+                        getattr(orig_line, "item", None),
+                        "name",
+                        str(orig_line.item_id),
+                    )
+                    raise V.BizValidationError(
+                        f"Row #{idx}: Cannot return more than {remaining} for Item {item_label}."
+                    )
+
+        # 9) Income account fallback per line
         group_defaults = self.repo.get_item_group_defaults(
-            list({details[i]["item_group_id"] for i in item_ids if details.get(i)})
+            list(
+                {
+                    details[i]["item_group_id"]
+                    for i in item_ids
+                    if details.get(i)
+                }
+            )
         )
 
         invoice_items: List[SalesInvoiceItem] = []
         subtotal = Decimal("0")
         for ln in payload.items:
             det = details.get(ln.item_id, {})
-            income_acc = self._resolve_income_account_id(company_id, det, group_defaults, ln.income_account_id)
+            income_acc = self._resolve_income_account_id(
+                company_id, det, group_defaults, ln.income_account_id
+            )
 
-            # If updating stock and line is stock item → warehouse is required
             if payload.update_stock and det.get("is_stock_item", False) and not ln.warehouse_id:
-                raise V.BizValidationError("Warehouse is required for stock items when 'Update Stock' is enabled.")
+                raise V.BizValidationError(
+                    "Warehouse is required for stock items when 'Update Stock' is enabled."
+                )
 
-            invoice_items.append(SalesInvoiceItem(
-                item_id=ln.item_id,
-                uom_id=ln.uom_id,
-                quantity=ln.quantity,  # already sign-checked
-                rate=ln.rate,
-                warehouse_id=ln.warehouse_id if payload.update_stock and det.get("is_stock_item", False) else None,
-                income_account_id=income_acc,
-                delivery_note_item_id=ln.delivery_note_item_id if payload.delivery_note_id else None,
-                remarks=ln.remarks
-            ))
-            subtotal += Decimal(str(ln.quantity)) * Decimal(str(ln.rate))
+            qty_dec = Decimal(str(ln.quantity))
+            rate_dec = Decimal(str(ln.rate))
+            line_total = qty_dec * rate_dec
 
-        # VAT: rate beats amount
-        vat_amount = self._compute_vat_amount(subtotal, payload.vat_rate) if payload.vat_rate is not None \
+            invoice_items.append(
+                SalesInvoiceItem(
+                    item_id=ln.item_id,
+                    uom_id=ln.uom_id,
+                    quantity=ln.quantity,
+                    rate=ln.rate,
+                    warehouse_id=(
+                        ln.warehouse_id
+                        if payload.update_stock and det.get("is_stock_item", False)
+                        else None
+                    ),
+                    income_account_id=income_acc,
+                    delivery_note_item_id=(
+                        ln.delivery_note_item_id if payload.delivery_note_id else None
+                    ),
+                    return_against_item_id=getattr(
+                        ln, "return_against_item_id", None
+                    )
+                    if payload.is_return
+                    else None,
+                    remarks=ln.remarks,
+                )
+            )
+            subtotal += line_total
+
+        # 10) VAT: rate beats amount
+        vat_amount = (
+            self._compute_vat_amount(subtotal, payload.vat_rate)
+            if payload.vat_rate is not None
             else (payload.vat_amount or Decimal("0"))
-        if vat_amount > 0 and not payload.vat_account_id:
+        )
+        if vat_amount != 0 and not payload.vat_account_id:
             raise V.BizValidationError("Add a VAT account to book taxes.")
 
         total_amount = subtotal + vat_amount
 
-        # Paid & write-off rules (sign-aware): for returns, paid must be <= 0 (refund)
-        paid_amount = self._coerce_signed_paid_for_return(payload.is_return, payload.paid_amount)
-        V.validate_payment_consistency(paid_amount, payload.mode_of_payment_id, payload.cash_bank_account_id)
-        self._validate_paid_and_writeoff(total_amount=total_amount, paid_amount=paid_amount,
-                                         write_off_amount=(payload.write_off_amount or Decimal("0")))
+        # 11) Paid & write-off rules
+        paid_amount = self._coerce_signed_paid_for_return(
+            payload.is_return, payload.paid_amount
+        )
+        V.validate_payment_consistency(
+            paid_amount, payload.mode_of_payment_id, payload.cash_bank_account_id
+        )
+        self._validate_paid_and_writeoff(
+            total_amount=total_amount,
+            paid_amount=paid_amount,
+            write_off_amount=(payload.write_off_amount or Decimal("0")),
+        )
 
-        debit_to = payload.debit_to_account_id or self.repo.get_default_receivable_account(company_id)
-        code = self._generate_or_validate_code(self.SI_PREFIX, company_id, branch_id, payload.code,
-                                               self.repo.code_exists_si)
+        # 12) Debit To (A/R) default
+        debit_to = (
+            payload.debit_to_account_id
+            or self.repo.get_default_receivable_account(company_id)
+        )
 
+        # 13) Code generation
+        code = self._generate_or_validate_code(
+            self.SI_PREFIX,
+            company_id,
+            branch_id,
+            payload.code,
+            self.repo.code_exists_si,
+        )
+
+        # 14) Build & save invoice
         si = SalesInvoice(
-            company_id=company_id, branch_id=branch_id, created_by_id=context.user_id,
+            company_id=company_id,
+            branch_id=branch_id,
+            created_by_id=context.user_id,
             customer_id=payload.customer_id,
             debit_to_account_id=debit_to,
-            code=code, posting_date=norm_dt,
+            code=code,
+            posting_date=norm_dt,
             doc_status=DocStatusEnum.DRAFT,
             update_stock=payload.update_stock,
             is_return=payload.is_return,
-            return_against_id=payload.return_against_id if payload.is_return else None,
-            vat_account_id=payload.vat_account_id, vat_rate=payload.vat_rate, vat_amount=vat_amount,
+            return_against_id=(
+                payload.return_against_id if payload.is_return else None
+            ),
+            vat_account_id=payload.vat_account_id,
+            vat_rate=payload.vat_rate,
+            vat_amount=vat_amount,
             total_amount=total_amount,
             paid_amount=paid_amount,
             outstanding_amount=total_amount - paid_amount,
-            due_date=payload.due_date, remarks=payload.remarks,
-            mode_of_payment_id=payload.mode_of_payment_id, cash_bank_account_id=payload.cash_bank_account_id,
-            items=invoice_items
+            due_date=payload.due_date,
+            remarks=payload.remarks,
+            mode_of_payment_id=payload.mode_of_payment_id,
+            cash_bank_account_id=payload.cash_bank_account_id,
+            items=invoice_items,
         )
         self.repo.save(si)
         self.s.commit()
         return si
 
+    # def build_sales_invoice_return_template(
+    #         self, *, original_si_id: int, context: AffiliationContext
+    # ) -> dict:
+    #     """
+    #     ERPNext-style mapped doc:
+    #     - Load original SI
+    #     - Build a RETURN draft payload (NOT saved)
+    #     - Quantities are negative
+    #     - is_return = True, return_against_id = original.id
+    #     """
+    #     si = self.repo.get_si_with_items(original_si_id)
+    #     if not si:
+    #         raise NotFound("Original Sales Invoice not found.")
+    #
+    #     # scope + status checks
+    #     ensure_scope_by_ids(
+    #         context=context,
+    #         target_company_id=si.company_id,
+    #         target_branch_id=si.branch_id,
+    #     )
+    #
+    #     # if si.doc_status != DocStatusEnum.SUBMITTED:
+    #     #     raise BadRequest("You can only create a return against a submitted Sales Invoice.")
+    #
+    #     if si.is_return:
+    #         raise BadRequest("Cannot create a return against a return invoice.")
+    #
+    #     # Build header part for UI (raw IDs + some friendly fields)
+    #     now_date = datetime.now(timezone.utc).date().isoformat()
+    #
+    #     header = {
+    #         "company_id": si.company_id,
+    #         "branch_id": si.branch_id,
+    #         "branch_name": getattr(si, "branch", None).name if getattr(si, "branch", None) else None,
+    #         "customer_id": si.customer_id,
+    #         "customer_name": getattr(si, "customer", None).name if getattr(si, "customer", None) else None,
+    #         "posting_date": now_date,
+    #         "due_date": None,
+    #         "update_stock": si.update_stock,
+    #         "is_return": True,
+    #         "return_against_id": si.id,
+    #         "remarks": f"Return against invoice {si.code}",
+    #     }
+    #
+    #     # VAT: keep same rate/account, UI can change
+    #     header["vat_account_id"] = si.vat_account_id or None
+    #     header["vat_rate"] = float(si.vat_rate) if si.vat_rate is not None else None
+    #
+    #     # Payment: start as unpaid (refund logic later)
+    #     header["paid_amount"] = "0.00"
+    #     header["mode_of_payment_id"] = None
+    #     header["cash_bank_account_id"] = None
+    #
+    #     # Map items -> negative qty
+    #     lines = []
+    #     for it in si.items:
+    #         qty = Decimal(str(it.quantity))
+    #         rate = Decimal(str(it.rate))
+    #         lines.append({
+    #             "item_id": it.item_id,
+    #             "uom_id": it.uom_id,
+    #             "warehouse_id": it.warehouse_id,
+    #             "quantity": str(-qty),  # NEGATIVE
+    #             "rate": str(rate),
+    #             "delivery_note_item_id": it.delivery_note_item_id,
+    #             "return_against_item_id": it.id,
+    #             "remarks": it.remarks,
+    #         })
+    #
+    #     return {
+    #         "header": header,
+    #         "items": lines,
+    #     }
+    def build_sales_invoice_return_template(
+            self, *, original_si_id: int, context: AffiliationContext
+    ) -> dict:
+        """
+        ERPNext-style mapped doc for Sales Invoice Return (Credit Note):
+
+        - Load original Sales Invoice (with items + key relations).
+        - Build a RETURN draft payload (NOT saved).
+        - Quantities are NEGATIVE.
+        - is_return = True, return_against_id = original.id.
+
+        The result is structured for UI:
+
+        {
+          "header": { ...fields for NEW return SI... },
+          "items":  [ ...negative qty lines... ],
+          "original_invoice": { ...summary of original... },
+          "original_payment": { ...MOP + bank info from original... }
+        }
+        """
+        si: SalesInvoice = self.repo.get_si_with_items(original_si_id)
+        if not si:
+            raise NotFound("Original Sales Invoice not found.")
+
+        # Scope checks
+        ensure_scope_by_ids(
+            context=context,
+            target_company_id=si.company_id,
+            target_branch_id=si.branch_id,
+        )
+
+        # Optional: only allow returns against submitted invoices
+        # if si.doc_status != DocStatusEnum.SUBMITTED:
+        #     raise BadRequest("You can only create a return against a submitted Sales Invoice.")
+
+        if si.is_return:
+            raise BadRequest("Cannot create a return against a return invoice.")
+
+        # ------------------------------------------------------------------
+        # 1) Build header for NEW return SI (what frontend will POST later)
+        # ------------------------------------------------------------------
+        today_str = datetime.now(timezone.utc).date().isoformat()
+
+        header: Dict[str, Any] = {
+            "company_id": si.company_id,
+            "branch_id": si.branch_id,
+            "branch_name": getattr(getattr(si, "branch", None), "name", None),
+            "customer_id": si.customer_id,
+            "customer_name": getattr(getattr(si, "customer", None), "name", None),
+            "posting_date": today_str,
+            "due_date": None,
+            "update_stock": si.update_stock,
+            "is_return": True,
+            "return_against_id": si.id,
+            "remarks": f"Return against invoice {si.code}",
+        }
+
+        # VAT: carry same settings; UI can change
+        header["vat_account_id"] = si.vat_account_id or None
+        header["vat_rate"] = float(si.vat_rate) if si.vat_rate is not None else None
+
+        # Payment on the RETURN starts as unpaid (no refund yet).
+        # UI may later set a NEGATIVE paid_amount + MOP + cash_bank_account_id.
+        header["paid_amount"] = "0.00"
+        header["mode_of_payment_id"] = None
+        header["cash_bank_account_id"] = None
+
+        # ------------------------------------------------------------------
+        # 2) Map items with NEGATIVE quantities
+        # ------------------------------------------------------------------
+        lines: List[Dict[str, Any]] = []
+        for it in si.items:
+            qty = Decimal(str(it.quantity))
+            rate = Decimal(str(it.rate))
+
+            lines.append(
+                {
+                    "item_id": it.item_id,
+                    "uom_id": it.uom_id,
+                    "warehouse_id": it.warehouse_id,
+                    "quantity": str(-qty),  # NEGATIVE for return
+                    "rate": str(rate),
+                    "delivery_note_item_id": it.delivery_note_item_id,
+                    "return_against_item_id": it.id,
+                    "remarks": it.remarks,
+                }
+            )
+
+        # ------------------------------------------------------------------
+        # 3) Original invoice summary (read-only info for UI)
+        # ------------------------------------------------------------------
+        original_invoice = {
+            "id": si.id,
+            "code": si.code,
+            "posting_date": si.posting_date.date().isoformat()
+            if si.posting_date
+            else None,
+            "total_amount": str(si.total_amount or Decimal("0")),
+            "paid_amount": str(si.paid_amount or Decimal("0")),
+            "outstanding_amount": str(si.outstanding_amount or Decimal("0")),
+            "update_stock": bool(si.update_stock),
+            "doc_status": si.doc_status.name if si.doc_status else None,
+        }
+
+        # ------------------------------------------------------------------
+        # 4) Original payment details (for display / suggestions)
+        # ------------------------------------------------------------------
+        mop = getattr(si, "mode_of_payment", None)
+        bank_acc = getattr(si, "cash_bank_account", None)
+
+        original_payment = {
+            "mode_of_payment_id": si.mode_of_payment_id,
+            "mode_of_payment_name": getattr(mop, "name", None),
+            "cash_bank_account_id": si.cash_bank_account_id,
+            "cash_bank_account_name": getattr(bank_acc, "name", None),
+            "cash_bank_account_code": getattr(bank_acc, "code", None),
+        }
+
+        return {
+            "header": header,
+            "items": lines,
+            "original_invoice": original_invoice,
+            "original_payment": original_payment,
+        }
     def update_sales_invoice(self, *, si_id: int, payload: SalesInvoiceUpdate,
                              context: AffiliationContext) -> SalesInvoice:
         si = self.repo.get_si(si_id, for_update=True)
