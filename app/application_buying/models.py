@@ -171,11 +171,30 @@ class PurchaseReceipt(BaseModel):
         Index("ix_pr_company_supplier", "company_id", "supplier_id"),
         Index("ix_pr_company_posting_date", "company_id", "posting_date"),
         Index("ix_pr_is_return", "is_return"),
+
+        # Require original for returns
         CheckConstraint(
             "(is_return = true AND return_against_id IS NOT NULL) OR (is_return = false)",
-            name="ck_pr_return_requires_original"
+            name="ck_pr_return_requires_original",
+        ),
+
+        # ERPNext-style sign rule: receipts positive, returns negative
+        CheckConstraint(
+            """
+            (
+                is_return = false
+                AND total_amount >= 0
+            )
+            OR
+            (
+                is_return = true
+                AND total_amount <= 0
+            )
+            """,
+            name="ck_pr_amount_sign_by_return",
         ),
     )
+
 
     def __repr__(self) -> str:
         return f"<PurchaseReceipt {self.code} supplier={self.supplier_id} return={self.is_return}>"
@@ -248,11 +267,16 @@ class PurchaseReceiptItem(BaseModel):
     __table_args__ = (
         # Direction by parent is_return
         CheckConstraint(
-            "(receipt_id IN (SELECT id FROM purchase_receipts WHERE is_return = false) AND received_qty > 0 AND accepted_qty > 0) OR "
-            "(receipt_id IN (SELECT id FROM purchase_receipts WHERE is_return = true) AND received_qty < 0 AND accepted_qty < 0)",
-            name="ck_pri_qty_direction"
+            "(receipt_id IN (SELECT id FROM purchase_receipts WHERE is_return = false) "
+            " AND received_qty > 0 AND accepted_qty > 0) OR "
+            "(receipt_id IN (SELECT id FROM purchase_receipts WHERE is_return = true) "
+            " AND received_qty < 0 AND accepted_qty < 0)",
+            name="ck_pri_qty_direction",
         ),
-        CheckConstraint("ABS(accepted_qty) <= ABS(received_qty)", name="ck_pri_accepted_leq_received"),
+        CheckConstraint(
+            "ABS(accepted_qty) <= ABS(received_qty)",
+            name="ck_pri_accepted_leq_received",
+        ),
         # returned_qty is only meaningful on non-return source lines
         CheckConstraint(
             "("
@@ -263,7 +287,7 @@ class PurchaseReceiptItem(BaseModel):
             " receipt_id IN (SELECT id FROM purchase_receipts WHERE is_return = true)"
             " AND returned_qty = 0"
             ")",
-            name="ck_pri_returned_qty_logic"
+            name="ck_pri_returned_qty_logic",
         ),
         Index("ix_pri_item", "item_id"),
         Index("ix_pri_warehouse", "warehouse_id"),
@@ -376,6 +400,7 @@ class PurchaseInvoice(BaseModel):
 
     assets: Mapped[List["Asset"]] = relationship("Asset", back_populates="purchase_invoice_rel")
 
+
     __table_args__ = (
         UniqueConstraint("company_id", "branch_id", "code", name="uq_pin_branch_code"),
         Index("ix_pin_company_branch_status", "company_id", "branch_id", "doc_status"),
@@ -388,16 +413,68 @@ class PurchaseInvoice(BaseModel):
         Index("ix_pin_mode_of_payment", "mode_of_payment_id"),
         Index("ix_pin_cash_bank_account", "cash_bank_account_id"),
         Index("ix_pin_warehouse", "warehouse_id"),
+
+        # Return requires original (ERPNext pattern)
         CheckConstraint(
             "(is_return = true AND return_against_id IS NOT NULL) OR (is_return = false)",
-            name="ck_pin_return_requires_original"
+            name="ck_pin_return_requires_original",
         ),
-        CheckConstraint("paid_amount >= 0 AND outstanding_amount >= 0", name="ck_pin_amounts_non_negative"),
-        CheckConstraint("total_amount = paid_amount + outstanding_amount", name="ck_pin_amount_consistency"),
+
+        # Core amount relationship (works for positive or negative)
         CheckConstraint(
-            "(paid_amount = 0 AND mode_of_payment_id IS NULL AND cash_bank_account_id IS NULL) OR "
-            "(paid_amount > 0 AND mode_of_payment_id IS NOT NULL AND cash_bank_account_id IS NOT NULL)",
-            name="ck_pin_payment_consistency"
+            "total_amount = paid_amount + outstanding_amount",
+            name="ck_pin_amount_consistency",
+        ),
+
+        # Sign-by-return (ERPNext-style):
+        # - Normal invoices: totals and balances are >= 0
+        # - Returns (debit notes): totals and balances are <= 0
+        CheckConstraint(
+            """
+            (
+                is_return = false
+                AND total_amount >= 0
+                AND paid_amount >= 0
+                AND outstanding_amount >= 0
+            )
+            OR
+            (
+                is_return = true
+                AND total_amount <= 0
+                AND paid_amount <= 0
+                AND outstanding_amount <= 0
+            )
+            """,
+            name="ck_pin_amounts_sign_by_return",
+        ),
+
+        # Payment consistency (supports refunds from supplier with negative paid_amount):
+        # - No payment: paid_amount = 0 → no MOP / cash-bank
+        # - Normal invoice: paid_amount > 0 → require MOP + cash-bank
+        # - Return: paid_amount < 0 (refund from supplier) → require MOP + cash-bank
+        CheckConstraint(
+            """
+            (
+                paid_amount = 0
+                AND mode_of_payment_id IS NULL
+                AND cash_bank_account_id IS NULL
+            )
+            OR
+            (
+                is_return = false
+                AND paid_amount > 0
+                AND mode_of_payment_id IS NOT NULL
+                AND cash_bank_account_id IS NOT NULL
+            )
+            OR
+            (
+                is_return = true
+                AND paid_amount < 0
+                AND mode_of_payment_id IS NOT NULL
+                AND cash_bank_account_id IS NOT NULL
+            )
+            """,
+            name="ck_pin_payment_consistency_signed",
         ),
     )
 
@@ -475,9 +552,11 @@ class PurchaseInvoiceItem(BaseModel):
     __table_args__ = (
         # Direction depends on parent is_return
         CheckConstraint(
-            "(invoice_id IN (SELECT id FROM purchase_invoices WHERE is_return = false) AND quantity > 0) OR "
-            "(invoice_id IN (SELECT id FROM purchase_invoices WHERE is_return = true) AND quantity < 0)",
-            name="ck_pii_quantity_direction"
+            "(invoice_id IN (SELECT id FROM purchase_invoices WHERE is_return = false) "
+            " AND quantity > 0) OR "
+            "(invoice_id IN (SELECT id FROM purchase_invoices WHERE is_return = true) "
+            " AND quantity < 0)",
+            name="ck_pii_quantity_direction",
         ),
         CheckConstraint("rate >= 0", name="ck_pii_rate_non_negative"),
         Index("ix_pii_item", "item_id"),

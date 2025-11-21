@@ -6,7 +6,7 @@ from flask import Blueprint, request, g, current_app
 from pydantic import ValidationError
 from werkzeug.exceptions import NotFound, Forbidden, Conflict, BadRequest, HTTPException
 
-from app.application_stock.schemas.reconciliation_schemas import StockReconciliationCreate
+from app.application_stock.schemas.reconciliation_schemas import StockReconciliationCreate, StockReconciliationUpdate
 # Warehouse bits
 from app.application_stock.schemas.warehouse_schemas import WarehouseCreate, WarehouseUpdate, WarehouseOut, IdCode
 from app.application_stock.services.availability_service import StockAvailabilityService
@@ -196,26 +196,27 @@ def cancel_stock_entry(entry_id: int):
         return api_error("An unexpected error occurred.", status_code=500)
 
 
+
+
 @bp.post("/reconciliation/create")
 @require_permission("Stock Reconciliation", "CREATE")
 def create_stock_reconciliation():
-    """Creates a stock reconciliation document."""
     try:
         ctx = _ctx()
-        payload = StockReconciliationCreate.model_validate(request.get_json(silent=True) or {})
-        logger.debug("Payload received: %s", payload)
-
+        payload = StockReconciliationCreate.model_validate(
+            request.get_json(silent=True) or {}
+        )
         svc = StockReconciliationService()
-        recon = svc.create_stock_reconciliation(payload=payload.model_dump(), context=ctx)
+        recon = svc.create_stock_reconciliation(
+            payload=payload.model_dump(), context=ctx
+        )
 
         return api_success(
             data={"id": recon.id, "code": recon.code},
             message="Stock Reconciliation created in Draft status.",
             status_code=201,
         )
-
     except ValidationError as e:
-        logger.error("ValidationError: %s", str(e))
         return api_error(str(e), status_code=422)
     except (BadRequest, Forbidden, NotFound) as e:
         return api_error(e.description, status_code=e.code)
@@ -223,15 +224,56 @@ def create_stock_reconciliation():
         return api_error(str(e), status_code=400)
     except PermissionError:
         return api_error("Unauthorized", status_code=401)
-    except Exception as e:
-        logger.exception("Unexpected error: %s", str(e))
+    except Exception:
+        logger.exception("Unexpected error creating Stock Reconciliation")
+        return api_error("An unexpected error occurred.", status_code=500)
+
+
+@bp.put("/reconciliation/Update/<int:recon_id>")
+@require_permission("Stock Reconciliation", "EDIT")
+def update_stock_reconciliation(recon_id: int):
+    """Update a Draft stock reconciliation (header + lines)."""
+    try:
+        ctx = _ctx()
+        payload = StockReconciliationUpdate.model_validate(
+            request.get_json(silent=True) or {}
+        )
+
+        svc = StockReconciliationService()
+        # exclude_unset=True so we don't overwrite with None
+        recon = svc.update_stock_reconciliation(
+            recon_id=recon_id,
+            payload=payload.model_dump(exclude_unset=True),
+            context=ctx,
+        )
+
+        return api_success(
+            data={"id": recon.id, "code": recon.code},
+            message="Stock Reconciliation updated.",
+            status_code=200,
+        )
+
+    except ValidationError as e:
+        return api_error(str(e), status_code=422)
+    except Forbidden as e:
+        return api_error(e.description, status_code=e.code)
+    except BizValidationError as e:
+        return api_error(str(e), status_code=400)
+    except NotFound as e:
+        return api_error(str(e), status_code=404)
+    except PermissionError:
+        return api_error("Unauthorized", status_code=401)
+    except Exception:
+        logger.exception(
+            "Unhandled error updating Stock Reconciliation",
+            extra={"recon_id": recon_id},
+        )
         return api_error("An unexpected error occurred.", status_code=500)
 
 
 @bp.post("/reconciliation/<int:recon_id>/submit")
 @require_permission("Stock Reconciliation", "SUBMIT")
 def submit_stock_reconciliation(recon_id: int):
-    """Submits a stock reconciliation document."""
     try:
         ctx = _ctx()
         svc = StockReconciliationService()
@@ -240,6 +282,36 @@ def submit_stock_reconciliation(recon_id: int):
         return api_success(
             data={"id": recon.id, "code": recon.code},
             message="Stock Reconciliation submitted successfully.",
+            status_code=200,
+        )
+    except Forbidden as e:
+        return api_error(e.description, status_code=e.code)
+    except BizValidationError as e:
+        return api_error(str(e), status_code=400)
+    except NotFound as e:
+        return api_error(str(e), status_code=404)
+    except PermissionError:
+        return api_error("Unauthorized", status_code=401)
+    except Exception:
+        logger.exception(
+            "Unhandled error submitting Stock Reconciliation",
+            extra={"recon_id": recon_id},
+        )
+        return api_error("An unexpected error occurred.", status_code=500)
+
+
+@bp.post("/reconciliation/<int:recon_id>/cancel")
+@require_permission("Stock Reconciliation", "CANCEL")
+def cancel_stock_reconciliation(recon_id: int):
+    """Cancel a submitted stock reconciliation."""
+    try:
+        ctx = _ctx()
+        svc = StockReconciliationService()
+        recon = svc.cancel_stock_reconciliation(recon_id=recon_id, context=ctx)
+
+        return api_success(
+            data={"id": recon.id, "code": recon.code},
+            message="Stock Reconciliation cancelled successfully.",
             status_code=200,
         )
 
@@ -251,12 +323,13 @@ def submit_stock_reconciliation(recon_id: int):
         return api_error(str(e), status_code=404)
     except PermissionError:
         return api_error("Unauthorized", status_code=401)
-    except Exception as e:
-        logger.exception("Unhandled error submitting Stock Reconciliation", extra={"recon_id": recon_id})
-        from flask import current_app
-        if current_app.debug or current_app.config.get("ENV") == "development":
-            return api_error(f"[DEV TRACE] {e}", status_code=500)
+    except Exception:
+        logger.exception(
+            "Unhandled error cancelling Stock Reconciliation",
+            extra={"recon_id": recon_id},
+        )
         return api_error("An unexpected error occurred.", status_code=500)
+
 
 @bp.post("/availability")
 @require_permission("Item", "READ")

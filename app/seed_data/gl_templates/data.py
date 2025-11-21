@@ -39,10 +39,14 @@ AMOUNT_SOURCES = {
     "RETURN_TAX_AMOUNT": "Tax to reverse on purchase return",
     # Depreciation
     "DEPRECIATION_AMOUNT": "Depreciation amount for the period",
+
     # Stock Reconciliation - Frappe Style
-    "STOCK_VALUE_DIFFERENCE": "Value difference for stock reconciliation (positive for gains, negative for losses)",
+
+    "STOCK_VALUE_DIFFERENCE": "Value difference for stock reconciliation (per line, can be + or -)",
     # Stock Reconciliation
-    "STOCK_RECON_DIFFERENCE": "Absolute value difference for stock reconciliation",
+
+    "STOCK_RECON_DIFFERENCE": "Signed total value difference for stock reconciliation "
+                              "(>0 = gain, <0 = loss)",
     # --- NEW for PCV ---
     "PROFIT_AMOUNT": "Positive net P&L (profit)",
     "LOSS_AMOUNT": "Positive net loss",
@@ -257,14 +261,7 @@ TEMPLATE_DEFS: List[Dict[str, Any]] = [
     ),
 
 
-    dict(
-        doctype_code="PERIOD_CLOSING_VOUCHER",
-        code="PERIOD_CLOSING",
-        label="Period Closing Voucher",
-        description="Zeros P&L accounts and transfers net to Retained Earnings.",
-        is_active=True,
-        is_primary=True,
-    ),
+
 
     dict(
         doctype_code="EXPENSE_CLAIM",
@@ -359,6 +356,13 @@ TEMPLATE_ITEMS: List[Dict[str, Any]] = [
     dict(template_code="SALES_RETURN_CREDIT", sequence=50, effect=CREDIT,
          account_code="5011", amount_source="COGS_REVERSAL",
          is_required=False, requires_dynamic_account=False, context_key=None),
+    # OPTIONAL: Inline refund on Sales Return (NOT needed if you use Payment Entry)
+    dict(template_code="SALES_RETURN_CREDIT", sequence=55, effect=DEBIT,
+         account_code=None, amount_source="AMOUNT_REFUNDED",
+         is_required=False, requires_dynamic_account=True, context_key="cash_bank_account_id"),
+    dict(template_code="SALES_RETURN_CREDIT", sequence=56, effect=CREDIT,
+         account_code=None, amount_source="AMOUNT_REFUNDED",
+         is_required=False, requires_dynamic_account=True, context_key="party_ledger_account_id"),
 
     # -- Cancel Sales Invoice (exact reversal of SI_AR)
     dict(template_code="CANCEL_SALES_INVOICE", sequence=10, effect=CREDIT,
@@ -459,8 +463,19 @@ TEMPLATE_ITEMS: List[Dict[str, Any]] = [
         dict(template_code="PURCHASE_RETURN_INVOICED", sequence=30, effect=CREDIT,
              account_code="2311", amount_source="RETURN_TAX_AMOUNT",
              is_required=False, requires_dynamic_account=False, context_key=None),
+        # Inline refund on Purchase Return:
+        # For normal debit note (no refund): AMOUNT_PAID = 0 → no effect.
+        # For refund (your case): AMOUNT_PAID is NEGATIVE (e.g. -16.5)
+        #   - Bank: effect=CREDIT with negative amount → DR Bank (cash in)
+        #   - AP:   effect=DEBIT  with negative amount → CR Creditors (clear credit balance)
+        dict(template_code="PURCHASE_RETURN_INVOICED", sequence=35, effect=CREDIT,
+             account_code=None, amount_source="AMOUNT_PAID",
+             is_required=False, requires_dynamic_account=True, context_key="cash_bank_account_id"),
+        dict(template_code="PURCHASE_RETURN_INVOICED", sequence=36, effect=DEBIT,
+             account_code=None, amount_source="AMOUNT_PAID",
+             is_required=False, requires_dynamic_account=True, context_key="accounts_payable_account_id"),
 
-        # -- Purchase Return (Before Invoice / PR is_return=True → reverse GRNI)
+    # -- Purchase Return (Before Invoice / PR is_return=True → reverse GRNI)
         dict(template_code="PURCHASE_RETURN_GRNI", sequence=10, effect=DEBIT,
              account_code="2210", amount_source="RETURN_STOCK_VALUE",
              is_required=True, requires_dynamic_account=False, context_key=None),
@@ -513,11 +528,28 @@ TEMPLATE_ITEMS: List[Dict[str, Any]] = [
 
     # Stock Reconciliation - Following your existing pattern
     # We'll handle gain/loss logic in the service layer
-    dict(template_code="STOCK_RECON_GENERAL", sequence=10, effect=DEBIT, account_code="1141",
-         amount_source="STOCK_RECON_DIFFERENCE", is_required=False, requires_dynamic_account=False, context_key=None),
-    dict(template_code="STOCK_RECON_GENERAL", sequence=20, effect=CREDIT, account_code=None,
-         amount_source="STOCK_RECON_DIFFERENCE", is_required=False, requires_dynamic_account=True,
-         context_key="difference_account_id"),
+    # --- Stock Reconciliation Items ---
+    dict(
+        template_code="STOCK_RECON_GENERAL",
+        sequence=10,
+        effect=DEBIT,
+        account_code="1141",  # Stock in Hand
+        amount_source="STOCK_RECON_DIFFERENCE",
+        is_required=True,
+        requires_dynamic_account=False,
+        context_key=None,
+    ),
+    dict(
+        template_code="STOCK_RECON_GENERAL",
+        sequence=20,
+        effect=CREDIT,
+        account_code=None,  # Difference Account (Opening / Stock Adjustment)
+        amount_source="STOCK_RECON_DIFFERENCE",
+        is_required=True,
+        requires_dynamic_account=True,
+        context_key="difference_account_id",
+    ),
+
     # --------------------------------------------------------------------------
     # --- Payments & Bank/Cash Items ---
     # --------------------------------------------------------------------------

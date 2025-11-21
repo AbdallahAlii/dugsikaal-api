@@ -18,3 +18,6 @@ def register_module_details() -> None:
 
 def register_module_dropdowns() -> None:
     register_inventory_dropdowns()
+
+
+

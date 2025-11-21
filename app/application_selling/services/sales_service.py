@@ -360,115 +360,55 @@ class SalesService:
         return (
             Decimal(subtotal) * Decimal(vat_rate) / Decimal("100")
         ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    def _validate_return_refund_against_original(
+        self,
+        *,
+        original_si: SalesInvoice,
+        new_refund: Decimal,
+        current_return_id: Optional[int] = None,
+    ) -> None:
+        """
+        Ensure inline refund on a return invoice does not exceed
+        the amount actually paid on the original invoice.
+        """
+        # Only care when money is going OUT (negative paid_amount on return)
+        if new_refund >= Decimal("0"):
+            return
+
+        orig_paid = Decimal(str(original_si.paid_amount or 0))
+        if orig_paid <= Decimal("0"):
+            # Original invoice not paid → allow credit note but no cash refund
+            raise V.BizValidationError(
+                "Cannot refund: the original invoice has no recorded payments."
+            )
+
+        # Sum existing refunds (paid_amount is negative on returns)
+        SI = SalesInvoice
+        stmt = (
+            select(func.coalesce(func.sum(SI.paid_amount), 0))
+            .where(
+                SI.return_against_id == original_si.id,
+                SI.is_return.is_(True),
+                SI.doc_status != DocStatusEnum.CANCELLED,
+            )
+        )
+        if current_return_id is not None:
+            stmt = stmt.where(SI.id != current_return_id)
+
+        existing = self.s.execute(stmt).scalar() or Decimal("0")
+        already_refunded = abs(Decimal(str(existing)))  # existing refunds are negative
+
+        requested_refund = abs(new_refund)
+
+        # Do not allow refunds > original paid
+        if requested_refund + already_refunded > orig_paid:
+            raise V.BizValidationError(
+                "Refund amount exceeds payments on the original invoice."
+            )
 
     # ---- Sales Invoice (Create / Update) ------------------------------------
 
-    # def create_sales_invoice(self, *, payload: SalesInvoiceCreate, context: AffiliationContext) -> SalesInvoice:
-    #     company_id, branch_id = resolve_company_branch_and_scope(
-    #         context=context,
-    #         payload_company_id=payload.company_id,
-    #         branch_id=payload.branch_id or getattr(context, "branch_id", None),
-    #         get_branch_company_id=self.repo.get_branch_company_id,
-    #         require_branch=True,
-    #     )
-    #
-    #     # Normalize/validate posting datetime
-    #     norm_dt = PostingDateValidator.validate_standalone_document(
-    #         self.s, payload.posting_date, company_id, created_at=None, treat_midnight_as_date=True
-    #     )
-    #
-    #     # Party + warehouse checks
-    #     self._validate_party_and_warehouses(
-    #         company_id=company_id,
-    #         branch_id=branch_id,
-    #         customer_id=payload.customer_id,
-    #         warehouse_ids=[ln.warehouse_id for ln in payload.items if ln.warehouse_id],
-    #     )
-    #
-    #     # Items activity + UOM compat
-    #     item_ids = [ln.item_id for ln in payload.items]
-    #     details = self.repo.get_item_details_batch(company_id, item_ids)
-    #     V.validate_items_are_active([(iid, details.get(iid, {}).get("is_active", False)) for iid in item_ids])
-    #
-    #     uom_pairs = [(ln.item_id, ln.uom_id) for ln in payload.items if ln.uom_id]
-    #     if uom_pairs:
-    #         compat = self.repo.get_compatible_uom_pairs(company_id, uom_pairs)
-    #         for item_id, uom_id in uom_pairs:
-    #             if details.get(item_id, {}).get("is_stock_item", False) and (item_id, uom_id) not in compat:
-    #                 raise V.BizValidationError(f"UOM not compatible for item_id={item_id}")
-    #
-    #     # ERPNext-style: enforce sign of quantities for normal vs return
-    #     V.validate_items_quantity_direction(payload.is_return, [
-    #         {"quantity": ln.quantity} for ln in payload.items
-    #     ])
-    #     # Return requires return_against_id
-    #     V.validate_return_requirements(is_return=payload.is_return, return_against_id=payload.return_against_id)
-    #
-    #     # Income account fallback per line
-    #     group_defaults = self.repo.get_item_group_defaults(
-    #         list({details[i]["item_group_id"] for i in item_ids if details.get(i)})
-    #     )
-    #
-    #     invoice_items: List[SalesInvoiceItem] = []
-    #     subtotal = Decimal("0")
-    #     for ln in payload.items:
-    #         det = details.get(ln.item_id, {})
-    #         income_acc = self._resolve_income_account_id(company_id, det, group_defaults, ln.income_account_id)
-    #
-    #         # If updating stock and line is stock item → warehouse is required
-    #         if payload.update_stock and det.get("is_stock_item", False) and not ln.warehouse_id:
-    #             raise V.BizValidationError("Warehouse is required for stock items when 'Update Stock' is enabled.")
-    #
-    #         invoice_items.append(SalesInvoiceItem(
-    #             item_id=ln.item_id,
-    #             uom_id=ln.uom_id,
-    #             quantity=ln.quantity,  # already sign-checked
-    #             rate=ln.rate,
-    #             warehouse_id=ln.warehouse_id if payload.update_stock and det.get("is_stock_item", False) else None,
-    #             income_account_id=income_acc,
-    #             delivery_note_item_id=ln.delivery_note_item_id if payload.delivery_note_id else None,
-    #             remarks=ln.remarks
-    #         ))
-    #         subtotal += Decimal(str(ln.quantity)) * Decimal(str(ln.rate))
-    #
-    #     # VAT: rate beats amount
-    #     vat_amount = self._compute_vat_amount(subtotal, payload.vat_rate) if payload.vat_rate is not None \
-    #         else (payload.vat_amount or Decimal("0"))
-    #     if vat_amount > 0 and not payload.vat_account_id:
-    #         raise V.BizValidationError("Add a VAT account to book taxes.")
-    #
-    #     total_amount = subtotal + vat_amount
-    #
-    #     # Paid & write-off rules (sign-aware): for returns, paid must be <= 0 (refund)
-    #     paid_amount = self._coerce_signed_paid_for_return(payload.is_return, payload.paid_amount)
-    #     V.validate_payment_consistency(paid_amount, payload.mode_of_payment_id, payload.cash_bank_account_id)
-    #     self._validate_paid_and_writeoff(total_amount=total_amount, paid_amount=paid_amount,
-    #                                      write_off_amount=(payload.write_off_amount or Decimal("0")))
-    #
-    #     debit_to = payload.debit_to_account_id or self.repo.get_default_receivable_account(company_id)
-    #     code = self._generate_or_validate_code(self.SI_PREFIX, company_id, branch_id, payload.code,
-    #                                            self.repo.code_exists_si)
-    #
-    #     si = SalesInvoice(
-    #         company_id=company_id, branch_id=branch_id, created_by_id=context.user_id,
-    #         customer_id=payload.customer_id,
-    #         debit_to_account_id=debit_to,
-    #         code=code, posting_date=norm_dt,
-    #         doc_status=DocStatusEnum.DRAFT,
-    #         update_stock=payload.update_stock,
-    #         is_return=payload.is_return,
-    #         return_against_id=payload.return_against_id if payload.is_return else None,
-    #         vat_account_id=payload.vat_account_id, vat_rate=payload.vat_rate, vat_amount=vat_amount,
-    #         total_amount=total_amount,
-    #         paid_amount=paid_amount,
-    #         outstanding_amount=total_amount - paid_amount,
-    #         due_date=payload.due_date, remarks=payload.remarks,
-    #         mode_of_payment_id=payload.mode_of_payment_id, cash_bank_account_id=payload.cash_bank_account_id,
-    #         items=invoice_items
-    #     )
-    #     self.repo.save(si)
-    #     self.s.commit()
-    #     return si
+
     def create_sales_invoice(
         self, *, payload: SalesInvoiceCreate, context: AffiliationContext
     ) -> SalesInvoice:
@@ -754,79 +694,7 @@ class SalesService:
         self.s.commit()
         return si
 
-    # def build_sales_invoice_return_template(
-    #         self, *, original_si_id: int, context: AffiliationContext
-    # ) -> dict:
-    #     """
-    #     ERPNext-style mapped doc:
-    #     - Load original SI
-    #     - Build a RETURN draft payload (NOT saved)
-    #     - Quantities are negative
-    #     - is_return = True, return_against_id = original.id
-    #     """
-    #     si = self.repo.get_si_with_items(original_si_id)
-    #     if not si:
-    #         raise NotFound("Original Sales Invoice not found.")
-    #
-    #     # scope + status checks
-    #     ensure_scope_by_ids(
-    #         context=context,
-    #         target_company_id=si.company_id,
-    #         target_branch_id=si.branch_id,
-    #     )
-    #
-    #     # if si.doc_status != DocStatusEnum.SUBMITTED:
-    #     #     raise BadRequest("You can only create a return against a submitted Sales Invoice.")
-    #
-    #     if si.is_return:
-    #         raise BadRequest("Cannot create a return against a return invoice.")
-    #
-    #     # Build header part for UI (raw IDs + some friendly fields)
-    #     now_date = datetime.now(timezone.utc).date().isoformat()
-    #
-    #     header = {
-    #         "company_id": si.company_id,
-    #         "branch_id": si.branch_id,
-    #         "branch_name": getattr(si, "branch", None).name if getattr(si, "branch", None) else None,
-    #         "customer_id": si.customer_id,
-    #         "customer_name": getattr(si, "customer", None).name if getattr(si, "customer", None) else None,
-    #         "posting_date": now_date,
-    #         "due_date": None,
-    #         "update_stock": si.update_stock,
-    #         "is_return": True,
-    #         "return_against_id": si.id,
-    #         "remarks": f"Return against invoice {si.code}",
-    #     }
-    #
-    #     # VAT: keep same rate/account, UI can change
-    #     header["vat_account_id"] = si.vat_account_id or None
-    #     header["vat_rate"] = float(si.vat_rate) if si.vat_rate is not None else None
-    #
-    #     # Payment: start as unpaid (refund logic later)
-    #     header["paid_amount"] = "0.00"
-    #     header["mode_of_payment_id"] = None
-    #     header["cash_bank_account_id"] = None
-    #
-    #     # Map items -> negative qty
-    #     lines = []
-    #     for it in si.items:
-    #         qty = Decimal(str(it.quantity))
-    #         rate = Decimal(str(it.rate))
-    #         lines.append({
-    #             "item_id": it.item_id,
-    #             "uom_id": it.uom_id,
-    #             "warehouse_id": it.warehouse_id,
-    #             "quantity": str(-qty),  # NEGATIVE
-    #             "rate": str(rate),
-    #             "delivery_note_item_id": it.delivery_note_item_id,
-    #             "return_against_item_id": it.id,
-    #             "remarks": it.remarks,
-    #         })
-    #
-    #     return {
-    #         "header": header,
-    #         "items": lines,
-    #     }
+
     def build_sales_invoice_return_template(
             self, *, original_si_id: int, context: AffiliationContext
     ) -> dict:
@@ -951,6 +819,8 @@ class SalesService:
             "original_invoice": original_invoice,
             "original_payment": original_payment,
         }
+
+
     def update_sales_invoice(self, *, si_id: int, payload: SalesInvoiceUpdate,
                              context: AffiliationContext) -> SalesInvoice:
         si = self.repo.get_si(si_id, for_update=True)
@@ -1113,7 +983,6 @@ class SalesService:
         self.s.commit()
         return si
 
-
     def submit_sales_invoice(self, *, si_id: int, context: AffiliationContext) -> SalesInvoice:
         """
         ERPNext-style submit:
@@ -1129,6 +998,7 @@ class SalesService:
             return Dec(str(x or 0)).quantize(Dec("0.0001"), rounding=ROUND_HALF_UP)
 
         def _derive_status_after_submit(si_obj) -> DocStatusEnum:
+            # Returns are always marked as RETURNED (credit note semantics)
             if si_obj.is_return:
                 return DocStatusEnum.RETURNED
             paid = _D(si_obj.paid_amount)
@@ -1163,11 +1033,29 @@ class SalesService:
         if not si.items:
             raise V.BizValidationError("No items to submit.")
 
+        # If this is a return, load original SI for extra refund checks
+        original_si = None
+        if si.is_return and si.return_against_id:
+            original_si = self.repo.get_si(si.return_against_id, for_update=False)
+            if not original_si:
+                raise V.BizValidationError("Original Sales Invoice not found for this return.")
+
         # Sign rules on submit too (defense in depth)
         V.validate_items_quantity_direction(si.is_return, [{"quantity": it.quantity} for it in si.items])
         V.validate_return_requirements(is_return=si.is_return, return_against_id=si.return_against_id)
-        self._validate_paid_and_writeoff(total_amount=si.total_amount, paid_amount=si.paid_amount,
-                                         write_off_amount=Decimal("0"))
+        # ceiling on (total, paid, write_off) – sign aware
+        self._validate_paid_and_writeoff(
+            total_amount=si.total_amount,
+            paid_amount=si.paid_amount,
+            write_off_amount=Decimal("0"),
+        )
+        # Extra: for returns, do not refund more than original payments
+        if si.is_return and original_si is not None:
+            self._validate_return_refund_against_original(
+                original_si=original_si,
+                new_refund=Decimal(str(si.paid_amount or 0)),
+                current_return_id=si.id,
+            )
 
         tz = get_company_timezone(self.s, si.company_id)
         posting_dt = resolve_posting_dt(si.posting_date.date(), created_at=si.created_at, tz=tz,
@@ -1257,14 +1145,16 @@ class SalesService:
                     "tax_account_id": si_locked.vat_account_id,
                 }
                 if paid_amount != _D("0"):
-                    # for returns: paid_amount is negative (refund), same logic applies
+                    # For returns: paid_amount is negative (refund), same logic applies
                     if not si_locked.mode_of_payment_id or not si_locked.cash_bank_account_id:
                         raise V.BizValidationError(
-                            "Paid amount provided but mode_of_payment_id or cash_bank_account_id is missing.")
+                            "Paid amount provided but mode_of_payment_id or cash_bank_account_id is missing."
+                        )
+                    # NOTE: negative for refund → templates flip DR/CR effectively
                     payload["AMOUNT_RECEIVED"] = float(paid_amount)
                     dyn_ctx.update({
                         "cash_bank_account_id": si_locked.cash_bank_account_id,
-                        # DR when positive / CR when negative handled by template
+                        # A/R ledger (customer) – DR on payment, CR on refund via sign
                         "party_ledger_account_id": si_locked.debit_to_account_id,
                     })
 
@@ -1323,7 +1213,8 @@ class SalesService:
         if paid_amount != _D("0"):
             if not si.mode_of_payment_id or not si.cash_bank_account_id:
                 raise V.BizValidationError(
-                    "Paid amount provided but mode_of_payment_id or cash_bank_account_id is missing.")
+                    "Paid amount provided but mode_of_payment_id or cash_bank_account_id is missing."
+                )
             payload["AMOUNT_RECEIVED"] = float(paid_amount)
             dyn_ctx.update({
                 "cash_bank_account_id": si.cash_bank_account_id,
@@ -1362,6 +1253,255 @@ class SalesService:
         self.s.commit()
         invalidate_financial_reports_for_company(si.company_id)
         return si
+
+    # def submit_sales_invoice(self, *, si_id: int, context: AffiliationContext) -> SalesInvoice:
+    #     """
+    #     ERPNext-style submit:
+    #       - Normal: revenue(+), AR(+), optional stock/COGS
+    #       - Return: revenue(-), AR(-), optional restock/COGS reversal
+    #       - Inline receipt if paid_amount != 0 (refund for returns is negative paid)
+    #     """
+    #     from sqlalchemy import select
+    #     from app.application_accounting.chart_of_accounts.models import JournalEntry, JournalEntryTypeEnum
+    #     from decimal import Decimal as Dec, ROUND_HALF_UP
+    #
+    #     def _D(x) -> Dec:
+    #         return Dec(str(x or 0)).quantize(Dec("0.0001"), rounding=ROUND_HALF_UP)
+    #
+    #     def _derive_status_after_submit(si_obj) -> DocStatusEnum:
+    #         if si_obj.is_return:
+    #             return DocStatusEnum.RETURNED
+    #         paid = _D(si_obj.paid_amount)
+    #         total = _D(si_obj.total_amount)
+    #         if paid <= _D("0"):
+    #             return DocStatusEnum.UNPAID
+    #         if paid + _D("0") >= total:
+    #             return DocStatusEnum.PAID
+    #         return DocStatusEnum.PARTIALLY_PAID
+    #
+    #     def _auto_je_exists(company_id: int, doctype_id: int, doc_id: int) -> bool:
+    #         stmt = (
+    #             select(JournalEntry.id)
+    #             .where(
+    #                 JournalEntry.company_id == company_id,
+    #                 JournalEntry.source_doctype_id == doctype_id,
+    #                 JournalEntry.source_doc_id == doc_id,
+    #                 JournalEntry.is_auto_generated == True,
+    #                 JournalEntry.doc_status == DocStatusEnum.SUBMITTED,
+    #                 JournalEntry.entry_type == JournalEntryTypeEnum.AUTO,
+    #             )
+    #             .limit(1)
+    #         )
+    #         return bool(self.s.execute(stmt).scalar_one_or_none())
+    #
+    #     # 1) Read
+    #     si = self.repo.get_si(si_id, for_update=False)
+    #     if not si:
+    #         raise NotFound("Sales Invoice not found.")
+    #     ensure_scope_by_ids(context=context, target_company_id=si.company_id, target_branch_id=si.branch_id)
+    #     V.guard_submittable_state(si.doc_status)
+    #     if not si.items:
+    #         raise V.BizValidationError("No items to submit.")
+    #
+    #     # Sign rules on submit too (defense in depth)
+    #     V.validate_items_quantity_direction(si.is_return, [{"quantity": it.quantity} for it in si.items])
+    #     V.validate_return_requirements(is_return=si.is_return, return_against_id=si.return_against_id)
+    #     self._validate_paid_and_writeoff(total_amount=si.total_amount, paid_amount=si.paid_amount,
+    #                                      write_off_amount=Decimal("0"))
+    #
+    #     tz = get_company_timezone(self.s, si.company_id)
+    #     posting_dt = resolve_posting_dt(si.posting_date.date(), created_at=si.created_at, tz=tz,
+    #                                     treat_midnight_as_date=True)
+    #     dt_id_si = self._get_doc_type_id_or_400("SALES_INVOICE")
+    #
+    #     total_amount = _D(si.total_amount)
+    #     paid_amount = _D(si.paid_amount)
+    #     vat_amount = _D(si.vat_amount)
+    #     subtotal = _D(sum(_D(it.amount) for it in si.items))
+    #
+    #     income_splits: Dict[int, Dec] = {}
+    #     for it in si.items:
+    #         acc_id = int(it.income_account_id)
+    #         income_splits[acc_id] = income_splits.get(acc_id, _D("0")) + _D(it.amount)
+    #
+    #     # 2) Stock path
+    #     if si.update_stock:
+    #         stock_lines = [
+    #             {
+    #                 "item_id": it.item_id,
+    #                 "uom_id": it.uom_id,
+    #                 "base_uom_id": None,
+    #                 "quantity": it.quantity,  # already negative for returns
+    #                 "doc_row_id": it.id,
+    #                 "warehouse_id": it.warehouse_id,
+    #             }
+    #             for it in si.items if it.warehouse_id
+    #         ]
+    #         intents = build_intents_for_sales_invoice_stock(
+    #             company_id=si.company_id,
+    #             branch_id=si.branch_id,
+    #             posting_dt=posting_dt,
+    #             doc_type_id=dt_id_si,
+    #             doc_id=si.id,
+    #             is_return=si.is_return,
+    #             lines=stock_lines,
+    #             session=self.s,
+    #         )
+    #         pairs = {(i.item_id, i.warehouse_id) for i in intents}
+    #         is_backdated = self._detect_backdated(si.company_id, pairs, posting_dt)
+    #
+    #         with self.s.begin_nested():
+    #             si_locked = self.repo.get_si(si_id, for_update=True)
+    #             V.guard_submittable_state(si_locked.doc_status)
+    #
+    #             with lock_pairs(self.s, pairs):
+    #                 for idx, intent in enumerate(intents):
+    #                     append_sle(self.s, intent, created_at_hint=si_locked.created_at, tz_hint=tz, batch_index=idx)
+    #
+    #             if is_backdated:
+    #                 for item_id, wh_id in pairs:
+    #                     repost_from(
+    #                         s=self.s,
+    #                         company_id=si_locked.company_id,
+    #                         item_id=item_id,
+    #                         warehouse_id=wh_id,
+    #                         start_dt=posting_dt,
+    #                         exclude_doc_types=set(),
+    #                     )
+    #
+    #             for item_id, wh_id in pairs:
+    #                 derive_bin(self.s, si_locked.company_id, item_id, wh_id)
+    #
+    #             cogs_val = sum_cogs_from_intents(intents)
+    #
+    #             payload = build_gl_context_for_sales_invoice_with_stock(
+    #                 debit_to_account_id=si_locked.debit_to_account_id,
+    #                 vat_account_id=si_locked.vat_account_id,
+    #                 total_amount=si_locked.total_amount,
+    #                 vat_amount=si_locked.vat_amount,
+    #                 lines=[{"amount": it.amount, "income_account_id": it.income_account_id} for it in si_locked.items],
+    #                 cogs_total=cogs_val,
+    #                 is_return=si_locked.is_return,
+    #                 discount_amount=Dec("0"),
+    #                 round_off_positive=Dec("0"),
+    #                 round_off_negative=Dec("0"),
+    #                 default_ar_account_id=None,
+    #             )
+    #             payload["income_splits"] = {int(k): _D(v) for k, v in income_splits.items()}
+    #             payload["document_subtotal"] = subtotal
+    #             payload["document_total"] = total_amount
+    #             payload["tax_amount"] = vat_amount
+    #
+    #             dyn_ctx = {
+    #                 "accounts_receivable_account_id": si_locked.debit_to_account_id,
+    #                 "tax_account_id": si_locked.vat_account_id,
+    #             }
+    #             if paid_amount != _D("0"):
+    #                 # for returns: paid_amount is negative (refund), same logic applies
+    #                 if not si_locked.mode_of_payment_id or not si_locked.cash_bank_account_id:
+    #                     raise V.BizValidationError(
+    #                         "Paid amount provided but mode_of_payment_id or cash_bank_account_id is missing.")
+    #                 payload["AMOUNT_RECEIVED"] = float(paid_amount)
+    #                 dyn_ctx.update({
+    #                     "cash_bank_account_id": si_locked.cash_bank_account_id,
+    #                     # DR when positive / CR when negative handled by template
+    #                     "party_ledger_account_id": si_locked.debit_to_account_id,
+    #                 })
+    #
+    #             ctx = PostingContext(
+    #                 company_id=si_locked.company_id,
+    #                 branch_id=si_locked.branch_id,
+    #                 source_doctype_id=dt_id_si,
+    #                 source_doc_id=si_locked.id,
+    #                 posting_date=posting_dt,
+    #                 created_by_id=context.user_id,
+    #                 is_auto_generated=True,
+    #                 entry_type=JournalEntryTypeEnum.AUTO,
+    #                 remarks=f"Sales Invoice {si_locked.code} ({'return' if si_locked.is_return else 'with stock'})",
+    #                 template_code="SALES_INV_WITH_STOCK",
+    #                 payload=payload,
+    #                 runtime_accounts={},
+    #                 party_id=si_locked.customer_id,
+    #                 party_type=PartyTypeEnum.CUSTOMER,
+    #                 dynamic_account_context=dyn_ctx,
+    #             )
+    #             if not _auto_je_exists(si_locked.company_id, dt_id_si, si_locked.id):
+    #                 PostingService(self.s).post(ctx)
+    #             else:
+    #                 logger.info("Skip invoice GL: already posted for SI %s", si_locked.id)
+    #
+    #             si_locked.outstanding_amount = _D(si_locked.total_amount) - _D(si_locked.paid_amount)
+    #             si_locked.doc_status = _derive_status_after_submit(si_locked)
+    #             self.repo.save(si_locked)
+    #
+    #         self.s.commit()
+    #         invalidate_all_core_reports_for_company(si.company_id, include_stock=True)
+    #         return si
+    #
+    #     # 3) Finance-only path
+    #     payload = build_gl_context_for_sales_invoice_finance_only(
+    #         debit_to_account_id=si.debit_to_account_id,
+    #         vat_account_id=si.vat_account_id,
+    #         total_amount=si.total_amount,
+    #         vat_amount=si.vat_amount,
+    #         lines=[{"amount": it.amount, "income_account_id": it.income_account_id} for it in si.items],
+    #         discount_amount=Dec("0"),
+    #         round_off_positive=Dec("0"),
+    #         round_off_negative=Dec("0"),
+    #         default_ar_account_id=None,
+    #         # NOTE: builder uses signs from amounts; si.is_return guarantees negative lines/total when necessary
+    #     )
+    #     payload["income_splits"] = {int(k): _D(v) for k, v in income_splits.items()}
+    #     payload["document_subtotal"] = subtotal
+    #     payload["document_total"] = total_amount
+    #     payload["tax_amount"] = vat_amount
+    #
+    #     dyn_ctx = {
+    #         "accounts_receivable_account_id": si.debit_to_account_id,
+    #         "tax_account_id": si.vat_account_id,
+    #     }
+    #     if paid_amount != _D("0"):
+    #         if not si.mode_of_payment_id or not si.cash_bank_account_id:
+    #             raise V.BizValidationError(
+    #                 "Paid amount provided but mode_of_payment_id or cash_bank_account_id is missing.")
+    #         payload["AMOUNT_RECEIVED"] = float(paid_amount)
+    #         dyn_ctx.update({
+    #             "cash_bank_account_id": si.cash_bank_account_id,
+    #             "party_ledger_account_id": si.debit_to_account_id,
+    #         })
+    #
+    #     ctx = PostingContext(
+    #         company_id=si.company_id,
+    #         branch_id=si.branch_id,
+    #         source_doctype_id=dt_id_si,
+    #         source_doc_id=si.id,
+    #         posting_date=posting_dt,
+    #         created_by_id=context.user_id,
+    #         is_auto_generated=True,
+    #         entry_type=JournalEntryTypeEnum.AUTO,
+    #         remarks=f"Sales Invoice {si.code}" + (" (return)" if si.is_return else ""),
+    #         template_code="SALES_INV_AR",
+    #         payload=payload,
+    #         runtime_accounts={},
+    #         party_id=si.customer_id,
+    #         party_type=PartyTypeEnum.CUSTOMER,
+    #         dynamic_account_context=dyn_ctx,
+    #     )
+    #     if not _auto_je_exists(si.company_id, dt_id_si, si.id):
+    #         PostingService(self.s).post(ctx)
+    #     else:
+    #         logger.info("Skip invoice GL: already posted for SI %s", si.id)
+    #
+    #     with self.s.begin_nested():
+    #         si_locked = self.repo.get_si(si_id, for_update=True)
+    #         V.guard_submittable_state(si_locked.doc_status)
+    #         si_locked.outstanding_amount = _D(si_locked.total_amount) - _D(si_locked.paid_amount)
+    #         si_locked.doc_status = _derive_status_after_submit(si_locked)
+    #         self.repo.save(si_locked)
+    #
+    #     self.s.commit()
+    #     invalidate_financial_reports_for_company(si.company_id)
+    #     return si
 
     def cancel_sales_invoice(self, *, si_id: int, context: AffiliationContext) -> SalesInvoice:
         """

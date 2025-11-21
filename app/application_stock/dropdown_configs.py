@@ -1,6 +1,8 @@
 from __future__ import annotations
 from app.application_doctypes.core_dropdowns.config import DropdownConfig, register_dropdown_configs
 from app.application_doctypes.core_lists.config import CacheScope
+from app.application_stock.dropdowns_builders.difference_accounts_dropdown import build_difference_accounts_dropdown
+from app.application_accounting.chart_of_accounts.models import Account
 
 from app.application_stock.stock_models import Warehouse
 from app.application_stock.dropdowns_builders.warehouses_dropdown import (
@@ -79,7 +81,25 @@ STOCK_DROPDOWN_CONFIGS = {
         default_limit=50,
         max_limit=200,
     ),
+    # Difference Accounts – used in Stock Reconciliation create/update
+    "difference_accounts": DropdownConfig(
+        permission_tag="Account",
+        query_builder=build_difference_accounts_dropdown,
+        search_fields=[Account.name, Account.code],
+        # 🔴 IMPORTANT: Account has no "status" field – use enabled flag
+        filter_fields={"enabled": Account.enabled},
+        cache_enabled=True,
+        cache_ttl=1800,  # 30 minutes is fine
+        cache_scope=CacheScope.COMPANY,
+        default_limit=50,
+        max_limit=200,
+        window_when_empty=50,
+    ),
+
+    # 🔁 Here you can also register other account dropdowns you already have
+    # e.g. payable_accounts, receivable_accounts, bank_accounts, etc.
 }
+
 
 
 def register_stock_dropdowns() -> None:

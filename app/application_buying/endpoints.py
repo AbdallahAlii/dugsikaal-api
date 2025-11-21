@@ -18,6 +18,7 @@ from app.security.rbac_guards import require_permission
 from app.security.rbac_effective import AffiliationContext
 from app.auth.deps import get_current_user
 
+from app.business_validation import item_validation as V
 logger = logging.getLogger(__name__)
 
 bp = Blueprint("buying", __name__, url_prefix="/api/buying")
@@ -154,6 +155,35 @@ def update_purchase_invoice(invoice_id: int):
         return api_error("Unauthorized", status_code=401)
     except Exception as e:
         logger.exception("Unexpected error updating Purchase Invoice")
+        if current_app.debug or current_app.config.get("ENV") == "development":
+            return api_error(f"[DEV TRACE] {e}", status_code=500)
+        return api_error("Unexpected error.", status_code=500)
+@bp.get("/invoice/<int:invoice_id>/make-return-template")
+@require_permission("Purchase Invoice", "CREATE")
+def make_purchase_invoice_return_template(invoice_id: int):
+    """
+    Build a mapped RETURN template for given Purchase Invoice ID.
+    Used by UI to pre-fill the Purchase Invoice Create form (debit note).
+    """
+    try:
+        svc = PurchaseInvoiceService()
+        tmpl = svc.build_purchase_invoice_return_template(
+            original_pi_id=invoice_id,
+            context=_ctx(),
+        )
+        return api_success(tmpl, "Purchase Invoice return template built.")
+
+    except ValidationError as e:
+        return api_error(str(e), status_code=422)
+    except (BadRequest, Forbidden, NotFound, Conflict) as e:
+        msg = e.description if hasattr(e, "description") else str(e)
+        return api_error(msg, status_code=e.code)
+    except V.BizValidationError as e:
+        return api_error(str(e), status_code=400)
+    except PermissionError:
+        return api_error("Unauthorized", status_code=401)
+    except Exception as e:
+        logger.exception("Unexpected error building Purchase Invoice return template")
         if current_app.debug or current_app.config.get("ENV") == "development":
             return api_error(f"[DEV TRACE] {e}", status_code=500)
         return api_error("Unexpected error.", status_code=500)

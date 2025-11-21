@@ -149,13 +149,13 @@ def load_item_detail(s: Session, ctx: AffiliationContext, item_id: int) -> dict:
             Brand.name.label("brand_name"),
             UnitOfMeasure.name.label("base_uom_name"),
             UnitOfMeasure.symbol.label("base_uom_symbol"),
-            AssetCategory.name.label("asset_category_name"),
+
         )
         .select_from(Item)
         .join(ItemGroup, ItemGroup.id == Item.item_group_id)
         .outerjoin(Brand, Brand.id == Item.brand_id)
         .outerjoin(UnitOfMeasure, UnitOfMeasure.id == Item.base_uom_id)
-        .outerjoin(AssetCategory, AssetCategory.id == Item.asset_category_id)
+
         .where(Item.id == item_id)
     )
 

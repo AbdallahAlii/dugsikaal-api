@@ -1,11 +1,23 @@
 # app/hr/repo.py
 from __future__ import annotations
+
+from datetime import date
 from typing import Optional, List
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from config.database import db
-from app.application_hr.models.hr import Employee, EmployeeAssignment, EmployeeEmergencyContact
+from app.application_hr.models.hr import (
+    Employee,
+    EmployeeAssignment,
+    EmployeeEmergencyContact,
+    HolidayList,
+    Holiday,
+    ShiftType,
+    ShiftAssignment,
+    Attendance,
+    EmployeeCheckin,
+)
 from app.application_org.models.company import Branch
 from app.auth.models.users import UserType, User, UserAffiliation
 from app.common.models.base import StatusEnum, GenderEnum, PersonRelationshipEnum
@@ -134,3 +146,120 @@ class HrRepository:
     def update_emergency_contacts(self, employee_id: int, rows: List[dict]) -> None:
         # Update only the provided emergency contacts
         pass  # Follow a similar pattern for updating the emergency contacts.
+
+    # ------------------------------------------------------------------
+    # Holiday List + Holidays
+    # ------------------------------------------------------------------
+
+    def get_holiday_list_by_id(self, holiday_list_id: int) -> Optional[HolidayList]:
+        return self.s.get(HolidayList, holiday_list_id)
+
+    def create_holiday_list(self, hl: HolidayList, holidays: list[dict]) -> HolidayList:
+        self.s.add(hl)
+        self.s.flush([hl])
+        if holidays:
+            objs = []
+            for h in holidays:
+                objs.append(
+                    Holiday(
+                        holiday_list_id=hl.id,
+                        holiday_date=h["holiday_date"],
+                        description=h.get("description"),
+                        is_full_day=h.get("is_full_day", True),
+                        is_weekly_off=h.get("is_weekly_off", False),
+                    )
+                )
+            self.s.add_all(objs)
+            self.s.flush(objs)
+        return hl
+
+    def replace_holiday_list_rows(self, hl: HolidayList, holidays: list[dict]) -> None:
+        # delete existing
+        self.s.query(Holiday).filter(Holiday.holiday_list_id == hl.id).delete()
+        self.s.flush()
+        if holidays:
+            objs = []
+            for h in holidays:
+                objs.append(
+                    Holiday(
+                        holiday_list_id=hl.id,
+                        holiday_date=h["holiday_date"],
+                        description=h.get("description"),
+                        is_full_day=h.get("is_full_day", True),
+                        is_weekly_off=h.get("is_weekly_off", False),
+                    )
+                )
+            self.s.add_all(objs)
+            self.s.flush(objs)
+
+    # ------------------------------------------------------------------
+    # Shift Type + Assignment
+    # ------------------------------------------------------------------
+
+    def get_shift_type_by_id(self, shift_type_id: int) -> Optional[ShiftType]:
+        return self.s.get(ShiftType, shift_type_id)
+
+    def create_shift_type(self, st: ShiftType) -> ShiftType:
+        self.s.add(st)
+        self.s.flush([st])
+        return st
+
+    def update_shift_type_fields(self, st: ShiftType, data: dict) -> None:
+        for field, value in data.items():
+            if hasattr(st, field) and value is not None:
+                setattr(st, field, value)
+        self.s.flush([st])
+
+    def get_shift_assignment_by_id(self, sa_id: int) -> Optional[ShiftAssignment]:
+        return self.s.get(ShiftAssignment, sa_id)
+
+    def create_shift_assignment(self, sa: ShiftAssignment) -> ShiftAssignment:
+        self.s.add(sa)
+        self.s.flush([sa])
+        return sa
+
+    def update_shift_assignment_fields(self, sa: ShiftAssignment, data: dict) -> None:
+        for field, value in data.items():
+            if hasattr(sa, field) and value is not None:
+                setattr(sa, field, value)
+        self.s.flush([sa])
+
+    # ------------------------------------------------------------------
+    # Attendance
+    # ------------------------------------------------------------------
+
+    def get_attendance_for_emp_date(
+        self, *, employee_id: int, company_id: int, attendance_date: date
+    ) -> Optional[Attendance]:
+        stmt = (
+            select(Attendance)
+            .where(
+                Attendance.employee_id == employee_id,
+                Attendance.company_id == company_id,
+                Attendance.attendance_date == attendance_date,
+            )
+        )
+        return self.s.scalar(stmt)
+
+    def create_attendance(self, att: Attendance) -> Attendance:
+        self.s.add(att)
+        self.s.flush([att])
+        return att
+
+    # ------------------------------------------------------------------
+    # Employee Checkin
+    # ------------------------------------------------------------------
+
+    def create_employee_checkin(self, ec: EmployeeCheckin) -> EmployeeCheckin:
+        self.s.add(ec)
+        self.s.flush([ec])
+        return ec
+
+    def find_employee_by_code(
+        self, *, company_id: int, code: str
+    ) -> Optional[Employee]:
+        stmt = select(Employee).where(
+            Employee.company_id == company_id,
+            func.lower(Employee.code) == func.lower(code),
+        )
+        return self.s.scalar(stmt)

@@ -2,7 +2,7 @@
 from __future__ import annotations
 import csv
 import io
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 
 from sqlalchemy import select
 from config.database import db
@@ -147,21 +147,57 @@ def build_template_file(
     Otherwise we compute from meta + selected_fields.
     Returns (content, filename, mimetype)
     """
+    # ---------- Decide columns (fieldnames) + headers (labels) ----------
     if data_import_id:
         columns = _choose_columns_from_import_id(data_import_id)
         di = db.session.get(DataImport, data_import_id)
         ref = di.reference_doctype if di else reference_doctype
+
+        # Build label map from saved template fields
+        label_by_fieldname: Dict[str, str] = {}
+        if di:
+            tf_rows = sorted(di.template_fields, key=lambda r: r.column_index)
+            for r in tf_rows:
+                # field_name -> label user picked
+                label_by_fieldname[r.field_name] = r.field_label
+
+        cfg = get_doctype_cfg(ref)
+        labels_cfg = (cfg.get("template") or {}).get("labels") or {}
+
+        # headers: for each fieldname, pick (saved label) -> cfg label -> fallback fieldname
+        headers: List[str] = [
+            label_by_fieldname.get(fname) or labels_cfg.get(fname, fname)
+            for fname in columns
+        ]
     else:
+        # No specific DataImport → generic template based on meta + selected_fields
         columns = _choose_columns_from_meta(reference_doctype, selected_fields)
         ref = reference_doctype
 
+        cfg = get_doctype_cfg(ref)
+        labels_cfg = (cfg.get("template") or {}).get("labels") or {}
+        headers = [labels_cfg.get(fname, fname) for fname in columns]
+
+    # ---------- Build sample rows (optional) ----------
     rows: List[dict] = []
     if export_type.lower() in ("with_data", "with_5_records", "with5"):
-        rows = _fetch_sample_rows(ref, columns, limit=5)
+        # raw_rows are keyed by fieldnames
+        raw_rows = _fetch_sample_rows(ref, columns, limit=5)
 
+        # Convert to label-keyed rows so they match headers
+        pairs = list(zip(headers, columns))  # (label, fieldname)
+        for r in raw_rows:
+            labeled_row = {label: r.get(fieldname, "") for (label, fieldname) in pairs}
+            rows.append(labeled_row)
+
+    # ---------- Export as CSV / XLSX ----------
     if file_type == FileType.CSV:
-        content = _to_csv(columns, rows)
+        content = _to_csv(headers, rows)
         return content, f"{ref}_template.csv", "text/csv"
     else:
-        content = _to_xlsx(columns, rows)
-        return content, f"{ref}_template.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        content = _to_xlsx(headers, rows)
+        return (
+            content,
+            f"{ref}_template.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )

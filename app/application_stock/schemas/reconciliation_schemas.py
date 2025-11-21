@@ -1,5 +1,3 @@
-# app/application_stock/reconciliation_schemas.py
-
 from __future__ import annotations
 from typing import Optional, List
 from datetime import datetime
@@ -10,19 +8,38 @@ from app.application_stock.stock_models import StockReconciliationPurpose
 
 
 class StockReconciliationItemBase(BaseModel):
-    """Core fields for a stock reconciliation item line."""
+    """Core fields for a stock reconciliation item line.
+
+    NOTE:
+    - quantity >= 0 (we allow 0 for loss/damage / write-off scenarios)
+    - business rules (e.g. OPENING_STOCK must be >0) are enforced in the service layer.
+    """
     item_id: int
     warehouse_id: int
-    quantity: Decimal = Field(..., gt=Decimal(0), description="Counted quantity.")
-    valuation_rate: Optional[Decimal] = Field(None, ge=Decimal(0), description="Optional valuation rate for the difference.")
+    quantity: Decimal = Field(
+        ...,
+        ge=Decimal(0),
+        description="Counted quantity (physical stock count). Must be >= 0.",
+    )
+    valuation_rate: Optional[Decimal] = Field(
+        None,
+        ge=Decimal(0),
+        description="Optional valuation rate for the counted stock (per unit).",
+    )
+
 
 class StockReconciliationItemCreate(StockReconciliationItemBase):
     """Schema for creating a new item line."""
     pass
 
+
 class StockReconciliationItemUpdate(StockReconciliationItemBase):
     """Schema for updating an item line."""
-    id: Optional[int] = Field(None, description="Provide ID to update an existing line.")
+    id: Optional[int] = Field(
+        None,
+        description="Provide ID to update an existing line; omit to create a new one.",
+    )
+
 
 class StockReconciliationItemOut(StockReconciliationItemBase):
     """Schema for representing an item line in an API response."""
@@ -40,10 +57,14 @@ class StockReconciliationCreate(BaseModel):
     """Payload for creating a new Stock Reconciliation."""
     company_id: Optional[int] = None
     branch_id: Optional[int] = None
-    purpose: StockReconciliationPurpose = Field(default=StockReconciliationPurpose.STOCK_RECONCILIATION)
+    purpose: StockReconciliationPurpose = Field(
+        default=StockReconciliationPurpose.STOCK_RECONCILIATION
+    )
     posting_date: datetime
     code: Optional[str] = Field(None, description="Manual document code.")
-    difference_account_id: Optional[int] = Field(None, description="Account for stock difference.")
+    difference_account_id: Optional[int] = Field(
+        None, description="Account for stock difference."
+    )
     notes: Optional[str] = None
     items: List[StockReconciliationItemCreate]
 

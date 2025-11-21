@@ -199,14 +199,25 @@ def load_purchase_invoice(s: Session, ctx: AffiliationContext, invoice_id: int) 
     header_stmt = (
         select(
             # core
-            PI.id, PI.code, PI.doc_status, PI.update_stock,
-            PI.posting_date, PI.dated, PI.due_date,
-            PI.company_id, PI.branch_id, PI.supplier_id, PI.warehouse_id,
-            PI.total_amount, PI.paid_amount, PI.outstanding_amount, PI.remarks,
-            PI.is_return, PI.is_debit_note,
+            PI.id,
+            PI.code,
+            PI.doc_status,
+            PI.update_stock,
+            PI.posting_date,
+            PI.due_date,
+            PI.company_id,
+            PI.branch_id,
+            PI.supplier_id,
+            PI.warehouse_id,
+            PI.total_amount,
+            PI.paid_amount,
+            PI.outstanding_amount,
+            PI.remarks,
+            PI.is_return,
             PI.receipt_id,
             PI.payable_account_id,
-            PI.mode_of_payment_id, PI.cash_bank_account_id,
+            PI.mode_of_payment_id,
+            PI.cash_bank_account_id,
 
             # names
             Party.name.label("supplier_name"),
@@ -238,17 +249,27 @@ def load_purchase_invoice(s: Session, ctx: AffiliationContext, invoice_id: int) 
         .where(PI.id == invoice_id)
     )
     hdr = _first_or_404(s, header_stmt, "Purchase Invoice")
-    ensure_scope_by_ids(context=ctx, target_company_id=hdr["company_id"], target_branch_id=hdr["branch_id"])
+    ensure_scope_by_ids(
+        context=ctx,
+        target_company_id=hdr["company_id"],
+        target_branch_id=hdr["branch_id"],
+    )
 
     # ---------- items ----------
     items_stmt = (
         select(
-            PII.id, PII.item_id,
+            PII.id,
+            PII.item_id,
             Item.name.label("item_name"),
-            PII.uom_id, UnitOfMeasure.name.label("uom_name"),
-            PII.quantity, PII.rate, PII.amount,
-            PII.receipt_item_id, PII.returned_qty, PII.remarks,
-            PII.return_against_item_id
+            PII.uom_id,
+            UnitOfMeasure.name.label("uom_name"),
+            PII.quantity,
+            PII.rate,
+            PII.amount,
+            PII.receipt_item_id,
+            PII.returned_qty,
+            PII.remarks,
+            PII.return_against_item_id,
         )
         .select_from(PII)
         .join(Item, Item.id == PII.item_id)
@@ -262,6 +283,11 @@ def load_purchase_invoice(s: Session, ctx: AffiliationContext, invoice_id: int) 
     # absolute total qty (works for returns too)
     total_qty_abs = float(sum(abs(float(r.get("quantity") or 0)) for r in rows))
 
+    # we don't have "dated" in the model anymore; keep the field in JSON for
+    # compatibility, using posting_date as the document date
+    posting_date = hdr["posting_date"]
+    due_date = hdr.get("due_date")
+
     data: Dict[str, Any] = {
         # ===== Basic Info =====
         "basic_details": {
@@ -269,10 +295,11 @@ def load_purchase_invoice(s: Session, ctx: AffiliationContext, invoice_id: int) 
             "doc_no": hdr["code"],
             "doc_status": _enum_value(hdr["doc_status"]),
             "is_return": bool(hdr["is_return"]),
-            "is_debit_note": bool(hdr["is_debit_note"]),
-            "posting_date": _date_only(hdr["posting_date"]),
-            "dated": _date_only(hdr["dated"]),
-            "due_date": _date_only(hdr["due_date"]),
+            # Backward compatibility: treat "is_debit_note" as alias of is_return
+            "is_debit_note": bool(hdr["is_return"]),
+            "posting_date": _date_only(posting_date),
+            "dated": _date_only(posting_date),
+            "due_date": _date_only(due_date),
         },
 
         # ===== Party & Branch =====
@@ -332,7 +359,6 @@ def load_purchase_invoice(s: Session, ctx: AffiliationContext, invoice_id: int) 
     }
 
     return data
-
 
 def load_purchase_quotation(s: Session, ctx: AffiliationContext, quotation_id: int) -> Dict[str, Any]:
     PQ, PQI = PurchaseQuotation, PurchaseQuotationItem
