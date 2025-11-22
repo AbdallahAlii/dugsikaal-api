@@ -3,8 +3,9 @@ from sqlalchemy import func, desc
 
 from app.application_doctypes.core_lists.config import ListConfig, register_list_configs
 from app.application_stock.query_builders.build_bins_query import build_bins_query
+from app.application_stock.query_builders.build_stock_entries_query import build_stock_entries_query
 from app.application_stock.query_builders.build_stock_reconciliations_query import build_stock_reconciliations_query
-from app.application_stock.stock_models import Warehouse, Bin, StockReconciliation
+from app.application_stock.stock_models import Warehouse, Bin, StockReconciliation,StockEntry
 from app.application_org.models.company import Branch, Company
 from app.application_stock.query_builders.build_warehouses_query import build_warehouses_query
 from app.auth.models.users import User
@@ -88,6 +89,37 @@ STOCK_LIST_CONFIGS = {
         cache_enabled=False,
 
     ),
+    "stock_entries": ListConfig(
+        permission_tag="Stock Entry",
+        query_builder=build_stock_entries_query,
+        search_fields=[
+            StockEntry.code,
+            Branch.name,
+            Company.name,
+            Warehouse.name,
+        ],
+        sort_fields={
+            "posting_date": StockEntry.posting_date,
+            "created_at": StockEntry.created_at,
+            "code": StockEntry.code,
+            "status": StockEntry.doc_status,
+            "entry_type": StockEntry.stock_entry_type,
+            "branch": Branch.name,
+            "source_warehouse": Warehouse.name,
+            "target_warehouse": Warehouse.name,
+            "id": StockEntry.id,
+        },
+        filter_fields={
+            "company_id": StockEntry.company_id,
+            "branch_id": StockEntry.branch_id,
+            "status": StockEntry.doc_status,
+            "entry_type": StockEntry.stock_entry_type,
+            "posting_date": StockEntry.posting_date,
+            "code": StockEntry.code,
+        },
+        cache_enabled=False,
+    ),
+
 }
 
 def register_stock_lists() -> None:

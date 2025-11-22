@@ -6,7 +6,7 @@ from app.application_accounting.chart_of_accounts.account_policies import (
     ModeOfPayment, AccountAccessPolicy
 )
 from app.application_accounting.chart_of_accounts.models import (
-    FiscalYear, CostCenter, Account
+    FiscalYear, CostCenter, Account,JournalEntry
 )
 from app.application_accounting.query_builders.build_accounting_queries import (
     build_modes_of_payment_query,
@@ -16,7 +16,10 @@ from app.application_accounting.query_builders.build_accounting_queries import (
     build_account_access_policies_query, build_expenses_query,
     build_expense_types_query, build_payments_query,  # keep if you still expose AAP lists
 )
+from app.application_org.models.company import Branch, Company
 from app.application_accounting.chart_of_accounts.finance_model import ExpenseType,PaymentEntry
+from app.application_stock.query_builders.build_journal_entries_query import build_journal_entries_query
+from app.auth.models.users import User
 ACCOUNTING_LIST_CONFIGS = {
     # ─────────────────── Modes of Payment ───────────────────
     "modes_of_payment": ListConfig(
@@ -189,6 +192,34 @@ ACCOUNTING_LIST_CONFIGS = {
     },
     cache_enabled=False,
 ),
+    "journal_entries": ListConfig(
+        permission_tag="Journal Entry",
+        query_builder=build_journal_entries_query,
+        search_fields=[
+            JournalEntry.code,
+            Branch.name,
+            Company.name,
+            User.username,
+        ],
+        sort_fields={
+            "posting_date": JournalEntry.posting_date,
+            "created_at": JournalEntry.created_at,
+            "code": JournalEntry.code,
+            "status": JournalEntry.doc_status,
+            "entry_type": JournalEntry.entry_type,
+            "location": Branch.name,
+            "id": JournalEntry.id,
+        },
+        filter_fields={
+            "company_id": JournalEntry.company_id,
+            "branch_id": JournalEntry.branch_id,
+            "status": JournalEntry.doc_status,
+            "entry_type": JournalEntry.entry_type,
+            "posting_date": JournalEntry.posting_date,
+            "created_by_id": JournalEntry.created_by_id,
+        },
+        cache_enabled=False,
+    ),
 }
 
 def register_module_lists() -> None:

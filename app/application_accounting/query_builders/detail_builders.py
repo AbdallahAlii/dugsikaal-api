@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from decimal import Decimal
 from typing import Dict, Any, Optional, List
 from datetime import datetime, date
 
@@ -17,7 +19,7 @@ from app.application_accounting.chart_of_accounts.account_policies import (
     ModeOfPayment, ModeOfPaymentAccount
 )
 from app.application_accounting.chart_of_accounts.models import (
-    FiscalYear, CostCenter, Account, PartyTypeEnum
+    FiscalYear, CostCenter, Account, PartyTypeEnum, JournalEntry, JournalEntryItem
 )
 from app.application_org.models.company import Company, Branch
 from app.application_stock.stock_models import DocumentType
@@ -53,7 +55,48 @@ def _enum_title(x) -> str:
 
 
 # ─────────────────────────── Resolvers (by name/code) ───────────────────────────
+def resolve_journal_entry_by_code(
+    s: Session, ctx: AffiliationContext, code: str
+) -> int:
+    JE = JournalEntry
+    stmt = (
+        select(JE.id, JE.company_id)
+        .where((JE.code == code) & (JE.company_id == ctx.company_id))
+    )
+    row = s.execute(stmt).first()
+    if not row:
+        raise NotFound("Journal Entry not found.")
+    ensure_scope_by_ids(
+        context=ctx,
+        target_company_id=row.company_id,
+        target_branch_id=None,  # company-wide for JE
+    )
+    return int(row.id)
 
+
+def resolve_journal_entry_id_strict(
+    s: Session, ctx: AffiliationContext, id_str: str
+) -> int:
+    try:
+        je_id = int(id_str)
+    except (TypeError, ValueError):
+        raise NotFound("Journal Entry not found.")
+
+    JE = JournalEntry
+    stmt = (
+        select(JE.id, JE.company_id)
+        .where((JE.id == je_id) & (JE.company_id == ctx.company_id))
+    )
+    row = s.execute(stmt).first()
+    if not row:
+        raise NotFound("Journal Entry not found.")
+
+    ensure_scope_by_ids(
+        context=ctx,
+        target_company_id=row.company_id,
+        target_branch_id=None,
+    )
+    return int(row.id)
 def resolve_mop_by_name(s: Session, ctx: AffiliationContext, name: str) -> int:
     M = ModeOfPayment
     stmt = select(M.id, M.company_id).where((M.name == name) & (M.company_id == ctx.company_id))
@@ -589,4 +632,135 @@ def _get_created_by_info(s: Session, user_id: int) -> Dict[str, Any]:
         "id": row["id"],
         "name": row["username"],  # Use username since you don't have full_name
         # Remove email field since it doesn't exist in your model
+    }
+
+
+def load_journal_entry(
+    s: Session, ctx: AffiliationContext, je_id: int
+) -> Dict[str, Any]:
+    """
+    ERP-style Journal Entry detail.
+
+    Sections:
+      - basic_details
+      - company_context
+      - accounting_entries (lines)
+    """
+    JE = JournalEntry
+    JLI = JournalEntryItem
+    ACC = Account
+    CC = CostCenter
+    C = Company
+    B = Branch
+
+    # ----- Header -----
+    header_stmt = (
+        select(
+            JE.id,
+            JE.code,
+            JE.doc_status,
+            JE.entry_type,
+            JE.posting_date,
+            JE.total_debit,
+            JE.total_credit,
+            JE.company_id,
+            JE.branch_id,
+            C.name.label("company_name"),
+            B.name.label("branch_name"),
+            JE.remarks,
+        )
+        .select_from(JE)
+        .join(C, C.id == JE.company_id)
+        .join(B, B.id == JE.branch_id)
+        .where(JE.id == je_id)
+    )
+    hdr = _first_or_404(s, header_stmt, "Journal Entry")
+
+    # Company-wide scope (no branch restriction for JE)
+    ensure_scope_by_ids(
+        context=ctx,
+        target_company_id=hdr["company_id"],
+        target_branch_id=None,
+    )
+
+    # ----- Lines (Accounting Entries) -----
+    stmt_items = (
+        select(
+            JLI.id.label("id"),
+            JLI.account_id.label("account_id"),
+            ACC.code.label("account_code"),
+            ACC.name.label("account_name"),
+
+            JLI.cost_center_id.label("cost_center_id"),
+            CC.name.label("cost_center_name"),
+
+            JLI.party_type.label("party_type"),
+            JLI.party_id.label("party_id"),
+
+            JLI.debit.label("debit"),
+            JLI.credit.label("credit"),
+            JLI.remarks.label("remarks"),
+        )
+        .select_from(JLI)
+        .join(ACC, ACC.id == JLI.account_id)
+        .outerjoin(CC, CC.id == JLI.cost_center_id)
+        .where(JLI.journal_entry_id == je_id)
+        .order_by(JLI.id.asc())
+    )
+
+    raw_items = s.execute(stmt_items).mappings().all()
+
+    accounting_entries: List[Dict[str, Any]] = []
+    for r in raw_items:
+        r = dict(r)
+        debit = Decimal(str(r["debit"] or 0))
+        credit = Decimal(str(r["credit"] or 0))
+
+        party_info = None
+        if r["party_type"] and r["party_id"]:
+            party_info = _get_party_details(s, r["party_type"], r["party_id"])
+
+        accounting_entries.append(
+            {
+                "id": r["id"],
+                "account": {
+                    "id": r["account_id"],
+                    "code": r["account_code"],
+                    "name": r["account_name"],
+                },
+                "cost_center": {
+                    "id": r["cost_center_id"],
+                    "name": r["cost_center_name"],
+                }
+                if r["cost_center_id"]
+                else None,
+                "party": party_info,
+                "debit": float(debit),
+                "credit": float(credit),
+                "remarks": r["remarks"],
+            }
+        )
+
+    total_debit = Decimal(str(hdr["total_debit"] or 0))
+    total_credit = Decimal(str(hdr["total_credit"] or 0))
+
+    return {
+        "basic_details": {
+            "id": hdr["id"],
+            "code": hdr["code"],
+            "status": _enum_title(hdr["doc_status"]),
+            "entry_type": _enum_title(hdr["entry_type"]),
+            "posting_date": _format_date_out(hdr["posting_date"]),
+            "total_debit": float(total_debit),
+            "total_credit": float(total_credit),
+            "difference": float(total_debit - total_credit),
+            "remarks": hdr["remarks"],
+        },
+        "company_context": {
+            "company_id": hdr["company_id"],
+            "company_name": hdr["company_name"],
+            "branch_id": hdr["branch_id"],
+            "branch_name": hdr["branch_name"],
+        },
+        "accounting_entries": accounting_entries,
     }

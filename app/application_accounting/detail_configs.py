@@ -13,7 +13,8 @@ from app.application_accounting.query_builders.detail_builders import (
     load_fiscal_year,
     load_cost_center,
     load_account, load_expense_type, resolve_expense_type_by_name, resolve_expense_by_code, load_expense,
-    resolve_payment_by_code, load_payment,
+    resolve_payment_by_code, load_payment, load_journal_entry, resolve_journal_entry_by_code,
+    resolve_journal_entry_id_strict,
 )
 
 ACCOUNTING_DETAIL_CONFIGS = {
@@ -66,6 +67,17 @@ ACCOUNTING_DETAIL_CONFIGS = {
     resolver_map={"code": resolve_payment_by_code},
     cache_enabled=False,
 ),
+    "journal_entries": DetailConfig(
+        permission_tag="JournalEntry",
+        loader=load_journal_entry,
+        resolver_map={
+            "code": resolve_journal_entry_by_code,
+            "id": resolve_journal_entry_id_strict,
+        },
+        cache_enabled=False,
+        default_by="code",  # 🔴 ADD THIS
+    ),
+
 }
 
 def register_accounting_detail_configs() -> None:
