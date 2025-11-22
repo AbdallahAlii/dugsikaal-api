@@ -97,7 +97,8 @@ def delete_warehouse(warehouse_id: int):
 
 # ------------------------- Stock Entry -------------------------
 
-@bp.post("/entry/create")
+
+@bp.post("/stock_entry/create")
 @require_permission("Stock Entry", "CREATE")
 def create_stock_entry():
     try:
@@ -120,13 +121,16 @@ def create_stock_entry():
     except PermissionError:
         return api_error("Unauthorized", status_code=401)
     except Exception as e:
-        logger.exception("Unhandled error creating Stock Entry", extra={"route": "stock.entry.create", "request_json": raw})
+        logger.exception(
+            "Unhandled error creating Stock Entry",
+            extra={"route": "stock.entry.create", "request_json": raw},
+        )
         if current_app.debug or current_app.config.get("ENV") == "development":
             return api_error(f"[DEV TRACE] {e.__class__.__name__}: {e}", status_code=500)
         return api_error("An unexpected server error occurred.", status_code=500)
 
 
-@bp.patch("/entry/<int:entry_id>")
+@bp.patch("/stock_entry/<int:entry_id>")
 @require_permission("Stock Entry", "EDIT")
 def update_stock_entry(entry_id: int):
     try:
@@ -153,7 +157,7 @@ def update_stock_entry(entry_id: int):
         return api_error("An unexpected error occurred.", status_code=500)
 
 
-@bp.post("/entry/<int:entry_id>/submit")
+@bp.post("/stock_entry/<int:entry_id>/submit")
 @require_permission("Stock Entry", "SUBMIT")
 def submit_stock_entry(entry_id: int):
     try:
@@ -166,17 +170,22 @@ def submit_stock_entry(entry_id: int):
             status_code=200,
         )
     except (Forbidden, NotFound, BizValidationError) as e:
-        return api_error(e.description if hasattr(e, "description") else str(e), status_code=getattr(e, "code", 400))
+        return api_error(
+            e.description if hasattr(e, "description") else str(e),
+            status_code=getattr(e, "code", 400),
+        )
     except PermissionError:
         return api_error("Unauthorized", status_code=401)
     except Exception as e:
-        logger.exception("Unhandled error submitting Stock Entry", extra={"entry_id": entry_id})
+        logger.exception(
+            "Unhandled error submitting Stock Entry", extra={"entry_id": entry_id}
+        )
         if current_app.debug or current_app.config.get("ENV") == "development":
             return api_error(f"[DEV TRACE] {e}", status_code=500)
         return api_error("An unexpected error occurred.", status_code=500)
 
 
-@bp.post("/entry/<int:entry_id>/cancel")
+@bp.post("/stock_entry/<int:entry_id>/cancel")
 @require_permission("Stock Entry", "CANCEL")
 def cancel_stock_entry(entry_id: int):
     try:
@@ -189,7 +198,10 @@ def cancel_stock_entry(entry_id: int):
             status_code=200,
         )
     except (Forbidden, NotFound, BizValidationError) as e:
-        return api_error(e.description if hasattr(e, "description") else str(e), status_code=getattr(e, "code", 400))
+        return api_error(
+            e.description if hasattr(e, "description") else str(e),
+            status_code=getattr(e, "code", 400),
+        )
     except PermissionError:
         return api_error("Unauthorized", status_code=401)
     except Exception:

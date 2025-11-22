@@ -408,44 +408,63 @@ class PaymentEntryService:
 
     # ----------------------------- CANCEL --------------------------------
 
-    def cancel(self, *, payment_id: int, context: AffiliationContext, reason: Optional[str] = None) -> PaymentEntry:
-        pe = self._get_validated(payment_id, context, for_update=True)
+    def cancel(
+            self,
+            *,
+            payment_id: int,
+            context: AffiliationContext,
+            reason: Optional[str] = None,
+    ) -> PaymentEntry:
+        # First fetch for quick validation + scope
+        pe = self._get_validated(payment_id, context, for_update=False)
         if pe.doc_status != DocStatusEnum.SUBMITTED:
             raise BizValidationError("Only submitted Payment Entries can be cancelled.")
 
         doctype_id = self._dtid("PAYMENT_ENTRY")
-        template_code, payload, dyn = self._compose_posting(pe, reverse=True)
 
         tz = get_company_timezone(self.s, pe.company_id)
-        posting_dt = resolve_posting_dt(pe.posting_date, created_at=pe.created_at, tz=tz, treat_midnight_as_date=True)
+        posting_dt = resolve_posting_dt(
+            pe.posting_date,
+            created_at=pe.created_at,
+            tz=tz,
+            treat_midnight_as_date=True,
+        )
 
         try:
             with self.s.begin_nested():
                 with lock_doc(self.s, pe.company_id, doctype_id, pe.id):
-                    ctx = PostingContext(
-                        company_id=pe.company_id,
-                        branch_id=pe.branch_id,
+                    pe_locked = self._get_validated(payment_id, context, for_update=True)
+                    if pe_locked.doc_status != DocStatusEnum.SUBMITTED:
+                        raise BizValidationError(
+                            "Only submitted Payment Entries can be cancelled."
+                        )
+
+                    # 🔄 Reverse the original auto-generated JE for this Payment Entry
+                    ctx_cancel = PostingContext(
+                        company_id=pe_locked.company_id,
+                        branch_id=pe_locked.branch_id,
                         source_doctype_id=doctype_id,
-                        source_doc_id=pe.id,
+                        source_doc_id=pe_locked.id,
+                        # Required by dataclass; PostingService.cancel uses the
+                        # original JE accounting date internally.
                         posting_date=posting_dt,
                         created_by_id=context.user_id,
                         is_auto_generated=True,
-                        entry_type=make_entry_type(is_auto=True, for_reversal=True),
-                        remarks=f"Cancel Payment Entry {pe.code}" + (f" — {reason}" if reason else ""),
-                        template_code=template_code,
-                        payload=payload,
-                        runtime_accounts={},
-                        party_id=pe.party_id if pe.payment_type != PaymentTypeEnum.INTERNAL_TRANSFER else None,
-                        party_type=pe.party_type if pe.payment_type != PaymentTypeEnum.INTERNAL_TRANSFER else None,
-                        dynamic_account_context=dyn,
+                        remarks=(
+                                f"Cancel Payment Entry {pe_locked.code}"
+                                + (f" — {reason}" if reason else "")
+                        ),
                     )
-                    PostingService(self.s).post(ctx)
+                    PostingService(self.s).cancel(ctx_cancel)
 
-                    # Revert allocations based on DB rows
-                    self._revert_allocations(pe)
-                    self.repo.mark_cancelled(pe.id)
+                    # 🔁 Revert allocations (Sales Invoices / Purchase Invoices)
+                    self._revert_allocations(pe_locked)
+
+                    # Mark header as CANCELLED
+                    self.repo.mark_cancelled(pe_locked.id)
 
             self.s.commit()
+
             # 🔥 Invalidate after commit
             try:
                 invalidate_financial_reports_for_company(pe.company_id)
@@ -453,14 +472,20 @@ class PaymentEntryService:
                 bump_accounting_detail("payment_entries", pe.id)
                 bump_coa_balance_company(pe.company_id)
             except Exception:
-                log.warning("Post-commit cache invalidation failed for cancel payment %s", pe.id, exc_info=True)
+                log.warning(
+                    "Post-commit cache invalidation failed for cancel payment %s",
+                    pe.id,
+                    exc_info=True,
+                )
 
             return pe
 
         except PostingValidationError as e:
-            self.s.rollback(); raise BizValidationError(f"Accounting error: {e}")
+            self.s.rollback()
+            raise BizValidationError(f"Accounting error: {e}")
         except Exception:
-            self.s.rollback(); log.exception("Failed to cancel Payment Entry")
+            self.s.rollback()
+            log.exception("Failed to cancel Payment Entry")
             raise BizValidationError("Failed to cancel Payment Entry.")
 
     # ----------------------------- OUTSTANDING ---------------------------

@@ -9,7 +9,9 @@ from typing import Optional, List, Dict, Set, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, select
 from werkzeug.exceptions import HTTPException
-
+from decimal import Decimal as Dec
+from app.application_reports.hook.invalidation import invalidate_all_core_reports_for_company, \
+    invalidate_financial_reports_for_company
 from app.application_stock.engine.sle_helpers import create_reconciliation_intent
 from app.application_stock.repo.reconciliation_repo import StockReconciliationRepository
 from app.application_stock.stock_models import (
@@ -775,24 +777,33 @@ class StockReconciliationService:
     # -------------------------------------------------------------------------
     # CANCEL
     # -------------------------------------------------------------------------
+
     def cancel_stock_reconciliation(
-        self,
-        *,
-        recon_id: int,
-        context: AffiliationContext,
+            self,
+            *,
+            recon_id: int,
+            context: AffiliationContext,
     ) -> StockReconciliation:
         """
         Cancel a submitted Stock Reconciliation.
-        - Marks its SLEs as cancelled and replays stock
-        - Posts a reversing GL entry using STOCK_RECON_GENERAL (signed amount)
+
+        STOCK:
+        - Marks its SLEs as cancelled and replays stock from earliest SLE time.
+        - Re-derives bins.
+
+        GL:
+        - If the submit created an auto Journal Entry, call PostingService.cancel(...)
+          to create a clean reversal JE (swap DR/CR) — ERP-style.
         """
-        from app.common.timezone.service import get_company_timezone
-        from decimal import Decimal as Dec
+        from app.common.timezone.service import get_company_timezone  # if not imported globally
 
         try:
             logger.info("🔄 Stock Reconciliation cancel: START recon_id=%s", recon_id)
 
-            recon = self._get_validated_reconciliation(recon_id, context, for_update=False)
+            # 1) Read + basic guards
+            recon = self._get_validated_reconciliation(
+                recon_id, context, for_update=False
+            )
             PostingDateValidator.validate_standalone_document(
                 self.s,
                 recon.posting_date,
@@ -805,6 +816,7 @@ class StockReconciliationService:
             doc_type_id = self._get_doc_type_id_or_400("STOCK_RECONCILIATION")
             company_tz = get_company_timezone(self.s, recon.company_id)
 
+            # 2) Existing, non-cancelled SLEs for this reconciliation
             sle_rows: List[StockLedgerEntry] = (
                 self.s.query(StockLedgerEntry)
                 .filter(
@@ -824,7 +836,7 @@ class StockReconciliationService:
                 (sle.item_id, sle.warehouse_id) for sle in sle_rows
             }
             original_total_diff = sum(
-                (sle.stock_value_difference or Decimal("0")) for sle in sle_rows
+                (sle.stock_value_difference or Dec("0")) for sle in sle_rows
             )
 
             earliest_dt = min(sle.posting_time for sle in sle_rows)
@@ -841,15 +853,18 @@ class StockReconciliationService:
                 treat_midnight_as_date=True,
             )
 
+            # 3) Atomic work
             with self.s.begin_nested():
                 recon_locked = self._get_validated_reconciliation(
                     recon_id, context, for_update=True
                 )
                 guard_cancellable_state(recon_locked.doc_status)
 
+                # 3.a Mark SLEs as cancelled
                 for sle in sle_rows:
                     sle.is_cancelled = True
 
+                # 3.b Replay stock from earliest SLE time
                 for item_id, wh_id in pairs:
                     repost_from(
                         s=self.s,
@@ -860,45 +875,40 @@ class StockReconciliationService:
                         exclude_doc_types=set(),
                     )
 
+                # 3.c Re-derive bins
                 for item_id, wh_id in pairs:
                     derive_bin(self.s, recon_locked.company_id, item_id, wh_id)
 
-                reverse_diff = -(original_total_diff or Decimal("0"))
+                # 3.d Reverse GL if submit actually posted any net difference
+                if original_total_diff != Dec("0"):
+                    ctx_cancel = PostingContext(
+                        company_id=recon_locked.company_id,
+                        branch_id=recon_locked.branch_id,
+                        source_doctype_id=doc_type_id,
+                        source_doc_id=recon_locked.id,
+                        posting_date=posting_dt,  # required by dataclass, not used in cancel()
+                        created_by_id=context.user_id,
+                        is_auto_generated=True,
+                        remarks=f"Cancel Stock Reconciliation {recon_locked.code}",
+                    )
+                    PostingService(self.s).cancel(ctx_cancel)
 
-                if not recon_locked.difference_account_id:
-                    acc_id = self._get_difference_account_id(recon_locked.purpose, None)
-                    if not acc_id:
-                        raise BizValidationError(
-                            "Difference account is required to cancel this stock reconciliation."
-                        )
-                    recon_locked.difference_account_id = acc_id
-                else:
-                    acc_id = recon_locked.difference_account_id
-
-                ctx = PostingContext(
-                    company_id=recon_locked.company_id,
-                    branch_id=recon_locked.branch_id,
-                    source_doctype_id=doc_type_id,
-                    source_doc_id=recon_locked.id,
-                    posting_date=posting_dt,
-                    created_by_id=context.user_id,
-                    is_auto_generated=True,
-                    entry_type=None,
-                    remarks=f"Cancel Stock Reconciliation {recon_locked.code}",
-                    template_code="STOCK_RECON_GENERAL",
-                    payload={"STOCK_RECON_DIFFERENCE": reverse_diff},
-                    dynamic_account_context={"difference_account_id": acc_id},
-                )
-                PostingService(self.s).post(ctx)
-
+                # 3.e Mark doc as CANCELLED
                 recon_locked.doc_status = DocStatusEnum.CANCELLED
                 self.repo.save(recon_locked)
 
             self.s.commit()
+
+            # 4) Invalidate reports: stock + financial
+            invalidate_all_core_reports_for_company(
+                recon.company_id, include_stock=True
+            )
+            invalidate_financial_reports_for_company(recon.company_id)
+
             logger.info(
                 "🎉 Stock Reconciliation cancel: SUCCESS | recon_id=%s code=%s",
-                recon_id,
-                recon.code,
+                recon_locked.id,
+                recon_locked.code,
             )
             return recon_locked
 

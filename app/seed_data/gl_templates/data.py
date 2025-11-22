@@ -47,6 +47,9 @@ AMOUNT_SOURCES = {
 
     "STOCK_RECON_DIFFERENCE": "Signed total value difference for stock reconciliation "
                               "(>0 = gain, <0 = loss)",
+    # Stock Entry (Material Receipt / Issue / Adjustment)
+    "STOCK_ENTRY_DIFFERENCE": "Signed total stock value difference for Stock Entry "
+                              "(>0 = gain, <0 = loss)",
     # --- NEW for PCV ---
     "PROFIT_AMOUNT": "Positive net P&L (profit)",
     "LOSS_AMOUNT": "Positive net loss",
@@ -209,6 +212,15 @@ TEMPLATE_DEFS: List[Dict[str, Any]] = [
         code="STOCK_RECON_GENERAL",
         label="Stock Reconciliation",
         description="Adjusts inventory to match physical count. DR/CR Stock; CR/DR Difference Account.",
+        is_active=True,
+        is_primary=True,
+    ),
+    dict(
+        doctype_code="STOCK_ENTRY",
+        code="STOCK_ENTRY_GENERAL",
+        label="Stock Entry (Manual Stock Adjustments)",
+        description="Adjusts inventory via Stock Entry (Material Receipt / Issue / Adjustment). "
+                    "DR/CR Stock; CR/DR Difference Account based on signed difference.",
         is_active=True,
         is_primary=True,
     ),
@@ -545,6 +557,33 @@ TEMPLATE_ITEMS: List[Dict[str, Any]] = [
         effect=CREDIT,
         account_code=None,  # Difference Account (Opening / Stock Adjustment)
         amount_source="STOCK_RECON_DIFFERENCE",
+        is_required=True,
+        requires_dynamic_account=True,
+        context_key="difference_account_id",
+    ),
+    # --- Stock Entry Items ---
+    # This uses the signed total stock value difference from the SLEs.
+    # - If STOCK_ENTRY_DIFFERENCE > 0 → Inventory gain:
+    #       DR Inventory (1141), CR Difference Account
+    # - If STOCK_ENTRY_DIFFERENCE < 0 → Inventory loss:
+    #       DR Difference Account, CR Inventory
+    #   (handled via signed amounts just like Stock Reconciliation)
+    dict(
+        template_code="STOCK_ENTRY_GENERAL",
+        sequence=10,
+        effect=DEBIT,
+        account_code="1141",  # Inventory / Stock in Hand
+        amount_source="STOCK_ENTRY_DIFFERENCE",
+        is_required=True,
+        requires_dynamic_account=False,
+        context_key=None,
+    ),
+    dict(
+        template_code="STOCK_ENTRY_GENERAL",
+        sequence=20,
+        effect=CREDIT,
+        account_code=None,  # Difference Account (Stock Adjustments, etc.)
+        amount_source="STOCK_ENTRY_DIFFERENCE",
         is_required=True,
         requires_dynamic_account=True,
         context_key="difference_account_id",

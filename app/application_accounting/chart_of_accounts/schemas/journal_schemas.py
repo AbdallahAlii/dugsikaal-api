@@ -12,6 +12,7 @@ from app.application_accounting.chart_of_accounts.models import (
     PartyTypeEnum,
 )
 
+
 # ----------------------------- Journal Entry -----------------------------
 
 
@@ -32,8 +33,11 @@ class JournalEntryLineIn(BaseModel):
         if d < 0 or c < 0:
             raise ValueError("Debit/Credit cannot be negative.")
         if (d == 0) and (c == 0):
-            raise ValueError("Each line must have a positive debit or credit.")
+            # ERP-style: "Row X: Both Debit and Credit values cannot be zero."
+            # Here we don't know row; service will re-check and add row info.
+            raise ValueError("Both Debit and Credit values cannot be zero.")
         if (d > 0) and (c > 0):
+            # ERP-style: "You cannot credit and debit same account at the same time."
             raise ValueError("A line cannot have both debit and credit.")
 
         return self
@@ -45,7 +49,6 @@ class JournalEntryCreateSchema(BaseModel):
     posting_date: datetime
     entry_type: JournalEntryTypeEnum = JournalEntryTypeEnum.GENERAL
     remarks: Optional[str] = None
-    # pydantic v2: use min_length for list size constraints
     items: List[JournalEntryLineIn] = Field(min_length=2)
 
 

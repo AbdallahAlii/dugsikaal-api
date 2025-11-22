@@ -58,6 +58,19 @@ ERR_ACCOUNT_NOT_FOUND = "Account not found"
 ERR_ACCOUNT_DISABLED = "Account is disabled"
 ERR_ACCOUNT_WRONG_COMPANY = "Account does not belong to this company"
 ERR_GROUP_ACCOUNT_NOT_ALLOWED = "Cannot use group account for transactions"
+
+ERR_JE_MIN_LINES = "At least two lines are required in Journal Entry."
+ERR_JE_ACCOUNT_MANDATORY = "Mandatory fields required in Journal Entry lines, Row {row}: Account."
+ERR_JE_ZERO_DR_CR = "Row {row}: Both Debit and Credit values cannot be zero."
+ERR_JE_PARTY_REQUIRED = (
+    "Row {row}: Party Type and Party are required for Receivable / Payable account {account_name}."
+)
+ERR_JE_SAME_ACCOUNT_DR_CR = (
+    "You cannot credit and debit the same account {account_name} for the same party at the same time."
+)
+ERR_JE_TOTAL_NOT_BALANCED = (
+    "Total Debit must be equal to Total Credit. The difference is {diff}."
+)
 # --- Document Status Guards ---
 
 
@@ -438,3 +451,71 @@ def validate_sales_items_direction(is_return: bool, items: List[Dict[str, Any]])
     """Validates that items have correct quantity direction."""
     for item in items:
         validate_quantity_direction(is_return, item.get("quantity", Decimal("0")))
+def validate_stock_entry_rate(entry_type: str, row_idx: int, rate: Decimal) -> None:
+    """
+    Business rule for Stock Entry rate.
+
+    - Rate must be non-negative for all types.
+    - For Material Receipt, rate must be strictly > 0
+      (we are introducing value to stock, ERPNext-style).
+    """
+    r = Decimal(str(rate or "0"))
+    validate_non_negative_rate(r)
+
+    if entry_type == "Material Receipt" and r <= 0:
+        raise BizValidationError(
+            f"Row {row_idx}: Rate must be greater than zero for Material Receipt."
+        )
+
+
+def validate_stock_entry_warehouses(
+    entry_type: str,
+    row_idx: int,
+    source_warehouse_id: Optional[int],
+    target_warehouse_id: Optional[int],
+) -> None:
+    """
+    Structural validation for Stock Entry warehouses by type.
+
+    - Material Receipt:
+        source_warehouse_id = NULL
+        target_warehouse_id = REQUIRED
+
+    - Material Issue:
+        source_warehouse_id = REQUIRED
+        target_warehouse_id = NULL
+
+    - Material Transfer:
+        source_warehouse_id = REQUIRED
+        target_warehouse_id = REQUIRED
+        source_warehouse_id != target_warehouse_id
+    """
+    if entry_type == "Material Receipt":
+        if source_warehouse_id is not None:
+            raise BizValidationError(
+                f"Row {row_idx}: Source Warehouse must be empty for Material Receipt."
+            )
+        if not target_warehouse_id:
+            raise BizValidationError(
+                f"Row {row_idx}: Target Warehouse is required for Material Receipt."
+            )
+
+    elif entry_type == "Material Issue":
+        if not source_warehouse_id:
+            raise BizValidationError(
+                f"Row {row_idx}: Source Warehouse is required for Material Issue."
+            )
+        if target_warehouse_id is not None:
+            raise BizValidationError(
+                f"Row {row_idx}: Target Warehouse must be empty for Material Issue."
+            )
+
+    elif entry_type == "Material Transfer":
+        if not source_warehouse_id or not target_warehouse_id:
+            raise BizValidationError(
+                f"Row {row_idx}: Both Source and Target Warehouse are required for Material Transfer."
+            )
+        if source_warehouse_id == target_warehouse_id:
+            raise BizValidationError(
+                f"Row {row_idx}: Source and Target Warehouse cannot be the same for Material Transfer."
+            )

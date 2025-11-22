@@ -1178,290 +1178,30 @@ class PurchaseInvoiceService:
         logger.info("🎉 PI submit done (finance-only) | %s", pi.code)
         return pi
 
-    # def submit_purchase_invoice(self, *, invoice_id: int, context: AffiliationContext) -> PurchaseInvoice:
-    #     logger.info("🔄 PI submit start | invoice_id=%s", invoice_id)
-    #
-    #     pi = self.repo.get_by_id(invoice_id, for_update=False)
-    #     if not pi:
-    #         logger.error("❌ PI submit aborted: not found | invoice_id=%s", invoice_id)
-    #         raise NotFound("Purchase Invoice not found.")
-    #
-    #     logger.info("📄 PI=%s | company=%s branch=%s | update_stock=%s is_return=%s",
-    #                 pi.code, pi.company_id, pi.branch_id, pi.update_stock, pi.is_return)
-    #
-    #     ensure_scope_by_ids(context=context, target_company_id=pi.company_id, target_branch_id=pi.branch_id)
-    #     PostingDateValidator.validate_standalone_document(self.s, pi.posting_date, pi.company_id)
-    #     self._guard_submittable(pi)
-    #
-    #     # Build normalized line snapshots
-    #     header_wh = pi.warehouse_id
-    #     line_snaps = []
-    #     for idx, it in enumerate(pi.items):
-    #         line_snaps.append({
-    #             "item_id": it.item_id,
-    #             "uom_id": it.uom_id,
-    #             "quantity": it.quantity,
-    #             "rate": it.rate,
-    #             "warehouse_id": it.warehouse_id,
-    #             "doc_row_id": it.id,
-    #         })
-    #         logger.info("  PI line %s | item=%s qty=%s rate=%s wh=%s", idx + 1, it.item_id, it.quantity, it.rate,
-    #                     it.warehouse_id)
-    #
-    #     # Ensure warehouse for stock lines
-    #     self._enforce_line_warehouses_if_stock(pi.update_stock, line_snaps, header_wh)
-    #
-    #     # Load details and classify
-    #     item_ids = [it.item_id for it in pi.items]
-    #     details = self.repo.get_item_details_batch(pi.company_id, item_ids)
-    #     stock_lines = []
-    #     if pi.update_stock:
-    #         for snap in line_snaps:
-    #             item_detail = details.get(snap["item_id"], {})
-    #             if item_detail.get("is_stock_item", False):
-    #                 base = item_detail.get("base_uom_id")
-    #                 stock_lines.append({**snap, "base_uom_id": base})
-    #                 logger.info("  ✅ Stock item | item=%s base_uom=%s wh=%s", snap["item_id"], base,
-    #                             snap["warehouse_id"])
-    #             else:
-    #                 logger.info("  ⏭️ Non-stock item | item=%s", snap["item_id"])
-    #
-    #     doc_type_id = self._doc_type_id("PURCHASE_RETURN" if pi.is_return else "PURCHASE_INVOICE")
-    #     posting_dt = resolve_posting_dt(pi.posting_date, created_at=pi.created_at, treat_midnight_as_date=True)
-    #     logger.info("📅 PI posting_dt=%s", posting_dt)
-    #
-    #     # STOCK PATH
-    #     if pi.update_stock and stock_lines:
-    #         logger.info("🚀 PI stock path | lines=%s", len(stock_lines))
-    #         if pi.is_return:
-    #             intents = build_intents_for_return(
-    #                 company_id=pi.company_id, branch_id=pi.branch_id, warehouse_id=pi.warehouse_id,
-    #                 posting_dt=posting_dt, doc_type_id=doc_type_id, doc_id=pi.id,
-    #                 lines=[{
-    #                     "uom_id": ln["uom_id"],
-    #                     "item_id": ln["item_id"],
-    #                     "accepted_qty": ln["quantity"],  # sign handled by builder
-    #                     "unit_price": ln["rate"],
-    #                     "doc_row_id": ln["doc_row_id"],
-    #                     "base_uom_id": ln.get("base_uom_id"),
-    #                     "warehouse_id": ln["warehouse_id"],
-    #                 } for ln in stock_lines],
-    #                 session=self.s
-    #             )
-    #         else:
-    #             intents = build_intents_for_receipt(
-    #                 company_id=pi.company_id, branch_id=pi.branch_id, warehouse_id=pi.warehouse_id,
-    #                 posting_dt=posting_dt, doc_type_id=doc_type_id, doc_id=pi.id,
-    #                 lines=[{
-    #                     "uom_id": ln["uom_id"],
-    #                     "item_id": ln["item_id"],
-    #                     "accepted_qty": ln["quantity"],
-    #                     "unit_price": ln["rate"],
-    #                     "doc_row_id": ln["doc_row_id"],
-    #                     "base_uom_id": ln.get("base_uom_id"),
-    #                     "warehouse_id": ln["warehouse_id"],
-    #                 } for ln in stock_lines],
-    #                 session=self.s
-    #             )
-    #
-    #         for idx, it in enumerate(intents):
-    #             if it.warehouse_id is None:
-    #                 logger.error("❌ PI intent missing warehouse | idx=%s item_id=%s", idx, it.item_id)
-    #                 raise V.BizValidationError(
-    #                     "Internal error: PI intent without warehouse. Please check warehouses/UOMs.")
-    #
-    #         pairs = {(i.item_id, i.warehouse_id) for i in intents}
-    #         if not pairs:
-    #             logger.error("❌ PI no SLE pairs generated while update_stock=True | invoice_id=%s", invoice_id)
-    #             raise V.BizValidationError("No stock ledger pairs generated for stock items; check warehouses/UOMs.")
-    #
-    #         # Backdated?
-    #         def _future_exists(item_id: int, wh: int) -> bool:
-    #             q = self.s.execute(
-    #                 select(func.count()).select_from(StockLedgerEntry).where(
-    #                     StockLedgerEntry.company_id == pi.company_id,
-    #                     StockLedgerEntry.item_id == item_id,
-    #                     StockLedgerEntry.warehouse_id == wh,
-    #                     ((StockLedgerEntry.posting_date > posting_dt.date()) | and_(
-    #                         StockLedgerEntry.posting_date == posting_dt.date(),
-    #                         StockLedgerEntry.posting_time > posting_dt,
-    #                     )),
-    #                     StockLedgerEntry.is_cancelled == False,
-    #                 )
-    #             ).scalar() or 0
-    #             return q > 0
-    #
-    #         is_backdated = any(_future_exists(i, w) for (i, w) in pairs)
-    #         if is_backdated:
-    #             logger.warning("⚠️ PI is backdated; will replay inside TX | invoice_id=%s", invoice_id)
-    #
-    #         # Single atomic block (like Sales)
-    #         with self.s.begin_nested():
-    #             pi_locked = self.repo.get_by_id(invoice_id, for_update=True)
-    #             self._guard_submittable(pi_locked)
-    #
-    #             # Write SLEs
-    #             with lock_pairs(self.s, pairs):
-    #                 for idx, intent in enumerate(intents):
-    #                     append_sle(self.s, intent, created_at_hint=pi_locked.created_at, tz_hint=None, batch_index=idx)
-    #
-    #             # If backdated, replay now (KEYWORD ARGS!)
-    #             if is_backdated:
-    #                 for (item_id, wh_id) in pairs:
-    #                     repost_from(
-    #                         s=self.s,
-    #                         company_id=pi_locked.company_id,
-    #                         item_id=item_id,
-    #                         warehouse_id=wh_id,
-    #                         start_dt=posting_dt,
-    #                         exclude_doc_types=set(),
-    #                     )
-    #
-    #             # Always derive bins after writes/replay
-    #             for (item_id, wh_id) in pairs:
-    #                 derive_bin(self.s, pi_locked.company_id, item_id, wh_id)
-    #
-    #             # GL template selection
-    #             has_receipt_items = any(x.receipt_item_id for x in pi_locked.items)
-    #             template = "PURCHASE_RETURN_INVOICED" if pi_locked.is_return else (
-    #                 "PURCHASE_INVOICE_DIRECT" if pi_locked.update_stock and not has_receipt_items else
-    #                 "PURCHASE_INVOICE_AGAINST_RECEIPT"
-    #             )
-    #
-    #             total_amount = abs(Decimal(str(pi_locked.total_amount or 0)))
-    #             stock_value = Decimal("0")
-    #             service_value = Decimal("0")
-    #             for it in pi_locked.items:
-    #                 val = abs(Decimal(str(it.quantity))) * Decimal(str(it.rate))
-    #                 if details.get(it.item_id, {}).get("is_stock_item", False) and pi_locked.update_stock:
-    #                     stock_value += val
-    #                 else:
-    #                     service_value += val
-    #
-    #             payload = {
-    #                 "invoice_lines": [{"quantity": it.quantity, "rate": it.rate, "item_id": it.item_id} for it in
-    #                                   pi_locked.items],
-    #                 "DOCUMENT_TOTAL": float(total_amount),
-    #                 "update_stock": bool(pi_locked.update_stock),
-    #             }
-    #             if template == "PURCHASE_INVOICE_DIRECT":
-    #                 payload["INVOICE_STOCK_VALUE"] = float(stock_value)
-    #                 payload["INVOICE_SERVICE_VALUE"] = float(service_value)
-    #             if template == "PURCHASE_RETURN_INVOICED":
-    #                 payload["RETURN_STOCK_VALUE"] = float(stock_value)
-    #
-    #             payable = pi_locked.payable_account_id
-    #             if not payable:
-    #                 from app.application_accounting.chart_of_accounts.models import Account
-    #                 payable = self.s.execute(
-    #                     select(Account.id).where(Account.company_id == pi_locked.company_id, Account.code == "2111")
-    #                 ).scalar_one_or_none()
-    #                 if not payable:
-    #                     logger.error("❌ PI submit missing AP account 2111 | company=%s", pi_locked.company_id)
-    #                     raise V.BizValidationError("Default Accounts Payable (2111) not found.")
-    #             dyn_ctx = {"accounts_payable_account_id": payable}
-    #
-    #             PostingService(self.s).post(
-    #                 PostingContext(
-    #                     company_id=pi_locked.company_id,
-    #                     branch_id=pi_locked.branch_id,
-    #                     source_doctype_id=doc_type_id,
-    #                     source_doc_id=pi_locked.id,
-    #                     posting_date=posting_dt,
-    #                     created_by_id=context.user_id,
-    #                     is_auto_generated=True,
-    #                     entry_type=None,
-    #                     remarks=f"{'Purchase Return' if pi_locked.is_return else 'Purchase Invoice'} {pi_locked.code}",
-    #                     template_code=template,
-    #                     payload=payload,
-    #                     runtime_accounts={},
-    #                     party_id=pi_locked.supplier_id,
-    #                     party_type=PartyTypeEnum.SUPPLIER,
-    #                     dynamic_account_context=dyn_ctx,
-    #                 )
-    #             )
-    #
-    #             pi_locked.doc_status = DocStatusEnum.RETURNED if pi_locked.is_return else DocStatusEnum.SUBMITTED
-    #             self.repo.save(pi_locked)
-    #
-    #         self.s.commit()
-    #         logger.info("🎉 PI submit done (stock) | %s", pi.code)
-    #         return pi
-    #
-    #     # FINANCE-ONLY PATH (unchanged except formatting)
-    #     logger.info("💳 PI finance-only path | invoice_id=%s", invoice_id)
-    #     with self.s.begin_nested():
-    #         pi_locked = self.repo.get_by_id(invoice_id, for_update=True)
-    #         self._guard_submittable(pi_locked)
-    #
-    #         has_receipt_items = any(x.receipt_item_id for x in pi_locked.items)
-    #         template = "PURCHASE_RETURN_INVOICED" if pi_locked.is_return else (
-    #             "PURCHASE_INVOICE_AGAINST_RECEIPT" if (pi_locked.receipt_id or has_receipt_items) else
-    #             "PURCHASE_INVOICE_DIRECT"
-    #         )
-    #         total_amount = abs(Decimal(str(pi_locked.total_amount or 0)))
-    #
-    #         details2 = self.repo.get_item_details_batch(pi_locked.company_id, [x.item_id for x in pi_locked.items])
-    #         stock_value = Decimal("0")
-    #         service_value = Decimal("0")
-    #         for it in pi_locked.items:
-    #             val = abs(Decimal(str(it.quantity))) * Decimal(str(it.rate))
-    #             if details2.get(it.item_id, {}).get("is_stock_item", False) and pi_locked.update_stock:
-    #                 stock_value += val
-    #             else:
-    #                 service_value += val
-    #
-    #         payload = {
-    #             "invoice_lines": [{"quantity": it.quantity, "rate": it.rate, "item_id": it.item_id} for it in
-    #                               pi_locked.items],
-    #             "DOCUMENT_TOTAL": float(total_amount),
-    #             "update_stock": bool(pi_locked.update_stock),
-    #         }
-    #         if template == "PURCHASE_INVOICE_DIRECT":
-    #             payload["INVOICE_STOCK_VALUE"] = float(stock_value)
-    #             payload["INVOICE_SERVICE_VALUE"] = float(service_value)
-    #         if template == "PURCHASE_RETURN_INVOICED":
-    #             payload["RETURN_STOCK_VALUE"] = float(stock_value)
-    #
-    #         payable = pi_locked.payable_account_id
-    #         if not payable:
-    #             from app.application_accounting.chart_of_accounts.models import Account
-    #             payable = self.s.execute(
-    #                 select(Account.id).where(Account.company_id == pi_locked.company_id, Account.code == "2111")
-    #             ).scalar_one_or_none()
-    #             if not payable:
-    #                 logger.error("❌ PI submit missing AP account 2111 (finance-only) | company=%s",
-    #                              pi_locked.company_id)
-    #                 raise V.BizValidationError("Default Accounts Payable (2111) not found.")
-    #         dyn_ctx = {"accounts_payable_account_id": payable}
-    #
-    #         PostingService(self.s).post(
-    #             PostingContext(
-    #                 company_id=pi_locked.company_id,
-    #                 branch_id=pi_locked.branch_id,
-    #                 source_doctype_id=doc_type_id,
-    #                 source_doc_id=pi_locked.id,
-    #                 posting_date=posting_dt,
-    #                 created_by_id=context.user_id,
-    #                 is_auto_generated=True,
-    #                 entry_type=None,
-    #                 remarks=f"{'Purchase Return' if pi_locked.is_return else 'Purchase Invoice'} {pi_locked.code}",
-    #                 template_code=template,
-    #                 payload=payload,
-    #                 runtime_accounts={},
-    #                 party_id=pi_locked.supplier_id,
-    #                 party_type=PartyTypeEnum.SUPPLIER,
-    #             )
-    #         )
-    #
-    #         pi_locked.doc_status = DocStatusEnum.RETURNED if pi_locked.is_return else DocStatusEnum.SUBMITTED
-    #         self.repo.save(pi_locked)
-    #
-    #     self.s.commit()
-    #     logger.info("🎉 PI submit done (finance-only) | %s", pi.code)
-    #     return pi
-
     def cancel_purchase_invoice(self, *, invoice_id: int, context: AffiliationContext) -> PurchaseInvoice:
+        """
+        Cancel a submitted Purchase Invoice (or Purchase Return).
+
+        STOCK:
+        - Marks its SLEs as cancelled and replays stock from the earliest SLE.
+        - Re-derives bins.
+
+        GL:
+        - Uses PostingService.cancel(...) to post a proper reversal JE.
+        - If no auto JE exists (legacy data), logs a warning but still cancels the PI.
+
+        This mirrors the pattern used for Stock Entry, Stock Reconciliation, Payment Entry, Expense, and PCV.
+        """
+        from sqlalchemy import select
+        from decimal import Decimal
+        from app.application_stock.stock_models import StockLedgerEntry
+        from app.application_stock.engine.replay import repost_from
+        from app.application_stock.engine.bin_derive import derive_bin
+        from app.application_stock.engine.locks import lock_pairs
+        from app.application_accounting.chart_of_accounts.models import PartyTypeEnum
+        from app.application_accounting.engine.posting_service import PostingService, PostingContext
+        from app.application_accounting.engine.errors import PostingValidationError
+
         logger.info("♻️ PI cancel start | invoice_id=%s", invoice_id)
 
         # 1) Read & guards
@@ -1469,12 +1209,17 @@ class PurchaseInvoiceService:
         if not pi:
             raise NotFound("Purchase Invoice not found.")
 
-        ensure_scope_by_ids(context=context, target_company_id=pi.company_id, target_branch_id=pi.branch_id)
+        ensure_scope_by_ids(
+            context=context,
+            target_company_id=pi.company_id,
+            target_branch_id=pi.branch_id,
+        )
         V.guard_cancellable_state(pi.doc_status)
 
-        dt_id = self._doc_type_id("PURCHASE_RETURN" if pi.is_return else "PURCHASE_INVOICE")
+        # IMPORTANT: use the same DocType used on submit (even for returns)
+        dt_id = self._doc_type_id("PURCHASE_INVOICE")
 
-        # Use your PostingDateValidator to normalize & enforce fiscal-period rules
+        # Normalize/validate posting date for period rules
         cancel_posting_dt = PostingDateValidator.validate_standalone_document(
             s=self.s,
             posting_date_or_dt=pi.posting_date,
@@ -1483,16 +1228,15 @@ class PurchaseInvoiceService:
             treat_midnight_as_date=True,
         )
 
-        # 2) Collect SLEs to know what to cancel/replay
-        rows = (
+        # 2) Collect SLEs for this PI
+        sle_rows = (
             self.s.execute(
                 select(StockLedgerEntry)
                 .where(
                     StockLedgerEntry.company_id == pi.company_id,
                     StockLedgerEntry.doc_type_id == dt_id,
                     StockLedgerEntry.doc_id == pi.id,
-                    StockLedgerEntry.is_cancelled == False,
-                    StockLedgerEntry.is_reversal == False,
+                    StockLedgerEntry.is_cancelled == False,  # noqa: E712
                 )
                 .order_by(
                     StockLedgerEntry.posting_date.asc(),
@@ -1503,77 +1247,105 @@ class PurchaseInvoiceService:
             .scalars()
             .all()
         )
-        pairs = {(r.item_id, r.warehouse_id) for r in rows}
-        start_dt = min((r.posting_time for r in rows), default=cancel_posting_dt)
 
-        with self.s.begin_nested():
-            # Lock and flip state
-            pi_locked = self.repo.get_by_id(invoice_id, for_update=True)
-            V.guard_cancellable_state(pi_locked.doc_status)
-            pi_locked.doc_status = DocStatusEnum.CANCELLED
-            self.repo.save(pi_locked)
-            logger.info("📝 PI state -> CANCELLED | %s", pi_locked.code)
+        pairs = {(r.item_id, r.warehouse_id) for r in sle_rows}
+        earliest_dt = min(
+            (r.posting_time for r in sle_rows),
+            default=cancel_posting_dt,
+        )
 
-            # Cancel SLEs (under locks)
-            if rows:
-                with lock_pairs(self.s, pairs):
-                    originals = (
-                        self.s.execute(
-                            select(StockLedgerEntry)
-                            .where(
-                                StockLedgerEntry.company_id == pi_locked.company_id,
-                                StockLedgerEntry.doc_type_id == dt_id,
-                                StockLedgerEntry.doc_id == pi_locked.id,
-                                StockLedgerEntry.is_cancelled == False,
-                                StockLedgerEntry.is_reversal == False,
+        try:
+            with self.s.begin_nested():
+                # 3) Lock and re-check state
+                pi_locked = self.repo.get_by_id(invoice_id, for_update=True)
+                V.guard_cancellable_state(pi_locked.doc_status)
+
+                # 3a) STOCK: cancel SLEs then replay
+                if sle_rows:
+                    from app.application_stock.engine.locks import lock_pairs as _lock_pairs
+
+                    with _lock_pairs(self.s, pairs):
+                        # reload inside lock to avoid stale objects
+                        originals = (
+                            self.s.execute(
+                                select(StockLedgerEntry)
+                                .where(
+                                    StockLedgerEntry.company_id == pi_locked.company_id,
+                                    StockLedgerEntry.doc_type_id == dt_id,
+                                    StockLedgerEntry.doc_id == pi_locked.id,
+                                    StockLedgerEntry.is_cancelled == False,  # noqa: E712
+                                )
+                                .order_by(
+                                    StockLedgerEntry.posting_date.asc(),
+                                    StockLedgerEntry.posting_time.asc(),
+                                    StockLedgerEntry.id.asc(),
+                                )
                             )
-                            .order_by(
-                                StockLedgerEntry.posting_date.asc(),
-                                StockLedgerEntry.posting_time.asc(),
-                                StockLedgerEntry.id.asc(),
-                            )
+                            .scalars()
+                            .all()
                         )
-                        .scalars()
-                        .all()
-                    )
-                    for o in originals:
-                        cancel_sle(self.s, o)
+                        for sle in originals:
+                            sle.is_cancelled = True
 
-            # Replay bins/valuations
-            if pairs:
-                for (item_id, wh_id) in pairs:
-                    repost_from(
-                        s=self.s,
-                        company_id=pi_locked.company_id,
-                        item_id=item_id,
-                        warehouse_id=wh_id,
-                        start_dt=start_dt,
-                        exclude_doc_types=set(),
-                    )
-                    logger.info("  🔄 Reposted from %s | item=%s wh=%s", start_dt, item_id, wh_id)
+                # Replay valuations & re-derive bins
+                if pairs:
+                    for item_id, wh_id in pairs:
+                        repost_from(
+                            s=self.s,
+                            company_id=pi_locked.company_id,
+                            item_id=item_id,
+                            warehouse_id=wh_id,
+                            start_dt=earliest_dt,
+                            exclude_doc_types=set(),
+                        )
+                        logger.info(
+                            "  🔄 Reposted from %s | item=%s wh=%s",
+                            earliest_dt,
+                            item_id,
+                            wh_id,
+                        )
 
-            # Reverse GL (PostingService.cancel ignores ctx.posting_date by design and uses original JE date)
-            with self.s.no_autoflush:
-                PostingService(self.s).cancel(
-                    PostingContext(
-                        company_id=pi_locked.company_id,
-                        branch_id=pi_locked.branch_id,
-                        source_doctype_id=dt_id,
-                        source_doc_id=pi_locked.id,
-                        posting_date=cancel_posting_dt,  # not used by cancel(); kept for parity/logs
-                        created_by_id=context.user_id,
-                        is_auto_generated=True,
-                        entry_type=None,
-                        remarks=f"Cancel {'Purchase Return' if pi_locked.is_return else 'Purchase Invoice'} {pi_locked.code}",
-                        template_code=None,
-                        payload={},  # nothing required for cancel path
-                        runtime_accounts={},
-                        party_id=pi_locked.supplier_id,
-                        party_type=PartyTypeEnum.SUPPLIER,
-                    )
-                )
-                logger.info("📘 GL cancel posted for %s", pi_locked.code)
+                    for item_id, wh_id in pairs:
+                        derive_bin(self.s, pi_locked.company_id, item_id, wh_id)
 
-        self.s.commit()
-        logger.info("🎉 PI cancel done | %s", pi.code)
-        return pi
+                # 3b) GL: reverse original auto JE if present
+                try:
+                    PostingService(self.s).cancel(
+                        PostingContext(
+                            company_id=pi_locked.company_id,
+                            branch_id=pi_locked.branch_id,
+                            source_doctype_id=dt_id,
+                            source_doc_id=pi_locked.id,
+                            posting_date=cancel_posting_dt,  # informational
+                            created_by_id=context.user_id,
+                            is_auto_generated=True,
+                            remarks=(
+                                f"Cancel "
+                                f"{'Purchase Return' if pi_locked.is_return else 'Purchase Invoice'} "
+                                f"{pi_locked.code}"
+                            ),
+                            party_id=pi_locked.supplier_id,
+                            party_type=PartyTypeEnum.SUPPLIER,
+                        )
+                    )
+                    logger.info("📘 GL cancel posted for %s", pi_locked.code)
+                except PostingValidationError as e:
+                    # No auto JE to cancel (legacy / partially migrated data) → just log & continue
+                    logger.warning(
+                        "PI cancel: no auto journal to cancel for %s (ok for legacy data): %s",
+                        pi_locked.code,
+                        e,
+                    )
+
+                # 3c) Mark PI as CANCELLED
+                pi_locked.doc_status = DocStatusEnum.CANCELLED
+                self.repo.save(pi_locked)
+
+            self.s.commit()
+            logger.info("🎉 PI cancel done | %s", pi_locked.code)
+            return pi_locked
+
+        except Exception:
+            self.s.rollback()
+            logger.exception("❌ PI cancel failed | invoice_id=%s", invoice_id)
+            raise

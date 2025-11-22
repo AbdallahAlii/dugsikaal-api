@@ -957,7 +957,7 @@ def cancel_journal_entry(je_id: int):
         je = svc.cancel(je_id=je_id, ctx=ctx, reason=payload.reason)
         return api_success(message="Journal Entry cancelled.",
                            data={"id": je.id, "code": je.code, "doc_status": str(je.doc_status)})
-    except ValidationError as e:
+    except ValidationError as e: 
         return api_error(format_validation_error(e), status_code=422)
     except BizValidationError as e:
         return api_error(str(e), status_code=422)

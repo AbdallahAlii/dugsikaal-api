@@ -57,7 +57,7 @@ class StockEntryType(str, enum.Enum):
     MATERIAL_ISSUE = "Material Issue"
     MATERIAL_TRANSFER = "Material Transfer"
     STOCK_ADJUSTMENT = "Stock Adjustment"
-    STOCK_RECONCILIATION = "Stock Reconciliation"
+
     MANUFACTURE = "Manufacture"
 
 
@@ -257,7 +257,13 @@ class StockEntry(BaseModel):
     posting_date: Mapped[datetime] = mapped_column(
         db.DateTime(timezone=True), nullable=False, index=True
     )
-
+    # Difference Account (offset account in GL for receipt/issue/adjustment)
+    difference_account_id: Mapped[Optional[int]] = mapped_column(
+        db.BigInteger,
+        db.ForeignKey("accounts.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     stock_entry_type: Mapped[StockEntryType] = mapped_column(
         db.Enum(StockEntryType), nullable=False, index=True
     )
@@ -269,6 +275,8 @@ class StockEntry(BaseModel):
     items: Mapped[list["StockEntryItem"]] = relationship(
         back_populates="stock_entry", cascade="all, delete-orphan"
     )
+    difference_account: Mapped[Optional["Account"]] = relationship()
+
     stock_ledger_entries: Mapped[List["StockLedgerEntry"]] = relationship(back_populates="stock_entry")
     __table_args__ = (
         # You previously used unique(code). If you prefer scope-specific uniqueness,
