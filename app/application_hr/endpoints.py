@@ -1,109 +1,4 @@
-# # app/hr/endpoints.py
-# from __future__ import annotations
-# import json
-# from typing import Optional
-# from flask import Blueprint, request, g
 #
-# from app.application_hr.schemas.schemas import EmployeeCreate, EmployeeUpdate
-# from app.application_hr.services.services import HrService
-# from app.common.api_response import api_success, api_error
-# from app.security.rbac_guards import require_permission
-# from app.security.rbac_effective import AffiliationContext
-# from app.auth.deps import get_current_user  # ensures session/profile present
-#
-#
-# bp = Blueprint("hr", __name__, url_prefix="/api/hr")
-# svc = HrService()
-#
-#
-# @bp.post("/employees/create")
-# @require_permission("Employee", "Create")
-# def create_employee():
-#     """
-#     Accepts:
-#       - application/json (body = EmployeeCreate)
-#       - multipart/form-data (payload=<json EmployeeCreate>, file=<image>)
-#
-#     Rules:
-#       - System Admin MUST provide company_id; can choose any branch that belongs to that company.
-#       - Global “*:*” can create in any branch of their own company (DB-checked).
-#       - Regular users can create ONLY in their own branch(es) (checked against affiliations, no DB).
-#     """
-#     _ = get_current_user()  # ensures session/profile and sets g.current_user
-#     ctx: AffiliationContext = getattr(g, "auth", None)
-#     if not ctx:
-#         return api_error("Unauthorized", status_code=401)
-#
-#     # Parse body
-#     file_storage = None
-#     if request.content_type and "multipart/form-data" in request.content_type:
-#         payload_raw = request.form.get("payload")
-#         if not payload_raw:
-#             return api_error("Missing 'payload' JSON in form-data.", status_code=422)
-#         try:
-#             payload = EmployeeCreate.model_validate(json.loads(payload_raw))
-#         except Exception as e:
-#             return api_error(f"Invalid 'payload' JSON: {e}", status_code=422)
-#         file_storage = request.files.get("file")
-#     else:
-#         try:
-#             payload = EmployeeCreate.model_validate(request.get_json(silent=True) or {})
-#         except Exception as e:
-#             return api_error(f"Invalid JSON body: {e}", status_code=422)
-#
-#     ok, msg, resp = svc.create_employee(
-#         payload=payload,
-#         context=ctx,
-#         file_storage=file_storage,
-#     )
-#     if not ok or not resp:
-#         return api_error(msg, status_code=400)
-#
-#     return api_success(message=resp.message, data={"employee": resp.employee}, status_code=201)
-#
-#
-# @bp.put("/employees/update/<int:employee_id>")
-# @require_permission("Employee", "UPDATE")
-# def update_employee(employee_id: int):
-#     """
-#     Update employee details.
-#
-#     Rules:
-#       - Only fields like full_name, status, phone_number, img_key, dob, etc., can be updated.
-#       - Code, ID, and Username cannot be updated.
-#     """
-#     _ = get_current_user()  # ensures session/profile and sets g.current_user
-#     ctx: AffiliationContext = getattr(g, "auth", None)
-#     if not ctx:
-#         return api_error("Unauthorized", status_code=401)
-#
-#     # Parse body
-#     file_storage = None
-#     if request.content_type and "multipart/form-data" in request.content_type:
-#         payload_raw = request.form.get("payload")
-#         if not payload_raw:
-#             return api_error("Missing 'payload' JSON in form-data.", status_code=422)
-#         try:
-#             payload = EmployeeUpdate.model_validate(json.loads(payload_raw))
-#         except Exception as e:
-#             return api_error(f"Invalid 'payload' JSON: {e}", status_code=422)
-#         file_storage = request.files.get("file")
-#     else:
-#         try:
-#             payload = EmployeeUpdate.model_validate(request.get_json(silent=True) or {})
-#         except Exception as e:
-#             return api_error(f"Invalid JSON body: {e}", status_code=422)
-#
-#     ok, msg, resp = svc.update_employee(
-#         employee_id=employee_id,
-#         payload=payload,
-#         context=ctx,
-#         file_storage=file_storage,
-#     )
-#     if not ok or not resp:
-#         return api_error(msg, status_code=400)
-#
-#     return api_success(message=resp.message, data={"employee": resp.employee}, status_code=200)
 # app/application_hr/endpoints.py
 from __future__ import annotations
 
@@ -127,6 +22,7 @@ from app.application_hr.schemas.schemas import (
 from app.application_hr.services.attendance_service import AttendanceService
 from app.application_hr.services.services import HrService
 from app.common.api_response import api_success, api_error
+from app.navigation_workspace.services.subscription_guards import check_workspace_subscription
 from app.security.rbac_guards import require_permission
 from app.security.rbac_effective import AffiliationContext
 from app.auth.deps import get_current_user  # ensures session/profile present
@@ -136,6 +32,44 @@ bp = Blueprint("hr", __name__, url_prefix="/api/hr")
 svc = HrService()
 attendance_svc = AttendanceService()
 
+HR_WORKSPACE_SLUG = "hr"
+
+# Any HR endpoints that should be allowed even if HR module is not subscribed
+# Example: biometric agent config; you can add more here later if needed.
+HR_SUBSCRIPTION_EXEMPT_ENDPOINTS = {
+    "hr.biometric_devices_agent_config",
+    # "hr.create_employee_checkin",  # uncomment if you want checkin open even without HR
+}
+@bp.before_request
+def _guard_hr_subscription():
+    """
+    Runs for every /api/hr/* request (after global auth middleware).
+
+    Enforces:
+      - user is authenticated (g.auth present)
+      - company has HR workspace in its packages
+      - HR workspace is not disabled by visibility
+    """
+    # Allow CORS preflight
+    if request.method == "OPTIONS":
+        return
+
+    # Skip some endpoints if you want them to work even when HR is not subscribed
+    if request.endpoint in HR_SUBSCRIPTION_EXEMPT_ENDPOINTS:
+        return
+
+    # At this point, global middleware should already have run:
+    # before_request_session_auth -> attaches g.auth
+    ctx: AffiliationContext = getattr(g, "auth", None)
+    if not ctx:
+        # Should normally not happen because require_login_globally has run,
+        # but keep it defensive.
+        return api_error("Authentication required.", status_code=401)
+
+    ok, msg = check_workspace_subscription(ctx, workspace_slug=HR_WORKSPACE_SLUG)
+    if not ok:
+        # ERP-style, user-friendly message from subscription guard
+        return api_error(msg, status_code=403)
 # ======================================================================
 # EMPLOYEE ENDPOINTS
 # ======================================================================

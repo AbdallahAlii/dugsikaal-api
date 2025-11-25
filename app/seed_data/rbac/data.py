@@ -146,13 +146,17 @@ DEFAULT_DOCTYPE_MAPPINGS: Dict[str, List[str]] = {
         "Department",
         "Shift Type",
         "Shift Assignment",
-        "Staff Attendance",
         "Holiday List",
+        "Holiday",
         "Leave Type",
         "Leave Application",
+        "Employee Checkin",
+        "Attendance",
         "Salary Structure",
-        "Payroll Entry",
+        "Payroll Period",
+        "Employee Salary Assignment",
         "Salary Slip",
+        "Biometric Device",
     ],
 
     # Reporting (read-only report resources)
@@ -165,18 +169,23 @@ DEFAULT_DOCTYPE_MAPPINGS: Dict[str, List[str]] = {
         "Cash Flow Report",
         "Gross Profit Report",
         "Accounts Receivable Report",
+        "Accounts Receivable Summary Report",
         "Accounts Payable Report",
+        "Accounts Payable Summary Report",
+        "Total Stock Summary Report",
+        "Stock Balance Report",
+        "Stock Ledger Report",
     ],
 
     # NEW: Platform (system-wide, modern ERP naming) ─────────────────
     # The single primary object is "Account" (your tenant). Owner/contact lives inside it.
     "Platform": [
-        "Tenant",                 # the SaaS account (client)
-        "Organization",  # **ADDED HERE for Sys Admin Provisioning**
-        "Branch",  # **ADDED HERE for Sys Admin Provisioning**
+        "Tenant",  # the SaaS account (client)
+        "Organization",  # **ALSO mapped here for Sys Admin Provisioning**
+        "Branch",
 
-        "Subscription Plan",      # plans/catalog (configuration)
-        "Platform Settings",      # global SaaS settings (system-level)
+        "Subscription Plan",  # plans/catalog (configuration)
+        "Platform Settings",  # global SaaS settings (system-level)
         # System integrations (system-level, not per company)
         "Integration",
         "Email Gateway",
@@ -186,10 +195,14 @@ DEFAULT_DOCTYPE_MAPPINGS: Dict[str, List[str]] = {
 
     # NEW: Data Management (imports/exports across domains) ─────────
     "Data Management": [
-        "Import Template",  # reusable mapping templates
-        "Import Job",  # actual import runs (any domain data)
-        "Export Job",  # (optional) future-proofing
+        "Data Import",
+        "Data Import Log",
+        "Import Template",
+        "Import Job",
+        "Export Job",
     ],
+
+
 }
 
 # -------------------------------------------------------------------
@@ -220,17 +233,15 @@ DEFAULT_ROLES = [
 # -------------------------------------------------------------------
 ROLE_PERMISSION_MAP: Dict[str, List[str]] = {
     # Global / Company admins
-    # "System Admin": [f"{WILDCARD_DOCTYPE_NAME}:{WILDCARD_ACTION_NAME}"],
     "System Admin": [
         f"{WILDCARD_DOCTYPE_NAME}:{WILDCARD_ACTION_NAME}",
 
         # Explicit (future-proof) grants for the new admin modules:
         "Organization:MANAGE",
-        "Branch:MANAGE"
+        "Branch:MANAGE",
+
         # Platform
         "Tenant:MANAGE",
-
-
         "Subscription Plan:MANAGE",
         "Platform Settings:MANAGE",
         "Integration:MANAGE",
@@ -238,9 +249,12 @@ ROLE_PERMISSION_MAP: Dict[str, List[str]] = {
         "SMS Gateway:MANAGE",
         "Storage Connection:MANAGE",
 
-        # Data Management
+        # Data Management (only System Admin)
+        "Data Import:MANAGE", "Data Import:IMPORT", "Data Import:EXPORT",
+        "Data Import Log:MANAGE", "Data Import Log:EXPORT",
         "Import Template:MANAGE", "Import Template:EXPORT", "Import Template:IMPORT",
         "Import Job:MANAGE", "Import Job:EXPORT", "Import Job:IMPORT",
+        "Export Job:MANAGE", "Export Job:EXPORT",
     ],
 
     "Super Admin":  [f"{WILDCARD_DOCTYPE_NAME}:{WILDCARD_ACTION_NAME}"],  # company scope enforced by service layer
@@ -268,7 +282,7 @@ ROLE_PERMISSION_MAP: Dict[str, List[str]] = {
 
         # Stock (transactions & visibility)
         "Item:READ", "Brand:READ", "UOM:READ", "UOM Conversion:READ", "Item Price:READ",
-        "Warehouse:READ",
+        "Warehouse:READ", "Bin:READ",
         "Stock Entry:MANAGE",           "Stock Entry:SUBMIT",
         "Stock Reconciliation:MANAGE",  "Stock Reconciliation:SUBMIT",
         "Stock Ledger Entry:READ",
@@ -276,8 +290,13 @@ ROLE_PERMISSION_MAP: Dict[str, List[str]] = {
 
         # Ops-focused reports
         "Accounts Receivable Report:READ",
+        "Accounts Receivable Summary Report:READ",
         "Accounts Payable Report:READ",
+        "Accounts Payable Summary Report:READ",
         "Gross Profit Report:READ",
+        "Total Stock Summary Report:READ",
+        "Stock Balance Report:READ",
+        "Stock Ledger Report:READ",
     ],
 
     # Company-wide master data owner for Inventory + Warehouses
@@ -288,6 +307,10 @@ ROLE_PERMISSION_MAP: Dict[str, List[str]] = {
         "Warehouse:MANAGE", "Bin:MANAGE",
         # Oversight on stock movements
         "Stock Entry:READ", "Stock Reconciliation:READ", "Stock Ledger Entry:READ",
+        # Stock reports
+        "Total Stock Summary Report:READ",
+        "Stock Balance Report:READ",
+        "Stock Ledger Report:READ",
     ],
 
     # Company-wide accounting (centralized)
@@ -310,59 +333,97 @@ ROLE_PERMISSION_MAP: Dict[str, List[str]] = {
         "Cash Flow Report:READ",
         "Gross Profit Report:READ",
         "Accounts Receivable Report:READ",
+        "Accounts Receivable Summary Report:READ",
         "Accounts Payable Report:READ",
+        "Accounts Payable Summary Report:READ",
     ],
 
     # Company-wide HR (all branches share HR)
     "HR Manager": [
         "Employee:MANAGE", "Employment Type:MANAGE",
         "Department:MANAGE",
-        "Shift Type:MANAGE", "Holiday List:MANAGE",
-        "Leave Type:MANAGE", "Leave Application:MANAGE",
-        "Shift Assignment:MANAGE", "Staff Attendance:MANAGE",
-        "Salary Structure:MANAGE", "Payroll Entry:MANAGE",
+
+        # Time & Attendance
+        "Shift Type:MANAGE",
+        "Shift Assignment:MANAGE",
+        "Holiday List:MANAGE", "Holiday:MANAGE",
+        "Employee Checkin:READ",         # checkin logs mainly read-only
+        "Attendance:MANAGE",
+
+        # Leave
+        "Leave Type:MANAGE",
+        "Leave Application:MANAGE",
+
+        # Payroll
+        "Salary Structure:MANAGE",
+        "Payroll Period:MANAGE",
+        "Employee Salary Assignment:MANAGE",
         "Salary Slip:MANAGE", "Salary Slip:PRINT",
+
+        # Devices
+        "Biometric Device:MANAGE",
     ],
 
     # Branch roles (day-to-day ops)
     "Sales User": [
-        "Party:CREATE", "Party:READ",
-        "Customer:MANAGE",
+        # Parties (unified Party model)
+        "Party:MANAGE",
+
+        # Sales docs
+        "Customer:READ",  # UI views; underlying model is Party
         "Sales Quotation:CREATE", "Sales Quotation:READ",
         "Sales Order:CREATE", "Sales Order:READ", "Sales Order:SUBMIT",
         "Delivery Note:CREATE", "Delivery Note:READ", "Delivery Note:SUBMIT",
         "Sales Invoice:CREATE", "Sales Invoice:READ", "Sales Invoice:SUBMIT", "Sales Invoice:PRINT",
         "Sales Return:CREATE", "Sales Return:READ", "Sales Return:SUBMIT",
-        # lookups
-        "Item:READ", "Warehouse:READ", "Item Price:READ",
+
+        # lookups & stock visibility
+        "Item:MANAGE",              # can create/edit items
+        "Brand:READ", "UOM:READ",
+        "Item Price:READ",
+        "Warehouse:READ", "Bin:READ",
+        "Stock Ledger Entry:READ",
+
+        # stock reports (for selling decisions)
+        "Total Stock Summary Report:READ",
+        "Stock Balance Report:READ",
+        "Stock Ledger Report:READ",
+
         # branch-focused receivables visibility
         "Accounts Receivable Report:READ",
+        "Accounts Receivable Summary Report:READ",
+        "Gross Profit Report:READ",
     ],
 
     "Buying User": [
-        "Party:CREATE", "Party:READ",
-        "Supplier:MANAGE",
+        # Unified Party model
+        "Party:MANAGE",
+
+        # Supplier docs (views over Party)
+        "Supplier:READ",
+
+        # Buying docs
         "Purchase Quotation:CREATE", "Purchase Quotation:READ",
         "Purchase Order:CREATE", "Purchase Order:READ", "Purchase Order:SUBMIT",
         "Purchase Receipt:CREATE", "Purchase Receipt:READ", "Purchase Receipt:SUBMIT",
         "Purchase Invoice:CREATE", "Purchase Invoice:READ", "Purchase Invoice:SUBMIT",
         "Purchase Return:CREATE", "Purchase Return:READ", "Purchase Return:SUBMIT",
-        # lookups
-        "Item:READ", "Warehouse:READ", "UOM Conversion:READ",
+
+        # lookups & stock visibility
+        "Item:READ",
+        "Brand:READ", "UOM:READ", "UOM Conversion:READ",
+        "Warehouse:READ", "Bin:READ",
+        "Stock Ledger Entry:READ",
+
+        # stock reports (for purchasing decisions)
+        "Total Stock Summary Report:READ",
+        "Stock Balance Report:READ",
+        "Stock Ledger Report:READ",
+
         # branch-focused payables visibility
         "Accounts Payable Report:READ",
-    ],
-
-    "Inventory User": [
-        # Inventory masters: read-only so they can select the right data
-        "Item:READ", "Brand:READ", "UOM:READ", "Item Price:READ", "UOM Conversion:READ",
-        # Stock masters/visibility
-        "Warehouse:READ", "Bin:READ", "Stock Ledger Entry:READ",
-        # Stock transactions they perform at branch
-        "Stock Entry:CREATE", "Stock Entry:READ", "Stock Entry:SUBMIT",
-        "Stock Reconciliation:CREATE", "Stock Reconciliation:READ", "Stock Reconciliation:SUBMIT",
-        # Landed cost usually handled by buying/accounting; keep read-only
-        "Landed Cost Voucher:READ",
+        "Accounts Payable Summary Report:READ",
+        "Gross Profit Report:READ",
     ],
 
     # Branch-level daily finance ops
@@ -381,7 +442,9 @@ ROLE_PERMISSION_MAP: Dict[str, List[str]] = {
         "Cash Flow Report:READ",
         "Gross Profit Report:READ",
         "Accounts Receivable Report:READ",
+        "Accounts Receivable Summary Report:READ",
         "Accounts Payable Report:READ",
+        "Accounts Payable Summary Report:READ",
         # optional: read/print branch sales invoices (counter support)
         "Sales Invoice:READ", "Sales Invoice:PRINT",
     ],

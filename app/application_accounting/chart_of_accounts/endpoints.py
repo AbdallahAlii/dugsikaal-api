@@ -480,54 +480,6 @@ def update_payment_entry(payment_id: int):
         logger.exception("update_payment_entry: %s", str(e))
         return api_error("An unexpected error occurred.", status_code=500)
 
-# @bp.post("/payments/create")
-# @require_permission("PaymentEntry", "CREATE")
-# def create_payment_entry():
-#     try:
-#         ctx = _get_context()
-#         payload = PaymentCreateSchema.model_validate(request.get_json(silent=True) or {})
-#         svc = PaymentEntryService()
-#         pe = svc.create(payload=payload.model_dump(), context=ctx)
-#         return api_success(
-#             message="Payment Entry created.",
-#             data={"id": pe.id, "code": pe.code},
-#             status_code=201
-#         )
-#     except ValidationError as e:
-#         friendly = _format_payment_validation_error(e)
-#         return api_error(friendly, status_code=422)
-#     except BizValidationError as e:
-#         return api_error(str(e), status_code=422)
-#     except IntegrityError:
-#         # Very rare now (we pre-validate), but keep a friendly fallback
-#         return api_error("Invalid reference: check accounts and party.", status_code=422)
-#     except Exception as e:
-#         logger.exception("create_payment_entry: %s", str(e))
-#         return api_error("An unexpected error occurred.", status_code=500)
-#
-#
-# @bp.put("/payments/<int:payment_id>/update")
-# @require_permission("PaymentEntry", "UPDATE")
-# def update_payment_entry(payment_id: int):
-#     try:
-#         ctx = _get_context()
-#         payload = PaymentUpdateSchema.model_validate(request.get_json(silent=True) or {})
-#         svc = PaymentEntryService()
-#         pe = svc.update(payment_id=payment_id, payload=payload.model_dump(exclude_unset=True), context=ctx)
-#         return api_success(
-#             message="Payment Entry updated.",
-#             data={"id": pe.id, "code": pe.code}
-#         )
-#     except ValidationError as e:
-#         friendly = _format_payment_validation_error(e)
-#         return api_error(friendly, status_code=422)
-#     except BizValidationError as e:
-#         return api_error(str(e), status_code=422)
-#     except IntegrityError:
-#         return api_error("Invalid reference: check accounts and party.", status_code=422)
-#     except Exception as e:
-#         logger.exception("update_payment_entry: %s", str(e))
-#         return api_error("An unexpected error occurred.", status_code=500)
 
 
 @bp.post("/payments/<int:payment_id>/submit")

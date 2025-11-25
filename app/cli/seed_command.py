@@ -12,8 +12,10 @@ from app.seed_data.codes.seeder import seed_code_types
 from app.seed_data.core.seeder import seed_initial_organization
 from app.seed_data.doctypes.seeder import seed_document_types
 from app.seed_data.gl_templates.seeder import seed_gl_templates
-from app.seed_data.navigation_workspace.seeder import seed_navigation_workspaces
+from app.seed_data.navigation_workspace.seeder import seed_navigation_workspaces, seed_module_packages
+from app.seed_data.subscription.seeder import seed_company_packages
 from app.seed_data.pricing.seeder import seed_price_lists
+
 # Your Flask-SQLAlchemy db
 from config.database import db
 
@@ -211,23 +213,43 @@ def seed_gl_only(company_ids: str | None):
 @seed_cli.command("nav")
 @with_appcontext
 def seed_nav_only():
-    """Run only the navigation (workspaces + links) seeder."""
-    from config.database import db
-    import click, logging
-    logger = logging.getLogger(__name__)
+    """Run navigation (workspaces + pages/links) and module packages seeders."""
     try:
         click.echo("🌱 Seeding Navigation Workspaces...")
         seed_navigation_workspaces(db.session)
+
+        click.echo("📦 Seeding Module Packages...")
+        seed_module_packages(db.session)
+
         db.session.commit()
-        click.secho("✅ Navigation Workspaces seeded successfully!", fg="green")
+        click.secho("✅ Navigation + Packages seeded successfully!", fg="green")
     except Exception as e:
         db.session.rollback()
         logger.error("Navigation seeding failed", exc_info=True)
-        click.secho(f"❌ Error seeding Navigation Workspaces: {e}", fg="red")
+        click.secho(f"❌ Error seeding Navigation/Packages: {e}", fg="red")
         raise SystemExit(1)
 
 
 
+@seed_cli.command("company-packages")
+@with_appcontext
+def seed_company_packages_only():
+    """
+    Run only the Company → Package subscription seeder.
+
+    Uses the mapping in app.seed_data.subscription.data.DEFAULT_COMPANY_PACKAGE_SUBSCRIPTIONS,
+    e.g. Haji Technologies -> full_suite.
+    """
+    try:
+        click.echo("🧩 Seeding Company Package Subscriptions...")
+        seed_company_packages(db.session)
+        db.session.commit()
+        click.secho("✅ Company Package Subscriptions seeded successfully!", fg="green")
+    except Exception as e:
+        db.session.rollback()
+        logger.error("Company package seeding failed", exc_info=True)
+        click.secho(f"❌ Error seeding Company Package Subscriptions: {e}", fg="red")
+        raise SystemExit(1)
 @seed_cli.command("price-lists")
 @with_appcontext
 @click.option("--company", "company_ids", multiple=True, type=int,
@@ -246,3 +268,4 @@ def seed_price_lists_only(company_ids: tuple[int, ...]):
         logger.error("Price List seeding failed", exc_info=True)
         click.secho(f"❌ Error seeding Price Lists: {e}", fg="red")
         raise SystemExit(1)
+

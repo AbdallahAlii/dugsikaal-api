@@ -1,20 +1,25 @@
-# app/navigation_workspace/services/directory_service.py
 from __future__ import annotations
-from typing import Dict, List, Optional, Set, Tuple
-
-from sqlalchemy import select
+from typing import Dict, List, Optional, Set
 
 from app.navigation_workspace.repo import NavRepository
-from app.navigation_workspace.schemas import DocTypeDirectoryOut, DirectoryDoctype, DirectoryLocation, DocTypeDetailsOut
-from config.database import db
-
-
+from app.navigation_workspace.schemas import (
+    DocTypeDirectoryOut,
+    DirectoryDoctype,
+    DirectoryLocation,
+    DocTypeDetailsOut,
+)
 from app.application_stock.stock_models import DocumentType
+from app.navigation_workspace.models.nav_links import Page
+
+# ---------------------------------------------------------
+# helpers
+# ---------------------------------------------------------
 
 
 def _canon_perm(s: str) -> str:
     s = (s or "").strip()
-    if not s: return s
+    if not s:
+        return s
     if ":" not in s:
         return s.upper()
     a, b = s.split(":", 1)
@@ -45,23 +50,39 @@ def _slugify(name: str) -> str:
     )
 
 
-def _score_primary(link_path: str, link_type_name: str) -> int:
-    # prefer LIST routes; then PAGE/REPORT; then others.
-    if link_type_name == "LIST" or "/list" in (link_path or ""):
+def _score_primary(link_path: str, page_kind: Optional[str]) -> int:
+    """
+    Prefer:
+      4 – explicit list-like routes
+      3 – PAGE kind
+      2 – DASHBOARD kind
+      1 – everything else
+    """
+    path = (link_path or "").lower()
+
+    if "/list" in path or path.endswith("/list"):
+        return 4
+    if page_kind == "PAGE":
         return 3
-    if link_type_name in ("PAGE", "REPORT"):
+    if page_kind == "DASHBOARD":
         return 2
     return 1
 
 
+# ---------------------------------------------------------
+# main service
+# ---------------------------------------------------------
+
+
 class DocTypeDirectoryService:
     """
-    Builds a doc-type catalog independent of workspace visibility:
-      • only filters by RBAC (must have READ)
-      • finds all workspace locations that reference the doctype
+    Builds a DocType catalog independent of workspace visibility:
+      • filters only by RBAC (must have READ or wildcard)
+      • finds all Workspace locations that reference a DocType (via Page.doctype_id)
       • chooses a 'primary_path' to act like 'Go to List'
       • groups by first workspace title if any, otherwise by domain name
     """
+
     def __init__(self, repo: Optional[NavRepository] = None):
         self.repo = repo or NavRepository()
 
@@ -73,6 +94,10 @@ class DocTypeDirectoryService:
                 out.add(p.split(":", 1)[1])
         return sorted(out)
 
+    # -----------------------
+    # list doctypes
+    # -----------------------
+
     def build_directory(self, *, perms: Set[str]) -> DocTypeDirectoryOut:
         perms = {_canon_perm(p) for p in (perms or set())}
         by_dt_links = self.repo.links_by_doctype()
@@ -82,19 +107,32 @@ class DocTypeDirectoryService:
 
         for dt in doctypes:
             dt_name = _dt_display_name(dt)
-            if _canon_perm(f"{dt_name}:READ") not in perms and "*" not in perms and "*:*" not in perms:
+
+            # must have READ on this DocType (or wildcard)
+            if (
+                _canon_perm(f"{dt_name}:READ") not in perms
+                and "*" not in perms
+                and "*:*" not in perms
+            ):
                 continue
 
             links = by_dt_links.get(dt.id, [])
+
             # choose primary path
-            primary = None
+            primary: Optional[str] = None
             best_score = -1
+
             for l in links:
-                lt_name = l.link_type.name if hasattr(l.link_type, "name") else str(l.link_type)
-                sc = _score_primary(l.route_path, lt_name)
+                page = l.page
+                path = page.route_path if page is not None else l.target_route
+                kind_name = page.kind.name if isinstance(getattr(page, "kind", None), Page.kind.__class__) else (
+                    page.kind if page is not None else None
+                )
+                sc = _score_primary(path, kind_name)
                 if sc > best_score:
                     best_score = sc
-                    primary = l.route_path
+                    primary = path
+
             if not primary:
                 # canonical fallback; frontend should know how to render
                 primary = f"/app/doctype/{_slugify(dt_name)}"
@@ -102,94 +140,144 @@ class DocTypeDirectoryService:
             # locations (workspace + section + icon + path)
             locs: List[DirectoryLocation] = []
             group_label: Optional[str] = None
+
             for l in links:
-                ws = l.workspace or (l.section.workspace if l.section else None)
+                sec = l.section
+                ws = sec.workspace if sec is not None else None
+
                 ws_title = ws.title if ws else ""
-                ws_slug  = ws.slug if ws else ""
-                sec_lbl  = l.section.label if l.section else None
+                ws_slug = ws.slug if ws else ""
+                sec_lbl = sec.title if sec is not None else None
+
                 if not group_label and ws_title:
                     group_label = ws_title  # first workspace becomes the grouping label
-                locs.append(DirectoryLocation(
-                    workspace_slug=ws_slug,
-                    workspace_title=ws_title,
-                    section_label=sec_lbl,
-                    path=l.route_path,
-                    icon=l.icon,
-                ))
+
+                page = l.page
+                path = page.route_path if page is not None else l.target_route
+                icon = page.icon if page is not None else None
+
+                locs.append(
+                    DirectoryLocation(
+                        workspace_slug=ws_slug,
+                        workspace_title=ws_title,
+                        section_label=sec_lbl,
+                        path=path,
+                        icon=icon,
+                    )
+                )
 
             if not group_label:
-                # fallback group by DocumentType.domain if your model has it, else "General"
+                # fallback group by DocumentType.domain if model has it, else "General"
                 dm = getattr(dt, "domain", None)
-                group_label = str(dm.name).title() if getattr(dm, "name", None) else "General"
+                group_label = (
+                    str(dm.name).title() if getattr(dm, "name", None) else "General"
+                )
 
             actions = self._actions_for(dt_name, perms)
-            out.append(DirectoryDoctype(
-                id=dt.id,
-                name=dt_name,
-                group=group_label,
-                actions=actions,
-                primary_path=primary,
-                locations=locs,
-            ))
+            out.append(
+                DirectoryDoctype(
+                    id=dt.id,
+                    name=dt_name,
+                    group=group_label,
+                    actions=actions,
+                    primary_path=primary,
+                    locations=locs,
+                )
+            )
 
         # sort by group then name
         out.sort(key=lambda r: (r.group.lower(), r.name.lower()))
         return DocTypeDirectoryOut(doctypes=out)
 
-    def get_doctype_details(self, *, perms: Set[str], slug: str) -> Optional[DocTypeDetailsOut]:
+    # -----------------------
+    # single doctype details
+    # -----------------------
+
+    def get_doctype_details(
+        self, *, perms: Set[str], slug: str
+    ) -> Optional[DocTypeDetailsOut]:
         perms = {_canon_perm(p) for p in (perms or set())}
         slug = (slug or "").strip().lower()
         doctypes = self.repo.load_all_doctypes()
-        match = None
+
+        match: Optional[DocumentType] = None
         for dt in doctypes:
             if _slugify(_dt_display_name(dt)) == slug:
                 match = dt
                 break
+
         if not match:
             return None
 
         dt_name = _dt_display_name(match)
-        if _canon_perm(f"{dt_name}:READ") not in perms and "*" not in perms and "*:*" not in perms:
+        if (
+            _canon_perm(f"{dt_name}:READ") not in perms
+            and "*" not in perms
+            and "*:*" not in perms
+        ):
             return None
 
         links_by_dt = self.repo.links_by_doctype()
         links = links_by_dt.get(match.id, [])
 
         # primary path
-        primary = None
+        primary: Optional[str] = None
         best_score = -1
         for l in links:
-            lt_name = l.link_type.name if hasattr(l.link_type, "name") else str(l.link_type)
-            sc = _score_primary(l.route_path, lt_name)
+            page = l.page
+            path = page.route_path if page is not None else l.target_route
+            kind_name = page.kind.name if isinstance(getattr(page, "kind", None), Page.kind.__class__) else (
+                page.kind if page is not None else None
+            )
+            sc = _score_primary(path, kind_name)
             if sc > best_score:
                 best_score = sc
-                primary = l.route_path
+                primary = path
+
         if not primary:
             primary = f"/app/doctype/{_slugify(dt_name)}"
 
-        # group (first workspace title or domain)
+        # locations + group label
         group_label: Optional[str] = None
         locs: List[DirectoryLocation] = []
+
         for l in links:
-            ws = l.workspace or (l.section.workspace if l.section else None)
+            sec = l.section
+            ws = sec.workspace if sec is not None else None
+
             ws_title = ws.title if ws else ""
-            ws_slug  = ws.slug if ws else ""
-            sec_lbl  = l.section.label if l.section else None
+            ws_slug = ws.slug if ws else ""
+            sec_lbl = sec.title if sec is not None else None
+
             if not group_label and ws_title:
                 group_label = ws_title
-            locs.append(DirectoryLocation(
-                workspace_slug=ws_slug,
-                workspace_title=ws_title,
-                section_label=sec_lbl,
-                path=l.route_path,
-                icon=l.icon,
-            ))
+
+            page = l.page
+            path = page.route_path if page is not None else l.target_route
+            icon = page.icon if page is not None else None
+
+            locs.append(
+                DirectoryLocation(
+                    workspace_slug=ws_slug,
+                    workspace_title=ws_title,
+                    section_label=sec_lbl,
+                    path=path,
+                    icon=icon,
+                )
+            )
+
         if not group_label:
             dm = getattr(match, "domain", None)
-            group_label = str(dm.name).title() if getattr(dm, "name", None) else "General"
+            group_label = (
+                str(dm.name).title() if getattr(dm, "name", None) else "General"
+            )
 
         actions = self._actions_for(dt_name, perms)
         return DocTypeDetailsOut(
-            id=match.id, name=dt_name, group=group_label, actions=actions,
-            primary_path=primary, locations=locs
+            id=match.id,
+            name=dt_name,
+            group=group_label,
+            actions=actions,
+            primary_path=primary,
+            locations=locs,
         )

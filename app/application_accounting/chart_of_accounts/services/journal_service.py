@@ -344,16 +344,31 @@ class JournalEntryService:
         )
 
     # ---- public API ----
-
     def create(self, *, payload, ctx: AffiliationContext) -> JournalEntry:
-        """Create a new Journal Entry with proper transaction + party validation."""
+        """
+        Create a new Journal Entry with proper transaction + party validation.
+
+        Behaviour for company/branch:
+        - If payload has company_id / branch_id -> use them.
+        - If missing, fall back to ctx.company_id / ctx.branch_id.
+        - Always enforce RBAC via resolve_company_branch_and_scope.
+        """
         logger.info("JE.create: start user_id=%s payload=%s", ctx.user_id, payload)
+
         try:
-            # 1) Resolve company/branch with scope checks (like SalesService)
+            # ---- 1) Resolve company/branch using payload OR context ----
+            # Pydantic payload, so use attributes
+            payload_company_id = getattr(payload, "company_id", None)
+            payload_branch_id = getattr(payload, "branch_id", None)
+
+            # If branch not in payload, try from context
+            if payload_branch_id is None:
+                payload_branch_id = getattr(ctx, "branch_id", None)
+
             company_id, branch_id = resolve_company_branch_and_scope(
                 context=ctx,
-                payload_company_id=payload.company_id,
-                branch_id=payload.branch_id or getattr(ctx, "branch_id", None),
+                payload_company_id=payload_company_id,
+                branch_id=payload_branch_id,
                 get_branch_company_id=self.repo.get_branch_company_id,
                 require_branch=True,
             )
@@ -363,7 +378,13 @@ class JournalEntryService:
                 branch_id,
             )
 
-            # 2) Normalize posting date + fiscal year
+            # OPTIONAL: push back into payload so downstream things see them
+            if hasattr(payload, "company_id"):
+                payload.company_id = company_id
+            if hasattr(payload, "branch_id"):
+                payload.branch_id = branch_id
+
+            # ---- 2) Normalize posting date + fiscal year ----
             fy_id, post_date = _normalize_date_in_company_fy(
                 self.s,
                 company_id,
@@ -376,7 +397,7 @@ class JournalEntryService:
                 fy_id,
             )
 
-            # 3) Validate lines (accounts, totals, AR/AP party *required* etc.)
+            # ---- 3) Validate lines (accounts, totals, AR/AP party required) ----
             self._validate_lines(
                 company_id=company_id,
                 branch_id=branch_id,
@@ -384,10 +405,9 @@ class JournalEntryService:
                 entry_type=payload.entry_type,
             )
 
-            # 4) Party-level validation (existence, role, company, branch, active)
+            # ---- 4) Party-level validation (existence, role, company, branch, active) ----
             for ln in payload.items:
                 if getattr(ln, "party_type", None) and getattr(ln, "party_id", None):
-                    # accept either Enum or plain string
                     pt_raw = ln.party_type
                     party_type_label = (
                         pt_raw.value if hasattr(pt_raw, "value") else str(pt_raw)
@@ -399,7 +419,7 @@ class JournalEntryService:
                         party_id=int(ln.party_id),
                     )
 
-            # 5) Generate/validate code
+            # ---- 5) Generate/validate code ----
             code = self._generate_or_validate_code(
                 company_id=company_id,
                 branch_id=branch_id,
@@ -411,7 +431,7 @@ class JournalEntryService:
                 "JE.create: totals DR=%s CR=%s code=%s", total_dr, total_cr, code
             )
 
-            # 6) Build JE header
+            # ---- 6) Build JE header ----
             je = JournalEntry(
                 company_id=company_id,
                 branch_id=branch_id,
@@ -432,7 +452,7 @@ class JournalEntryService:
             self.s.flush([je])  # assign id
             logger.debug("JE.create: JE flushed with id=%s", je.id)
 
-            # 7) Build JE lines
+            # ---- 7) Build JE lines ----
             items: List[JournalEntryItem] = []
             for idx, ln in enumerate(payload.items, start=1):
                 it = JournalEntryItem(
@@ -456,7 +476,7 @@ class JournalEntryService:
                     ln.party_id,
                 )
 
-            # 8) Extra defensive account check
+            # ---- 8) Extra defensive account check ----
             ensure_accounts_exist(
                 self.s, company_id, [i.account_id for i in items]
             )
@@ -464,7 +484,7 @@ class JournalEntryService:
             self.s.add_all(items)
             self.s.flush(items + [je])
 
-            # 9) Commit whole transaction
+            # ---- 9) Commit whole transaction ----
             self.s.commit()
             logger.info(
                 "JE.create: committed id=%s code=%s total_dr=%s total_cr=%s",
@@ -479,6 +499,140 @@ class JournalEntryService:
             logger.exception("JE.create: error %s", e)
             self.s.rollback()
             raise
+    # def create(self, *, payload, ctx: AffiliationContext) -> JournalEntry:
+    #     """Create a new Journal Entry with proper transaction + party validation."""
+    #     logger.info("JE.create: start user_id=%s payload=%s", ctx.user_id, payload)
+    #     try:
+    #         # 1) Resolve company/branch with scope checks (like SalesService)
+    #         company_id, branch_id = resolve_company_branch_and_scope(
+    #             context=ctx,
+    #             payload_company_id=payload.company_id,
+    #             branch_id=payload.branch_id or getattr(ctx, "branch_id", None),
+    #             get_branch_company_id=self.repo.get_branch_company_id,
+    #             require_branch=True,
+    #         )
+    #         logger.debug(
+    #             "JE.create: resolved company_id=%s branch_id=%s",
+    #             company_id,
+    #             branch_id,
+    #         )
+    #
+    #         # 2) Normalize posting date + fiscal year
+    #         fy_id, post_date = _normalize_date_in_company_fy(
+    #             self.s,
+    #             company_id,
+    #             payload.posting_date,
+    #             created_at=None,
+    #         )
+    #         logger.debug(
+    #             "JE.create: normalized posting_date=%s fiscal_year_id=%s",
+    #             post_date,
+    #             fy_id,
+    #         )
+    #
+    #         # 3) Validate lines (accounts, totals, AR/AP party *required* etc.)
+    #         self._validate_lines(
+    #             company_id=company_id,
+    #             branch_id=branch_id,
+    #             lines=payload.items,
+    #             entry_type=payload.entry_type,
+    #         )
+    #
+    #         # 4) Party-level validation (existence, role, company, branch, active)
+    #         for ln in payload.items:
+    #             if getattr(ln, "party_type", None) and getattr(ln, "party_id", None):
+    #                 # accept either Enum or plain string
+    #                 pt_raw = ln.party_type
+    #                 party_type_label = (
+    #                     pt_raw.value if hasattr(pt_raw, "value") else str(pt_raw)
+    #                 )
+    #                 self._ensure_party_accessible(
+    #                     company_id=company_id,
+    #                     branch_id=branch_id,
+    #                     party_type_label=party_type_label,
+    #                     party_id=int(ln.party_id),
+    #                 )
+    #
+    #         # 5) Generate/validate code
+    #         code = self._generate_or_validate_code(
+    #             company_id=company_id,
+    #             branch_id=branch_id,
+    #             manual=getattr(payload, "code", None),
+    #         )
+    #
+    #         total_dr, total_cr = _sum_dr_cr(payload.items)
+    #         logger.debug(
+    #             "JE.create: totals DR=%s CR=%s code=%s", total_dr, total_cr, code
+    #         )
+    #
+    #         # 6) Build JE header
+    #         je = JournalEntry(
+    #             company_id=company_id,
+    #             branch_id=branch_id,
+    #             fiscal_year_id=fy_id,
+    #             created_by_id=ctx.user_id,
+    #             source_doctype_id=None,
+    #             source_doc_id=None,
+    #             code=code,
+    #             posting_date=post_date,
+    #             doc_status=DocStatusEnum.DRAFT,
+    #             remarks=payload.remarks,
+    #             total_debit=total_dr,
+    #             total_credit=total_cr,
+    #             entry_type=payload.entry_type,
+    #             is_auto_generated=False,
+    #         )
+    #         self.s.add(je)
+    #         self.s.flush([je])  # assign id
+    #         logger.debug("JE.create: JE flushed with id=%s", je.id)
+    #
+    #         # 7) Build JE lines
+    #         items: List[JournalEntryItem] = []
+    #         for idx, ln in enumerate(payload.items, start=1):
+    #             it = JournalEntryItem(
+    #                 journal_entry_id=je.id,
+    #                 account_id=ln.account_id,
+    #                 cost_center_id=ln.cost_center_id,
+    #                 party_id=ln.party_id,
+    #                 party_type=ln.party_type,
+    #                 debit=Decimal(str(ln.debit or 0)),
+    #                 credit=Decimal(str(ln.credit or 0)),
+    #                 remarks=ln.remarks,
+    #             )
+    #             items.append(it)
+    #             logger.debug(
+    #                 "JE.create: line %s acc=%s dr=%s cr=%s party_type=%s party_id=%s",
+    #                 idx,
+    #                 ln.account_id,
+    #                 ln.debit,
+    #                 ln.credit,
+    #                 ln.party_type,
+    #                 ln.party_id,
+    #             )
+    #
+    #         # 8) Extra defensive account check
+    #         ensure_accounts_exist(
+    #             self.s, company_id, [i.account_id for i in items]
+    #         )
+    #
+    #         self.s.add_all(items)
+    #         self.s.flush(items + [je])
+    #
+    #         # 9) Commit whole transaction
+    #         self.s.commit()
+    #         logger.info(
+    #             "JE.create: committed id=%s code=%s total_dr=%s total_cr=%s",
+    #             je.id,
+    #             je.code,
+    #             je.total_debit,
+    #             je.total_credit,
+    #         )
+    #         return je
+    #
+    #     except Exception as e:
+    #         logger.exception("JE.create: error %s", e)
+    #         self.s.rollback()
+    #         raise
 
     def update(self, *, je_id: int, payload, ctx: AffiliationContext) -> JournalEntry:
         """Update a Draft Journal Entry, including party validation."""

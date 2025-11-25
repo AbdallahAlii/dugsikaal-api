@@ -12,7 +12,6 @@ from app.application_accounting.chart_of_accounts.models import (
     PartyTypeEnum,
 )
 
-
 # ----------------------------- Journal Entry -----------------------------
 
 
@@ -33,19 +32,18 @@ class JournalEntryLineIn(BaseModel):
         if d < 0 or c < 0:
             raise ValueError("Debit/Credit cannot be negative.")
         if (d == 0) and (c == 0):
-            # ERP-style: "Row X: Both Debit and Credit values cannot be zero."
-            # Here we don't know row; service will re-check and add row info.
             raise ValueError("Both Debit and Credit values cannot be zero.")
         if (d > 0) and (c > 0):
-            # ERP-style: "You cannot credit and debit same account at the same time."
             raise ValueError("A line cannot have both debit and credit.")
 
         return self
 
 
 class JournalEntryCreateSchema(BaseModel):
-    company_id: int
-    branch_id: int
+    # ✅ make these OPTIONAL so you can omit them and use ctx in the service
+    company_id: Optional[int] = None
+    branch_id: Optional[int] = None
+
     posting_date: datetime
     entry_type: JournalEntryTypeEnum = JournalEntryTypeEnum.GENERAL
     remarks: Optional[str] = None
@@ -64,30 +62,4 @@ class JournalEntrySubmitSchema(BaseModel):
 
 
 class JournalEntryCancelSchema(BaseModel):
-    reason: Optional[str] = None
-
-
-# ------------------------ Period Closing Voucher ------------------------
-
-
-class PeriodClosingVoucherCreateSchema(BaseModel):
-    company_id: int
-    branch_id: int
-    closing_fiscal_year_id: int
-    closing_account_head_id: int
-    posting_date: Optional[datetime] = None  # defaults to FY end_date in service
-    remarks: Optional[str] = None
-
-
-class PeriodClosingVoucherUpdateSchema(BaseModel):
-    posting_date: Optional[datetime] = None
-    closing_account_head_id: Optional[int] = None
-    remarks: Optional[str] = None
-
-
-class PeriodClosingVoucherSubmitSchema(BaseModel):
-    pass
-
-
-class PeriodClosingVoucherCancelSchema(BaseModel):
     reason: Optional[str] = None
