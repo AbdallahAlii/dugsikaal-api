@@ -271,3 +271,35 @@ class PricingAdminService:
             self.s.rollback()
             log.exception("Update Item Price failed: %s", str(e))
             raise BizValidationError("Failed to update Item Price")
+    def delete_price_lists_bulk(self, ids: List[int], context: AffiliationContext) -> Dict[str, Any]:
+        deleted = []
+        blocked = []
+        touched_companies = set()
+
+        for pl_id in ids:
+            with self.s.begin_nested():
+                try:
+                    pl = self.repo.get_price_list_by_id(pl_id)
+                    if not pl:
+                        raise NotFound("Price List not found.")
+                    
+                    if not PRICING_MANAGER_ROLES.intersection(context.roles):
+                        raise Forbidden("Not authorized.")
+                    
+                    ensure_scope_by_ids(context=context, target_company_id=pl.company_id)
+
+                    link = self.repo.find_first_linked_document_price_list(pl.company_id, pl_id)
+                    if link:
+                        # Use a generic exception or logic error
+                        raise BizValidationError(f"Cannot delete: linked with {link['doctype']} {link['code']}.")
+
+                    self.repo.delete_price_list(pl)
+                    deleted.append(pl_id)
+                    touched_companies.add(pl.company_id)
+                except Exception as e:
+                    blocked.append({"id": pl_id, "reason": str(e)})
+
+        self.s.commit()
+        for cid in touched_companies:
+            bump_list_cache_company("inventory", "price_lists", cid)
+        return {"deleted": deleted, "blocked": blocked}

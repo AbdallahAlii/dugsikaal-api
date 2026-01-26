@@ -1,10 +1,10 @@
-
+# In app/common/helpers/date_helpers.py
 from __future__ import annotations
 from datetime import datetime, date
 from typing import Optional, Any
 
-# Display format used in responses (if/when you need to format dates)
-DISPLAY_FMT = "%m/%d/%Y"
+# Display format used in responses - Changed to DD-MM-YYYY as you requested
+DISPLAY_FMT = "%d-%m-%Y"
 
 # Accept these inbound formats (order matters)
 DATE_PARSE_PATTERNS = [

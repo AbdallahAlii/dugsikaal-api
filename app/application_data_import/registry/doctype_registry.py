@@ -6,6 +6,9 @@ from typing import Any, Callable, Dict
 from werkzeug.exceptions import NotFound
 
 REGISTRY: Dict[str, Dict[str, Any]] = {
+    # ======================================================================
+    # ITEM
+    # ======================================================================
     "Item": {
         "model": "app.application_nventory.inventory_models:Item",
         "module": "inventory",
@@ -67,9 +70,9 @@ REGISTRY: Dict[str, Dict[str, Any]] = {
         },
     },
 
-    # ----------------------------------------------------------------------
-    # NEW: StockReconciliation data import
-    # ----------------------------------------------------------------------
+    # ======================================================================
+    # STOCK RECONCILIATION
+    # ======================================================================
     "StockReconciliation": {
         "model": "app.application_stock.stock_models:StockReconciliation",
         "module": "stock",
@@ -77,7 +80,7 @@ REGISTRY: Dict[str, Dict[str, Any]] = {
         # we could support UPDATE later using id; for now we focus on INSERT
         "identity": {"for_update": "id"},
         "template": {
-            # Fields we NEVER allow the user to insert directly
+            # Fields we NEVER allow the user to insert directly on the header
             "exclude_fields_on_insert": [
                 "id",
                 "company_id",
@@ -87,9 +90,10 @@ REGISTRY: Dict[str, Dict[str, Any]] = {
                 "created_at",
                 "updated_at",
             ],
-            # No auto-stripped computed fields; we allow manual 'code'
-            "computed_fields": [],
-            # Default columns to always show in template
+            # Treat 'code' as computed/auto-managed -> not required from Excel
+            # and safe to drop if the user sends it.
+            "computed_fields": ["code"],
+            # Default columns to always show in template (header + line fields)
             "always_include": [
                 "posting_date",
                 "purpose",
@@ -114,10 +118,12 @@ REGISTRY: Dict[str, Dict[str, Any]] = {
             },
         },
         "policies": {
-            # after import you will manually submit from the UI / API
-            "submit_after_import_allowed": False,
+            # For Stock Reconciliation we allow `submit_after_import=True`
+            # (used for Opening Stock and Stock Reconciliation imports).
+            "submit_after_import_allowed": True,
             "mute_emails_supported": True,
         },
+
         # How we resolve user-friendly labels to IDs
         "resolvers": {
             # Optional branch: if blank, DataImport.branch_id (current user's branch) is used.
@@ -156,9 +162,13 @@ REGISTRY: Dict[str, Dict[str, Any]] = {
             # Single-row handler: one document per row
             "create": "app.application_stock.services.adapters.create_stock_reconciliation_via_import",
             # no update handlers yet; can be added later
+            "update_by": {},
         },
     },
 
+    # ======================================================================
+    # EMPLOYEE
+    # ======================================================================
     "Employee": {
         "model": "app.application_hr.models.hr:Employee",
         "module": "hr",
@@ -176,6 +186,10 @@ REGISTRY: Dict[str, Dict[str, Any]] = {
                 "username",
             ],
             "computed_fields": ["code", "user_id", "username"],
+            # Minimal required columns in Excel:
+            #   - Full Name
+            #   - Date of Joining
+            # Branch comes from DataImport.branch_id, not the file.
             "always_include": ["full_name", "sex", "date_of_joining"],
             "labels": {
                 "code": "Employee Code",
@@ -188,6 +202,7 @@ REGISTRY: Dict[str, Dict[str, Any]] = {
             "submit_after_import_allowed": False,
             "mute_emails_supported": True,
         },
+        # You can still support advanced patterns later (assignments[].branch_id etc).
         "resolvers": {
             "assignments[].branch_id": {
                 "by": "name",
@@ -196,11 +211,124 @@ REGISTRY: Dict[str, Dict[str, Any]] = {
             },
         },
         "handlers": {
-            "create": "app.application_hr.services.services:HrService.create_employee",
+            # Use adapter for Data Import (row → EmployeeCreate → HrService.create_employee)
+            "create": "app.application_hr.services.adapters.create_employee_via_import",
             "update_by": {
-                "code": "app.application_hr.services.adapters:update_employee_by_code",
-                "id": "app.application_hr.services.services:HrService.update_employee",
+                # Adapters for UPDATE imports
+                "code": "app.application_hr.services.adapters.update_employee_by_code",
+                "id": "app.application_hr.services.adapters.update_employee_by_id",
             },
+        },
+    },
+
+
+    # ======================================================================
+    # CUSTOMER  (Party with role = CUSTOMER)
+    # ======================================================================
+    "Customer": {
+        # Same underlying model as Supplier: Party
+        "model": "app.application_parties.parties_models:Party",
+        "module": "parties",
+        "import_enabled": True,
+        # If you add UPDATE later, you can use "code" as identity
+        "identity": {"for_update": "code"},
+        "template": {
+            # Fields we NEVER want the user to import directly
+            "exclude_fields_on_insert": [
+                "id",
+                "company_id",
+                "branch_id",
+                "created_by_id",
+                "status",
+                "role",           # role is fixed to CUSTOMER in adapter
+                "code",           # code generated by service if missing
+                "is_cash_party",  # handled by default (False) in service
+                "img_key",
+            ],
+            "computed_fields": [
+                # you could also put "code" here, but exclude_on_insert is enough
+            ],
+            # Columns that must exist in the file for INSERT imports
+            "always_include": [
+                "name",    # Customer Name
+                "phone",   # Phone
+                "nature",  # Customer Type (Organization / Individual)
+            ],
+            "labels": {
+                "code": "Customer Code",
+                "name": "Customer Name",
+                "nature": "Customer Type",   # maps Excel header -> Party.nature
+                "phone": "Phone",
+                "email": "Email",
+                "address_line1": "Address",
+                # You can add more mappings later (City, Notes, etc.)
+            },
+        },
+        "policies": {
+            "submit_after_import_allowed": False,
+            "mute_emails_supported": True,
+        },
+        # No link resolvers yet (city can be added later if you want name->id)
+        "resolvers": {
+            # e.g. "city_id": { "by": "name", "source": "City", "scope": "company" }
+        },
+        "conditional_required": [
+            # If you want row-level conditional rules later, put them here.
+            # For now, header-level required: name / phone / nature handled by always_include.
+        ],
+        "handlers": {
+            "create": "app.application_parties.import_adapters.create_customer_via_import",
+            # no UPDATE via import for now; keep empty dict so UPDATE ImportType fails cleanly
+            "update_by": {},
+        },
+    },
+
+    # ======================================================================
+    # SUPPLIER  (Party with role = SUPPLIER)
+    # ======================================================================
+    "Supplier": {
+        "model": "app.application_parties.parties_models:Party",
+        "module": "parties",
+        "import_enabled": True,
+        "identity": {"for_update": "code"},
+        "template": {
+            "exclude_fields_on_insert": [
+                "id",
+                "company_id",
+                "branch_id",
+                "created_by_id",
+                "status",
+                "role",           # fixed to SUPPLIER in adapter
+                "code",
+                "is_cash_party",
+                "img_key",
+            ],
+            "computed_fields": [],
+            "always_include": [
+                "name",    # Supplier Name
+                "phone",   # Phone
+                "nature",  # Supplier Type
+            ],
+            "labels": {
+                "code": "Supplier Code",
+                "name": "Supplier Name",
+                "nature": "Supplier Type",   # maps header -> Party.nature
+                "phone": "Phone",
+                "email": "Email",
+                "address_line1": "Address",
+            },
+        },
+        "policies": {
+            "submit_after_import_allowed": False,
+            "mute_emails_supported": True,
+        },
+        "resolvers": {
+            # e.g. "city_id": { "by": "name", "source": "City", "scope": "company" }
+        },
+        "conditional_required": [],
+        "handlers": {
+            "create": "app.application_parties.import_adapters.create_supplier_via_import",
+            "update_by": {},
         },
     },
 }

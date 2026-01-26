@@ -14,6 +14,7 @@ from app.application_reports.core.columns import (
 )
 from app.application_reports.core.safe_query_report import SafeQueryReport
 from app.application_reports.scripts.balance_sheet import BalanceSheetReport
+from app.application_reports.scripts.cash_flow import CashFlowReport
 
 log = logging.getLogger(__name__)
 
@@ -141,45 +142,80 @@ def bootstrap_reports(engine: ReportEngine) -> None:
     )
     engine.register_report(tb_report)
 
-    # --- New: Accounts Payable / Receivable (summary + detail) with cursor ---
-    from app.application_reports.scripts.accounts_payable import AccountsPayableReport
-    ap_meta = ReportMeta(
-        name="Accounts Payable Summary",
-        description="Supplier outstanding with ageing analysis",
-        report_type=ReportType.SCRIPT,
-        module="Accounts",
-        category="Payable Reports"
-    )
-    engine.register_report(ScriptReport(meta=ap_meta, script_class=AccountsPayableReport))
+    # ============================================================================
+    # 2. ACCOUNTS RECEIVABLE REPORTS
+    # ============================================================================
 
-    from app.application_reports.scripts.accounts_payable_detail import AccountsPayableDetailReport
-    ap_det_meta = ReportMeta(
-        name="Accounts Payable",
-        description="Per-invoice payable with paid, debit notes, outstanding and ageing",
-        report_type=ReportType.SCRIPT,
-        module="Accounts",
-        category="Payable Reports",
+    from app.application_reports.scripts.accounts_receivable import (
+        AccountsReceivableSummary, AccountsReceivableDetail
     )
-    engine.register_report(ScriptReport(meta=ap_det_meta, script_class=AccountsPayableDetailReport))
 
-    from app.application_reports.scripts.accounts_receivable import AccountsReceivableReport
-    ar_meta = ReportMeta(
+    # AR Summary
+    ar_summary_meta = ReportMeta(
         name="Accounts Receivable Summary",
-        description="Customer outstanding with ageing analysis",
-        report_type=ReportType.SCRIPT,
-        module="Accounts",
-        category="Receivable Reports"
-    )
-    engine.register_report(ScriptReport(meta=ar_meta, script_class=AccountsReceivableReport))
-
-    from app.application_reports.scripts.accounts_receivable_detail import AccountsReceivableDetailReport
-    ar_det_meta = ReportMeta(
-        name="Accounts Receivable",
-        description="Per-invoice receivable with paid, credits, outstanding and ageing",
+        description="Customer outstanding balances with ageing analysis",
         report_type=ReportType.SCRIPT,
         module="Accounts",
         category="Receivable Reports",
+        cache_enabled=False,
+        cache_ttl_s=0
     )
-    engine.register_report(ScriptReport(meta=ar_det_meta, script_class=AccountsReceivableDetailReport))
+    engine.register_report(ScriptReport(meta=ar_summary_meta, script_class=AccountsReceivableSummary))
 
-    log.info(f"✅ Bootstrapped {len(engine.list_reports())} standard reports")
+    # AR Detail - clear name
+    ar_detail_meta = ReportMeta(
+        name="Accounts Receivable Detail",
+        description="Per-invoice receivable with ageing analysis",
+        report_type=ReportType.SCRIPT,
+        module="Accounts",
+        category="Receivable Reports",
+        cache_enabled=False,
+        cache_ttl_s=0
+    )
+    engine.register_report(ScriptReport(meta=ar_detail_meta, script_class=AccountsReceivableDetail))
+
+
+    # ============================================================================
+    # 3. ACCOUNTS PAYABLE REPORTS
+    # ============================================================================
+
+    from app.application_reports.scripts.accounts_payable import (
+        AccountsPayableSummary, AccountsPayableDetail
+    )
+    # Cash Flow (script)
+    cf_meta = ReportMeta(
+        name="Cash Flow Statement",
+        description="Cash movement from Operations, Investing, and Financing",
+        report_type=ReportType.SCRIPT,
+        module="Accounts",
+        category="Financial Statements"
+    )
+    cf_report = ScriptReport(meta=cf_meta, script_class=CashFlowReport)
+    engine.register_report(cf_report)
+
+    # AP Summary
+    ap_summary_meta = ReportMeta(
+        name="Accounts Payable Summary",
+        description="Supplier outstanding balances with ageing analysis",
+        report_type=ReportType.SCRIPT,
+        module="Accounts",
+        category="Payable Reports",
+        cache_enabled=False,
+        cache_ttl_s=0
+    )
+    engine.register_report(ScriptReport(meta=ap_summary_meta, script_class=AccountsPayableSummary))
+
+    # AP Detail
+    ap_detail_meta = ReportMeta(
+        name="Accounts Payable Detail",
+        description="Per-invoice payable with ageing analysis",
+        report_type=ReportType.SCRIPT,
+        module="Accounts",
+        category="Payable Reports",
+        cache_enabled=False,
+        cache_ttl_s=0
+    )
+    engine.register_report(ScriptReport(meta=ap_detail_meta, script_class=AccountsPayableDetail))
+
+    log.info(f"✅ Bootstrapped {len(engine.list_reports())} reports")
+    log.info(f"📊 Categories: {set(r['category'] for r in engine.list_reports())}")

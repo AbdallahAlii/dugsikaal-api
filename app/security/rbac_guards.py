@@ -15,33 +15,41 @@ def attach_auth_context(user_id: int) -> None:
 
 
 # Route-level permission check only (no scope here)
+def check_permission(ctx: AffiliationContext, doctype: str, action: str) -> None:
+    """
+    Imperative permission check. Raises Forbidden if not allowed.
+    """
+    if not ctx:
+        raise Forbidden("Authentication context missing.")
+
+    required = f"{doctype}:{action}".strip()
+    perms = set(ctx.permissions or [])
+
+    # If user has wildcard permissions (* or *:*), they can perform any action
+    if "*" in perms or "*:*" in perms:
+        return
+
+    # If required permission is not in the list of permissions
+    if required not in perms:
+        raise Forbidden(f"You do not have permission to perform this action ({required}).")
+
 def require_permission(doctype: str, action: str):
     """ Permission check for specific doctype actions """
-    required = f"{doctype}:{action}".strip()
-
     def _dec(fn):
         @wraps(fn)
         def _wrapped(*args, **kwargs):
             ctx: AffiliationContext = getattr(g, "auth", None)
             if not ctx:
                 return jsonify({"message": "Unauthorized"}), 401
-
-            perms = set(ctx.permissions or [])
-            # If user has wildcard permissions (* or *:*), they can perform any action
-            if "*" in perms or "*:*" in perms:
-                return fn(*args, **kwargs)
-
-            # If required permission is not in the list of permissions
-            if required not in perms:
-                return jsonify({
-                    "message": "You do not have permission to perform this action.",
-                    "required": required
-                }), 403
-
+            
+            try:
+                check_permission(ctx, doctype, action)
+            except Forbidden as e:
+                return jsonify({"message": e.description}), 403
+            
             return fn(*args, **kwargs)
 
         return _wrapped
-
     return _dec
 
 

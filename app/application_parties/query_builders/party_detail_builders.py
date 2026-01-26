@@ -1,15 +1,21 @@
 from __future__ import annotations
-from typing import Dict, Any, Optional
+
+from typing import Dict, Any
 
 from sqlalchemy import select, and_
 from sqlalchemy.orm import Session
 from werkzeug.exceptions import NotFound, Forbidden, BadRequest
 
 from app.application_org.models.company import City
-from app.application_parties.parties_models import Party, PartyRoleEnum, PartyOrganizationDetail, PartyCommercialPolicy
+from app.application_parties.parties_models import (
+    Party,
+    PartyRoleEnum,
+    PartyOrganizationDetail,
+    PartyCommercialPolicy,
+)
 from app.security.rbac_effective import AffiliationContext
+from app.security.rbac_guards import ensure_scope_by_ids
 from app.common.models.base import StatusEnum  # typing clarity only
-
 
 
 # --------------------------
@@ -22,29 +28,15 @@ def _status_to_slug(v) -> str:
     return (s or "inactive").lower()
 
 
-def _ensure_company_and_branch_visibility(
-    s: Session, ctx: AffiliationContext, *, party_row: Any
-) -> None:
+def _ensure_company_visibility(ctx: AffiliationContext, *, party_company_id: int) -> None:
     """
-    - Company scope: party.company_id must be in caller's affiliations (unless sysadmin)
-    - Branch visibility:
-        * global (branch_id is NULL) -> allowed
-        * branch-scoped -> caller must have that branch in ctx.branch_ids (unless sysadmin)
+    ✅ Rule (as requested):
+      - Any user in the same company can see ALL parties (customers/suppliers),
+        regardless of party.branch_id.
+      - Users from other companies cannot see this data.
+      - System Admin bypass is handled by ensure_scope_by_ids.
     """
-    if getattr(ctx, "is_system_admin", False):
-        return
-
-    co_id = getattr(ctx, "company_id", None)
-    if not co_id or int(party_row.company_id) != int(co_id):
-        raise Forbidden("Out of scope.")
-
-    branch_id = party_row.branch_id
-    if branch_id is None:
-        return  # global party -> visible to all company users
-
-    allowed_branch_ids = set(getattr(ctx, "branch_ids", []) or [])
-    if int(branch_id) not in allowed_branch_ids:
-        raise Forbidden("Out of scope.")
+    ensure_scope_by_ids(context=ctx, target_company_id=int(party_company_id), target_branch_id=None)
 
 
 # --------------------------
@@ -59,23 +51,30 @@ def resolve_id_strict(_: Session, __: AffiliationContext, v: str) -> int:
 
 def resolve_party_by_code(s: Session, ctx: AffiliationContext, code: str, *, role: PartyRoleEnum) -> int:
     """
-    Resolve PK by (company_id, role, code). Requires ctx.company_id unless sysadmin.
+    Resolve PK by (company_id, role, code).
+    - Requires ctx.company_id (unless System Admin).
     """
     code = (code or "").strip()
     if not code:
         raise BadRequest("Code required.")
 
-    if not getattr(ctx, "is_system_admin", False):
-        co_id = getattr(ctx, "company_id", None)
-        if not co_id:
-            raise Forbidden("Out of scope.")
-        row = s.execute(
-            select(Party.id)
-            .where(and_(Party.company_id == int(co_id), Party.role == role, Party.code == code))
-        ).first()
+    # Enforce tenant scope (company-level). Sysadmin bypass inside ensure_scope_by_ids.
+    co_id = getattr(ctx, "company_id", None)
+    if not co_id and not getattr(ctx, "is_system_admin", False):
+        raise Forbidden("Out of scope.")
+
+    if getattr(ctx, "is_system_admin", False):
+        row = s.execute(select(Party.id).where(and_(Party.role == role, Party.code == code))).first()
     else:
+        _ensure_company_visibility(ctx, party_company_id=int(co_id))
         row = s.execute(
-            select(Party.id).where(and_(Party.role == role, Party.code == code))
+            select(Party.id).where(
+                and_(
+                    Party.company_id == int(co_id),
+                    Party.role == role,
+                    Party.code == code,
+                )
+            )
         ).first()
 
     if not row:
@@ -167,11 +166,14 @@ def _load_commercial_policy(s: Session, party_id: int, company_id: int) -> Dict[
 
 def load_party_detail(s: Session, ctx: AffiliationContext, party_id: int, *, role: PartyRoleEnum) -> Dict[str, Any]:
     """
-    Returns a stable, organized JSON shape (similar philosophy to your user detail).
+    Returns a stable, organized JSON shape.
+    Scope:
+      ✅ same-company users can view all
+      ❌ other companies blocked
     """
-    # 1) fetch + scope checks
+    # 1) fetch + scope checks (company-level only)
     party = _load_party_row(s, party_id, expected_role=role)
-    _ensure_company_and_branch_visibility(s, ctx, party_row=party)
+    _ensure_company_visibility(ctx, party_company_id=int(party.company_id))
 
     # 2) extras
     org = _load_organization_details(s, party_id)

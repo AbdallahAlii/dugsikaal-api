@@ -1,281 +1,182 @@
 # app/application_parties/dropdown_builders/parties_dropdown.py
 from __future__ import annotations
-from sqlalchemy import select, case
+
+from typing import Mapping, Any, Optional
+
+from sqlalchemy import select, case, false
 from sqlalchemy.orm import Session
-from typing import Mapping, Any
 
 from app.application_parties.parties_models import Party, PartyRoleEnum
-from app.application_org.models.company import Branch, Company
+from app.application_org.models.company import Branch
 from app.security.rbac_effective import AffiliationContext
+from app.security.rbac_guards import ensure_scope_by_ids
+from app.common.models.base import StatusEnum
 
 
-# --- Common scoping helpers ---
-def _co(ctx: AffiliationContext) -> int | None:
+def _co(ctx: AffiliationContext) -> Optional[int]:
     return getattr(ctx, "company_id", None)
 
 
-def _is_super_admin(ctx: AffiliationContext) -> bool:
-    """Check if user is a super admin (has Super Admin role)"""
-    roles = getattr(ctx, "roles", []) or []
-    return "Super Admin" in roles
+def _empty_dropdown():
+    return select(Party.id.label("value")).where(false())
 
 
-def _is_company_owner(ctx: AffiliationContext) -> bool:
-    """Check if user is a company owner (has primary affiliation with branch_id null)"""
-    affiliations = getattr(ctx, "affiliations", []) or []
-    for aff in affiliations:
-        if getattr(aff, "is_primary", False) and getattr(aff, "branch_id", None) is None:
-            return True
-    return False
+def _enforce_company_scope_or_empty(ctx: AffiliationContext, company_id: int):
+    """
+    ✅ Rule:
+      - Any user in the same company can see ALL parties (regardless of party.branch_id).
+      - Users from other companies cannot see this data.
+      - System Admin bypass is handled by ensure_scope_by_ids.
+    """
+    ensure_scope_by_ids(context=ctx, target_company_id=int(company_id), target_branch_id=None)
 
 
-def _has_company_wide_access(ctx: AffiliationContext) -> bool:
-    """Check if user has company-wide access (system admin, super admin, or company owner)"""
-    return getattr(ctx, "is_system_admin", False) or _is_super_admin(ctx) or _is_company_owner(ctx)
+def _location_display():
+    # Purely display (NOT a scope filter)
+    return case((Party.branch_id.is_(None), "Company Wide"), else_=Branch.name).label("location")
 
 
-def _get_user_branch_ids(ctx: AffiliationContext) -> list[int]:
-    """Get list of branch IDs the user has access to"""
-    return list(getattr(ctx, "branch_ids", []) or [])
+def _base_party_dropdown_query(*, company_id: int):
+    """
+    Common select columns used by all dropdowns.
+    """
+    return (
+        select(
+            Party.id.label("value"),
+            Party.name.label("label"),
+            Party.code.label("code"),
+            Party.email.label("email"),
+            Party.phone.label("phone"),
+            _location_display(),
+            Party.branch_id.label("branch_id"),
+            Party.role.label("role"),
+            Party.created_at.label("created_at"),
+        )
+        .select_from(Party)
+        .outerjoin(Branch, Branch.id == Party.branch_id)
+        .where(
+            Party.company_id == int(company_id),
+            Party.status == StatusEnum.ACTIVE,
+        )
+    )
 
 
-# Suppliers Dropdown (role = SUPPLIER)
 def build_suppliers_dropdown(session: Session, ctx: AffiliationContext, params: Mapping[str, Any]):
     """
-    Dropdown for suppliers with ERP-style presentation
-    - Super Admins & Company Owners: ALL suppliers in company
-    - Regular users: suppliers from their branches + company-wide suppliers
+    Suppliers dropdown (role=SUPPLIER)
+
+    ✅ Scope:
+      - Same company: see ALL suppliers (no branch restriction)
+      - Different company: no data
+
+    ✅ Sorting:
+      - Newest first (ERP-style)
     """
     co_id = _co(ctx)
     if not co_id:
-        return select(Party.id.label("value")).where(Party.id == -1)
+        return _empty_dropdown()
 
-    # Build location display
-    location_display = case(
-        (Party.branch_id.is_(None), "Company Wide"),
-        else_=Branch.name
-    ).label("location")
+    try:
+        _enforce_company_scope_or_empty(ctx, co_id)
+    except Exception:
+        return _empty_dropdown()
 
-    q = (
-        select(
-            Party.id.label("value"),
-            Party.name.label("label"),
-            Party.code.label("code"),
-            Party.email.label("email"),
-            Party.phone.label("phone"),
-            location_display,
-            Party.branch_id.label("branch_id"),
-        )
-        .select_from(Party)
-        .join(Company, Company.id == Party.company_id)
-        .outerjoin(Branch, Branch.id == Party.branch_id)
-        .where(
-            Party.company_id == co_id,
-            Party.role == PartyRoleEnum.SUPPLIER,
-            Party.status == "Active"  # Only active parties
-        )
-        .order_by(
-            # Company-wide first, then by branch
-            case((Party.branch_id.is_(None), 0), else_=1),
-            Branch.name.asc(),
-            Party.name.asc()
-        )
-    )
+    q = _base_party_dropdown_query(company_id=co_id).where(Party.role == PartyRoleEnum.SUPPLIER)
 
-    # Apply branch restrictions for non-company-wide users
-    if not _has_company_wide_access(ctx):
-        branch_ids = _get_user_branch_ids(ctx)
-        if branch_ids:
-            # Regular users: company-wide suppliers + suppliers from their branches
-            q = q.where(
-                (Party.branch_id.is_(None)) |  # Company-wide suppliers
-                (Party.branch_id.in_(branch_ids))  # Suppliers from their branches
-            )
-        else:
-            # Users with no branch access: only company-wide suppliers
-            q = q.where(Party.branch_id.is_(None))
+    # Newest first, then name (stable UX)
+    q = q.order_by(Party.created_at.desc(), Party.name.asc())
 
     return q
 
 
-# Customers Dropdown (role = CUSTOMER)
 def build_customers_dropdown(session: Session, ctx: AffiliationContext, params: Mapping[str, Any]):
     """
-    Dropdown for customers with ERP-style presentation
-    - Super Admins & Company Owners: ALL customers in company
-    - Regular users: customers from their branches + company-wide customers
+    Customers dropdown (role=CUSTOMER)
+
+    ✅ Scope:
+      - Same company: see ALL customers (no branch restriction)
+      - Different company: no data
+
+    ✅ Sorting:
+      - Newest first (ERP-style)
     """
     co_id = _co(ctx)
     if not co_id:
-        return select(Party.id.label("value")).where(Party.id == -1)
+        return _empty_dropdown()
 
-    # Build location display
-    location_display = case(
-        (Party.branch_id.is_(None), "Company Wide"),
-        else_=Branch.name
-    ).label("location")
+    try:
+        _enforce_company_scope_or_empty(ctx, co_id)
+    except Exception:
+        return _empty_dropdown()
 
-    q = (
-        select(
-            Party.id.label("value"),
-            Party.name.label("label"),
-            Party.code.label("code"),
-            Party.email.label("email"),
-            Party.phone.label("phone"),
-            location_display,
-            Party.branch_id.label("branch_id"),
-        )
-        .select_from(Party)
-        .join(Company, Company.id == Party.company_id)
-        .outerjoin(Branch, Branch.id == Party.branch_id)
-        .where(
-            Party.company_id == co_id,
-            Party.role == PartyRoleEnum.CUSTOMER,
-            Party.status == "Active"  # Only active parties
-        )
-        .order_by(
-            # Company-wide first, then by branch
-            case((Party.branch_id.is_(None), 0), else_=1),
-            Branch.name.asc(),
-            Party.name.asc()
-        )
-    )
+    q = _base_party_dropdown_query(company_id=co_id).where(Party.role == PartyRoleEnum.CUSTOMER)
 
-    # Apply branch restrictions for non-company-wide users
-    if not _has_company_wide_access(ctx):
-        branch_ids = _get_user_branch_ids(ctx)
-        if branch_ids:
-            # Regular users: company-wide customers + customers from their branches
-            q = q.where(
-                (Party.branch_id.is_(None)) |  # Company-wide customers
-                (Party.branch_id.in_(branch_ids))  # Customers from their branches
-            )
-        else:
-            # Users with no branch access: only company-wide customers
-            q = q.where(Party.branch_id.is_(None))
+    # Newest first, then name
+    q = q.order_by(Party.created_at.desc(), Party.name.asc())
 
     return q
 
 
-# All Parties Dropdown (both suppliers and customers)
 def build_all_parties_dropdown(session: Session, ctx: AffiliationContext, params: Mapping[str, Any]):
     """
-    Dropdown for all parties with ERP-style presentation
-    - Super Admins & Company Owners: ALL parties in company
-    - Regular users: parties from their branches + company-wide parties
+    All parties dropdown (customers + suppliers)
+
+    ✅ Scope:
+      - Same company: see ALL parties (no branch restriction)
+      - Different company: no data
+
+    ✅ Sorting:
+      - Newest first (ERP-style)
+      - Then role (stable ordering if same timestamp)
+      - Then name
     """
     co_id = _co(ctx)
     if not co_id:
-        return select(Party.id.label("value")).where(Party.id == -1)
+        return _empty_dropdown()
 
-    # Build location display and type indicator
-    location_display = case(
-        (Party.branch_id.is_(None), "Company Wide"),
-        else_=Branch.name
-    ).label("location")
+    try:
+        _enforce_company_scope_or_empty(ctx, co_id)
+    except Exception:
+        return _empty_dropdown()
 
     role_display = case(
         (Party.role == PartyRoleEnum.SUPPLIER, "Supplier"),
-        else_="Customer"
+        else_="Customer",
     ).label("type")
 
-    q = (
-        select(
-            Party.id.label("value"),
-            Party.name.label("label"),
-            Party.code.label("code"),
-            Party.email.label("email"),
-            Party.phone.label("phone"),
-            location_display,
-            role_display,
-            Party.branch_id.label("branch_id"),
-            Party.role.label("role"),
-        )
-        .select_from(Party)
-        .join(Company, Company.id == Party.company_id)
-        .outerjoin(Branch, Branch.id == Party.branch_id)
-        .where(
-            Party.company_id == co_id,
-            Party.status == "Active"  # Only active parties
-        )
-        .order_by(
-            # Suppliers first, then customers
-            case((Party.role == PartyRoleEnum.SUPPLIER, 0), else_=1),
-            # Company-wide first, then by branch
-            case((Party.branch_id.is_(None), 0), else_=1),
-            Branch.name.asc(),
-            Party.name.asc()
-        )
-    )
+    q = _base_party_dropdown_query(company_id=co_id).add_columns(role_display)
 
-    # Apply branch restrictions for non-company-wide users
-    if not _has_company_wide_access(ctx):
-        branch_ids = _get_user_branch_ids(ctx)
-        if branch_ids:
-            # Regular users: company-wide parties + parties from their branches
-            q = q.where(
-                (Party.branch_id.is_(None)) |  # Company-wide parties
-                (Party.branch_id.in_(branch_ids))  # Parties from their branches
-            )
-        else:
-            # Users with no branch access: only company-wide parties
-            q = q.where(Party.branch_id.is_(None))
+    q = q.order_by(
+        Party.created_at.desc(),  # ✅ newest first
+        case((Party.role == PartyRoleEnum.SUPPLIER, 0), else_=1),  # stable grouping
+        Party.name.asc(),
+    )
 
     return q
 
 
-# Cash Parties Dropdown (is_cash_party = True)
 def build_cash_parties_dropdown(session: Session, ctx: AffiliationContext, params: Mapping[str, Any]):
     """
-    Dropdown for cash parties (is_cash_party = True)
-    - Typically used for walk-in customers or cash transactions
+    Cash parties dropdown (is_cash_party=True)
+
+    ✅ Scope:
+      - Same company: see ALL cash parties (no branch restriction)
+      - Different company: no data
+
+    ✅ Sorting:
+      - Newest first
     """
     co_id = _co(ctx)
     if not co_id:
-        return select(Party.id.label("value")).where(Party.id == -1)
+        return _empty_dropdown()
 
-    # Build location display
-    location_display = case(
-        (Party.branch_id.is_(None), "Company Wide"),
-        else_=Branch.name
-    ).label("location")
+    try:
+        _enforce_company_scope_or_empty(ctx, co_id)
+    except Exception:
+        return _empty_dropdown()
 
-    q = (
-        select(
-            Party.id.label("value"),
-            Party.name.label("label"),
-            Party.code.label("code"),
-            location_display,
-            Party.branch_id.label("branch_id"),
-            Party.role.label("role"),
-        )
-        .select_from(Party)
-        .join(Company, Company.id == Party.company_id)
-        .outerjoin(Branch, Branch.id == Party.branch_id)
-        .where(
-            Party.company_id == co_id,
-            Party.is_cash_party.is_(True),
-            Party.status == "Active"
-        )
-        .order_by(
-            # Company-wide first, then by branch
-            case((Party.branch_id.is_(None), 0), else_=1),
-            Branch.name.asc(),
-            Party.name.asc()
-        )
-    )
+    q = _base_party_dropdown_query(company_id=co_id).where(Party.is_cash_party.is_(True))
 
-    # Apply branch restrictions for non-company-wide users
-    if not _has_company_wide_access(ctx):
-        branch_ids = _get_user_branch_ids(ctx)
-        if branch_ids:
-            # Regular users: company-wide cash parties + cash parties from their branches
-            q = q.where(
-                (Party.branch_id.is_(None)) |  # Company-wide cash parties
-                (Party.branch_id.in_(branch_ids))  # Cash parties from their branches
-            )
-        else:
-            # Users with no branch access: only company-wide cash parties
-            q = q.where(Party.branch_id.is_(None))
+    q = q.order_by(Party.created_at.desc(), Party.name.asc())
 
     return q

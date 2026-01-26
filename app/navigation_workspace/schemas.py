@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional, List
 from pydantic import BaseModel, Field
 # -----------------------------
@@ -28,7 +28,7 @@ class NavWorkspaceOut(BaseModel):
     links: List[NavLinkOut]
     # Section groups with links.
     sections: List[NavSectionOut]
-
+    home_path: Optional[str] = None
 
 class NavTreeOut(BaseModel):
     workspaces: List[NavWorkspaceOut]
@@ -68,46 +68,65 @@ class DocTypeDetailsOut(BaseModel):
     locations: List[DirectoryLocation]
 
 
-
 # -----------------------------
 # Admin: packages & visibility
 # -----------------------------
 
+class CompanyPackageIn(BaseModel):
+    """
+    One row per package (ERP-style).
+    All fields are per-package, no shared valid_from for all.
+    Dates come as DATE ONLY ("2025-11-27").
+    """
+    slug: str
+    is_enabled: bool
+    valid_from: Optional[date] = None
+    valid_until: Optional[date] = None
 
 
 class CompanyPackagesSetIn(BaseModel):
-  """Request body for setting company packages."""
-  package_slugs: List[str] = Field(default_factory=list)
-  valid_from: datetime
-  valid_until: Optional[datetime] = None
+    """
+    Bulk set/toggle many packages for a company at once.
+    """
+    packages: List[CompanyPackageIn] = Field(default_factory=list)
 
 
 class CompanyPackageOut(BaseModel):
-  company_id: int
-  package_id: int
-  package_slug: str
-  package_name: str
-  is_enabled: bool
-  valid_from: datetime
-  valid_until: Optional[datetime]
+    company_id: int
+    package_id: int
+    package_slug: str
+    package_name: str
+    is_enabled: bool
+    valid_from: datetime
+    valid_until: Optional[datetime]
 
 
 class CompanyPackagesOut(BaseModel):
-  company_id: int
-  packages: List[CompanyPackageOut]
+    company_id: int
+    packages: List[CompanyPackageOut]
+
+
+class CompanyPackageToggleIn(BaseModel):
+    """
+    Enable/disable a single package for a company.
+    Used by the single-package endpoint.
+    """
+    is_enabled: bool
+    valid_from: Optional[date] = None
+    valid_until: Optional[date] = None
 
 
 class SystemWorkspaceVisibilityIn(BaseModel):
-  company_id: int
-  workspace_slug: str
-  is_enabled: bool
-  reason: Optional[str] = None
+    company_id: int
+    workspace_slug: str
+    is_enabled: bool
+    reason: Optional[str] = None
 
 
 class CompanyWorkspaceVisibilityIn(BaseModel):
-  company_id: int
-  workspace_slug: str
-  is_enabled: bool
-  branch_id: Optional[int] = None
-  user_id: Optional[int] = None
-  reason: Optional[str] = None
+    company_id: int
+    workspace_slug: str
+    is_enabled: bool
+    branch_id: Optional[int] = None
+    user_id: Optional[int] = None
+    reason: Optional[str] = None

@@ -36,7 +36,7 @@ class User(BaseModel):
         "UserAffiliation",
         back_populates="user",
         cascade="all, delete-orphan",
-        lazy="selectin",
+        lazy="select"
     )
 
     # ADD THESE MISSING RELATIONSHIPS
@@ -149,10 +149,10 @@ class UserAffiliation(BaseModel):
     is_primary: Mapped[bool] = mapped_column(db.Boolean, nullable=False, default=False)
 
     # relationships
-    user = db.relationship("User", back_populates="affiliations", lazy="joined")
-    company = db.relationship("Company", lazy="joined")
-    branch = db.relationship("Branch", lazy="joined")
-    user_type = db.relationship("UserType", lazy="joined")
+    user = db.relationship("User", back_populates="affiliations", lazy="select")
+    company = db.relationship("Company", lazy="select")
+    branch = db.relationship("Branch", lazy="select")
+    user_type = db.relationship("UserType", lazy="select")
 
     __table_args__ = (
         # prevent duplicate affiliations for the same exact scope + type + entity

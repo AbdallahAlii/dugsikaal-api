@@ -144,7 +144,7 @@ class SalesInvoiceUpdate(BaseModel):
     paid_amount: Optional[Decimal] = Field(None)
     mode_of_payment_id: Optional[int] = None
     cash_bank_account_id: Optional[int] = None
-
+    branch_id: Optional[int] = None
     # return support (immutable once created, but allow idempotent PATCH if same)
     is_return: Optional[bool] = None
     return_against_id: Optional[int] = None

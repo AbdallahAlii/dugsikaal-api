@@ -5,6 +5,8 @@ from app.application_org.dropdown.dropdown_builders import build_companies_dropd
     build_departments_dropdown
 
 from app.application_org.models.company import Company, Branch, Department
+from app.application_org.query_builders.dropdown_builders_platform import build_companies_platform_dropdown, \
+    build_platform_branches_dropdown, build_company_branches_dependent_dropdown
 
 # Dropdown configurations for the geo module (Companies, Branches, Departments)
 ORG_DROPDOWN_CONFIGS = {
@@ -41,6 +43,55 @@ ORG_DROPDOWN_CONFIGS = {
         default_limit=50,
         max_limit=200,
     ),
+    "companies_platform": DropdownConfig(
+        permission_tag="Company",  # RBAC + _has_platform_admin_scope guard
+        query_builder=build_companies_platform_dropdown,
+        search_fields=[Company.name, Company.prefix],
+        filter_fields={
+            "status": Company.status,
+            "city_id": Company.city_id,
+        },
+        cache_enabled=True,
+        cache_ttl=900,  # 15 minutes
+        cache_scope=CacheScope.GLOBAL,
+        default_limit=50,
+        max_limit=200,
+        window_when_empty=200,
+    ),
+    "branches_platform": DropdownConfig(
+        permission_tag="Branch",
+        query_builder=build_platform_branches_dropdown,
+        search_fields=[Branch.name, Branch.code],
+        filter_fields={
+            "company_id": Branch.company_id,
+            "status": Branch.status,
+            "is_hq": Branch.is_hq,
+        },
+        cache_enabled=True,
+        cache_ttl=900,
+        cache_scope=CacheScope.GLOBAL,
+        default_limit=50,
+        max_limit=200,
+        window_when_empty=200,
+    ),
+    # 🔹 NEW: Dependent branches for a given company
+    "company_branches": DropdownConfig(
+        permission_tag="Branch",
+        query_builder=build_company_branches_dependent_dropdown,
+        search_fields=[Branch.name, Branch.code],
+        filter_fields={
+            "company_id": Branch.company_id,  # enforce dependency
+            "status": Branch.status,
+            "is_hq": Branch.is_hq,
+        },
+        cache_enabled=True,
+        cache_ttl=900,
+        cache_scope=CacheScope.COMPANY,
+        default_limit=50,
+        max_limit=200,
+        window_when_empty=0,  # do NOT query until company_id is provided
+    ),
+
 }
 
 def register_org_dropdowns() -> None:

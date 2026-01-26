@@ -9,11 +9,43 @@ from app.application_stock.stock_models import DocStatusEnum
 
 # --- Domain Exceptions (User-Friendly for APIs and UI) ---
 
-
+#
+# class BizValidationError(ValueError):
+#     """Represents a business rule violation that is safe to display to the end-user."""
+#     pass
 class BizValidationError(ValueError):
-    """Represents a business rule violation that is safe to display to the end-user."""
-    pass
+    """
+    Safe to show to end user.
+    Add optional 'code' and 'field' so UI can show ERP-style messages.
+    """
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "VALIDATION_ERROR",
+        field: Optional[str] = None,
+        row: Optional[int] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.field = field
+        self.row = row
+        self.extra = extra or {}
 
+    def to_dict(self) -> Dict[str, Any]:
+        data: Dict[str, Any] = {
+            "code": self.code,
+            "message": self.message,
+        }
+        if self.field:
+            data["field"] = self.field
+        if self.row is not None:
+            data["row"] = self.row
+        if self.extra:
+            data["extra"] = self.extra
+        return data
 
 class DocumentStateError(BizValidationError):
     """Raised for an operation invalid in the document's current state."""
@@ -71,6 +103,11 @@ ERR_JE_SAME_ACCOUNT_DR_CR = (
 ERR_JE_TOTAL_NOT_BALANCED = (
     "Total Debit must be equal to Total Credit. The difference is {diff}."
 )
+# --- VAT messages (short, ERP-style) ---
+ERR_VAT_RATE_REQUIRES_ACCOUNT = "VAT rate is set. Select a VAT account."
+ERR_VAT_RATE_INVALID = "VAT rate must be greater than zero."
+ERR_VAT_CLEARED = "VAT was removed because the VAT rate is empty or zero."
+
 # --- Document Status Guards ---
 
 

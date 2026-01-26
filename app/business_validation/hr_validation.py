@@ -13,6 +13,16 @@ ERR_EMP_PRIMARY_ASSIGNMENT_REQUIRED = (
 )
 ERR_EMP_JOINING_DATE_REQUIRED = "Date of joining is required."
 ERR_EMP_DOB_AFTER_JOINING = "Date of birth cannot be on or after the date of joining."
+ERR_EMP_GENDER_INVALID = "Selected gender is not valid."
+ERR_EMP_HOLIDAY_LIST_INVALID = (
+    "Selected Holiday List is invalid or does not belong to this company."
+)
+ERR_EMP_SHIFT_TYPE_INVALID = (
+    "Selected Shift Type is invalid or does not belong to this company."
+)
+ERR_EMP_ASSIGNMENT_COMPANY_MISMATCH = (
+    "All assignments must belong to the same company as the employee."
+)
 
 ERR_HOLIDAY_LIST_RANGE = "Holiday List 'To Date' cannot be before 'From Date'."
 ERR_HOLIDAY_OUT_OF_RANGE = "Holiday date must be within the Holiday List range."
@@ -29,6 +39,7 @@ ERR_CHECKIN_LOG_TYPE_REQUIRED = "Log type is required for Employee Checkin."
 ERR_CHECKIN_EMP_NOT_FOUND = "Employee not found for the provided identifier."
 ERR_CHECKIN_UNSUPPORTED_SOURCE = "Unsupported source for Employee Checkin."
 ERR_CHECKIN_DUPLICATE = "This employee already has a log with the same timestamp."
+
 
 # ----------------------------------------------------------------------
 # Employee validations

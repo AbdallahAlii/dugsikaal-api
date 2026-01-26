@@ -1,26 +1,20 @@
 from __future__ import annotations
-from typing import Optional
-from decimal import Decimal
+
+from typing import Optional, List
 from pydantic import BaseModel, Field, field_validator
+
 from app.common.models.base import StatusEnum
 
-# ---------- Create / Update payloads ----------
 
 class WarehouseCreate(BaseModel):
-    """
-    Create:
-      - Company Root:  is_group=True, parent_warehouse_id=None, branch_id=None
-      - Branch Group:  is_group=True, parent_warehouse_id=<company_root_id>, branch_id=...
-      - Leaf:          is_group=False, parent_warehouse_id=<branch_group_id>, branch_id=...
-    """
     company_id: Optional[int] = None
-    branch_id:  Optional[int] = None
+    branch_id: Optional[int] = None
     parent_warehouse_id: Optional[int] = None
 
     name: str = Field(..., max_length=150)
-    code: Optional[str] = Field(None, max_length=100, description="Manual code; auto-generated if omitted.")
+    code: Optional[str] = Field(None, max_length=100)
     description: Optional[str] = None
-    is_group: bool = True
+    is_group: Optional[bool] = None
 
     @field_validator("name")
     @classmethod
@@ -29,19 +23,42 @@ class WarehouseCreate(BaseModel):
             raise ValueError("Name is required.")
         return v.strip()
 
+    @field_validator("code")
+    @classmethod
+    def _code_strip(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        vv = v.strip()
+        return vv or None
+
 
 class WarehouseUpdate(BaseModel):
-    """
-    Update metadata and/or reparent.
-    - is_group / code / company_id / branch_id are immutable here to keep flows simple.
-    """
     name: Optional[str] = Field(None, max_length=150)
     description: Optional[str] = None
     parent_warehouse_id: Optional[int] = None
     status: Optional[StatusEnum] = None
 
+    @field_validator("name")
+    @classmethod
+    def _name_strip(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        vv = v.strip()
+        return vv or None
 
-# ---------- API outputs ----------
+    @field_validator("parent_warehouse_id")
+    @classmethod
+    def _parent_id_positive(cls, v: Optional[int]) -> Optional[int]:
+        if v is None:
+            return None
+        if v <= 0:
+            raise ValueError("parent_warehouse_id must be a positive integer.")
+        return v
+
+
+class WarehouseBulkDelete(BaseModel):
+    ids: List[int] = Field(..., min_length=1)
+
 
 class WarehouseOut(BaseModel):
     id: int
@@ -56,6 +73,8 @@ class WarehouseOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
 class IdCode(BaseModel):
     id: int
     code: str

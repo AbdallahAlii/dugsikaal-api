@@ -1,11 +1,17 @@
+# app/application_parties/schemas.py
+
 from __future__ import annotations
+
 from typing import Optional, List
+
 from pydantic import BaseModel, Field
 
 from app.application_parties.parties_models import PartyNatureEnum, PartyRoleEnum
 
 
-# --- Inputs ---
+# ---------------------------------------------------------------------------
+# Nested / detail inputs
+# ---------------------------------------------------------------------------
 
 class PartyOrganizationDetailCreate(BaseModel):
     org_company_name: Optional[str] = None
@@ -13,8 +19,7 @@ class PartyOrganizationDetailCreate(BaseModel):
     org_contact_name: Optional[str] = None
     org_contact_phone: Optional[str] = None
     org_contact_email: Optional[str] = None
-    # REFACTORED: Removed city_id to align with the corrected model.
-    # The main PartyCreate schema now handles the city_id.
+    # NOTE: city_id lives on Party itself, not here.
 
 
 class PartyCommercialPolicyCreate(BaseModel):
@@ -22,14 +27,29 @@ class PartyCommercialPolicyCreate(BaseModel):
     credit_limit: float = 0.0
 
 
+# ---------------------------------------------------------------------------
+# Core Party inputs
+# ---------------------------------------------------------------------------
+
 class PartyCreate(BaseModel):
-    # Required fields
+    """
+    Input schema for creating a Party.
+
+    Company/branch are *not* included here:
+    - `company_id` is taken from AffiliationContext or passed as a separate
+      argument to the service when needed (e.g., Data Import).
+    - `branch_id` is passed separately to the service and is optional:
+        * if provided -> branch-scoped party
+        * if omitted -> company-level (global) party
+    """
+
+    # Required
     name: str
     nature: PartyNatureEnum
     role: PartyRoleEnum
     phone: str
 
-    # Optional fields
+    # Optional basics
     code: Optional[str] = None
     is_cash_party: bool = False
     email: Optional[str] = None
@@ -37,17 +57,23 @@ class PartyCreate(BaseModel):
     city_id: Optional[int] = None
     notes: Optional[str] = None
 
-    # Detail models
+    # Optional nested detail models
     org_details: Optional[PartyOrganizationDetailCreate] = None
     commercial_policy: Optional[PartyCommercialPolicyCreate] = None
 
-    # REFACTORED: Removed the Pydantic validator. While good for initial checks,
-    # the ultimate authority for this business rule must be the service layer to ensure
-    # consistency across both create and update operations. Placing it only here
-    # gives a false sense of complete validation.
-
 
 class PartyUpdate(BaseModel):
+    """
+    Input schema for updating a Party.
+
+    We intentionally do NOT allow changing:
+      - role
+      - nature
+      - is_cash_party
+    via this general update API. If you ever need to support that,
+    it should be a dedicated, controlled action.
+    """
+
     name: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
@@ -55,15 +81,13 @@ class PartyUpdate(BaseModel):
     city_id: Optional[int] = None
     notes: Optional[str] = None
 
-    # NOTE: It's good practice to not allow changing fundamental properties like role, nature, or is_cash_party
-    # via a general update endpoint. If that's needed, it should be a specific, controlled action.
-
-    # Nested updates
     org_details: Optional[PartyOrganizationDetailCreate] = None
     commercial_policy: Optional[PartyCommercialPolicyCreate] = None
 
 
-# --- Outputs ---
+# ---------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------
 
 class PartyMinimalOut(BaseModel):
     id: int
@@ -73,7 +97,7 @@ class PartyMinimalOut(BaseModel):
     branch_id: Optional[int] = None
 
     class Config:
-        from_attributes = True  # Pydantic v2 syntax for orm_mode
+        from_attributes = True  # Pydantic v2 equivalent of orm_mode = True
 
 
 class PartyCreateResponse(BaseModel):
@@ -81,7 +105,9 @@ class PartyCreateResponse(BaseModel):
     party: PartyMinimalOut
 
 
-# --- Other Schemas ---
+# ---------------------------------------------------------------------------
+# Other schemas
+# ---------------------------------------------------------------------------
 
 class PartyBulkDelete(BaseModel):
-    ids: List[int]
+    ids: List[int] = Field(..., min_length=1)

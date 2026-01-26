@@ -1,14 +1,67 @@
-# app/hr/schemas.py
+# app/application_hr/schemas/schemas.py
 from __future__ import annotations
+
 from typing import Optional, List, Dict
 from datetime import date, datetime
+
 from pydantic import BaseModel, Field, validator
 
-from app.application_hr.models.hr import EmploymentTypeEnum, AttendanceStatusEnum, CheckinLogTypeEnum, CheckinSourceEnum
+from app.application_hr.models.hr import (
+    EmploymentTypeEnum,
+    AttendanceStatusEnum,
+    CheckinLogTypeEnum,
+    CheckinSourceEnum,
+)
 from app.common.models.base import StatusEnum
 
 
-# ----- inputs -----
+# ----------------------------
+# Employee (create / update)
+# ----------------------------
+
+class EmployeeAssignmentCreate(BaseModel):
+    branch_id: int
+    from_date: date
+    is_primary: bool = False
+    department_id: Optional[int] = None
+    job_title: Optional[str] = None
+    extra: Dict = Field(default_factory=dict)
+
+
+class EmployeeEmergencyContactCreate(BaseModel):
+    full_name: str
+    relationship_type: str  # PersonRelationshipEnum by name
+    phone_number: str
+
+
+class EmployeeCreate(BaseModel):
+    code: Optional[str] = None
+    full_name: str
+    company_id: Optional[int] = None  # optional: resolved from branch + scope
+    personal_email: Optional[str] = None
+    phone_number: Optional[str] = None
+    dob: Optional[date] = None
+    date_of_joining: date
+    sex: Optional[str] = None  # GenderEnum by name
+    employment_type: Optional[EmploymentTypeEnum] = None
+    holiday_list_id: Optional[int] = None
+    default_shift_type_id: Optional[int] = None
+
+    assignments: List[EmployeeAssignmentCreate]
+    emergency_contacts: Optional[List[EmployeeEmergencyContactCreate]] = None
+    attendance_device_id: Optional[str] = None
+    # roles to assign to the created user (Role IDs)
+    roles: Optional[List[int]] = None
+
+    @validator("assignments")
+    def _at_least_one_assignment(cls, v):
+        if not v:
+            raise ValueError("At least one assignment is required.")
+        if not any(a.is_primary for a in v):
+            raise ValueError("At least one primary assignment is required.")
+        return v
+
+
 class EmployeeUpdate(BaseModel):
     full_name: Optional[str] = None
     personal_email: Optional[str] = None
@@ -20,9 +73,13 @@ class EmployeeUpdate(BaseModel):
     employment_type: Optional[EmploymentTypeEnum] = None
     holiday_list_id: Optional[int] = None
     default_shift_type_id: Optional[int] = None
-    emergency_contacts: Optional[List["EmployeeEmergencyContactCreate"]] = None
-    assignments: Optional[List["EmployeeAssignmentCreate"]] = None
+    emergency_contacts: Optional[List[EmployeeEmergencyContactCreate]] = None
+    assignments: Optional[List[EmployeeAssignmentCreate]] = None
     img_key: Optional[str] = None
+    attendance_device_id: Optional[str] = None
+
+    # NEW: roles to (re)set for this employee's user
+    roles: Optional[List[int]] = None
 
     @validator("assignments")
     def _at_least_one_assignment(cls, v):
@@ -30,59 +87,29 @@ class EmployeeUpdate(BaseModel):
             raise ValueError("At least one primary assignment is required.")
         return v
 
-class EmployeeAssignmentCreate(BaseModel):
-    branch_id: int
-    from_date: date
-    is_primary: bool = False
-    department_id: Optional[int] = None
-    job_title: Optional[str] = None
-    extra: Dict = Field(default_factory=dict)
 
-class EmployeeEmergencyContactCreate(BaseModel):
-    full_name: str
-    relationship_type: str  # PersonRelationshipEnum by name
-    phone_number: str
-
-
-class EmployeeCreate(BaseModel):
-    code: Optional[str] = None
-    full_name: str
-    company_id: Optional[int] = None  # optional: resolved from branch
-    personal_email: Optional[str] = None
-    phone_number: Optional[str] = None
-    dob: Optional[date] = None
-    date_of_joining: date
-    sex: Optional[str] = None  # GenderEnum by name
-    employment_type: Optional[EmploymentTypeEnum] = None
-    holiday_list_id: Optional[int] = None
-    default_shift_type_id: Optional[int] = None
-
-    assignments: List["EmployeeAssignmentCreate"]
-    emergency_contacts: Optional[List["EmployeeEmergencyContactCreate"]] = None
-
-    @validator("assignments")
-    def _at_least_one_assignment(cls, v):
-        if not v:
-            raise ValueError("At least one assignment is required.")
-        if not any(a.is_primary for a in v):
-            raise ValueError("At least one primary assignment is required.")
-        return v
-
-
-# ----- outputs -----
+# ----------------------------
+# Employee outputs
+# ----------------------------
 
 class CreatedUserOut(BaseModel):
     id: int
     username: str
     temp_password: Optional[str] = None  # only returned at creation time
+
+
 class EmployeeMinimalOut(BaseModel):
     id: int
     code: str
 
 
 class EmployeeCreateResponse(BaseModel):
+    # mainly used as a container for employee + user in the service layer
     message: str = "Employee created successfully"
-    employee: EmployeeMinimalOut # Change from EmployeeOut to the new class
+    employee: EmployeeMinimalOut
+    user: Optional[CreatedUserOut] = None
+
+
 # ----------------------------
 # Holiday List + Holidays
 # ----------------------------
@@ -118,8 +145,9 @@ class HolidayListUpdate(BaseModel):
 class ShiftTypeCreate(BaseModel):
     company_id: Optional[int] = None
     name: str
-    start_time: str  # "HH:MM"
-    end_time: str    # "HH:MM"
+    # Accepts "HH:MM", "HH:MM:SS" or "H:MM AM/PM"
+    start_time: str
+    end_time: str
     enable_auto_attendance: bool = False
     process_attendance_after: Optional[date] = None
     is_night_shift: bool = False

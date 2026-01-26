@@ -13,6 +13,7 @@ from app.application_accounting.chart_of_accounts.models import (
     GeneralLedgerEntry,
 )
 from app.application_stock.stock_models import DocStatusEnum
+from app.business_validation.item_validation import BizValidationError
 from app.common.generate_code.service import generate_next_code, ensure_manual_code_is_next_and_bump
 
 # ⚠️ Adjust this import to your actual Branch model location
@@ -25,19 +26,36 @@ class PCVRepository:
 
     # ---- codes ----
     def generate_or_validate_code(self, *, company_id: int, manual: Optional[str]) -> str:
+        """
+        Codes are unique per company (no branch dimension for PCV).
+        """
         if manual:
             code = manual.strip()
             exists = self.s.execute(
                 select(PeriodClosingVoucher.id).where(
                     PeriodClosingVoucher.company_id == company_id,
-                    PeriodClosingVoucher.code == code
+                    PeriodClosingVoucher.code == code,
                 ).limit(1)
             ).scalar_one_or_none()
             if exists:
-                raise ValueError("Document code already exists.")
-            ensure_manual_code_is_next_and_bump(prefix=self.PCV_PREFIX, company_id=company_id, branch_id=None, code=code)
+                # user-friendly validation instead of 500
+                raise BizValidationError("Document code already exists for this company.")
+
+            ensure_manual_code_is_next_and_bump(
+                prefix=self.PCV_PREFIX,
+                company_id=company_id,
+                branch_id=None,
+                code=code,
+            )
             return code
-        return generate_next_code(prefix=self.PCV_PREFIX, company_id=company_id, branch_id=None, session=self.s)
+
+        # auto-generate next in sequence for that company
+        return generate_next_code(
+            prefix=self.PCV_PREFIX,
+            company_id=company_id,
+            branch_id=None,
+            session=self.s,
+        )
 
     # ---- persistence ----
     def save(self, pcv: PeriodClosingVoucher) -> None:
@@ -92,10 +110,20 @@ class PCVRepository:
         return Decimal(str(inc)) - Decimal(str(exp))
 
     # ---- P&L Summary helper ----
-    def get_or_create_pl_summary_account(self, company_id: int, *, code: str = "3999", name: str = "P&L Summary") -> int:
+    def get_or_create_pl_summary_account(
+            self,
+            company_id: int,
+            *,
+            code: str = "3999",
+            name: str = "P&L Summary"
+    ) -> int:
         acc_id = self.s.execute(
-            select(Account.id).where(Account.company_id == company_id, Account.code == code).limit(1)
+            select(Account.id).where(
+                Account.company_id == company_id,
+                Account.code == code
+            ).limit(1)
         ).scalar_one_or_none()
+
         if acc_id:
             return int(acc_id)
 
@@ -104,8 +132,8 @@ class PCVRepository:
             parent_account_id=None,
             code=code,
             name=name,
-            account_type=AccountTypeEnum.EQUITY,
-            report_type=ReportTypeEnum.BALANCE_SHEET,
+            account_type=AccountTypeEnum.EQUITY,  # still equity-type
+            report_type=ReportTypeEnum.PROFIT_AND_LOSS,  # 🔴 FIX: P&L, not B/S
             is_group=False,
             enabled=True,
         )

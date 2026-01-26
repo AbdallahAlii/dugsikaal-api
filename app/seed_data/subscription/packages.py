@@ -1,49 +1,67 @@
-# seed_data/navigation_workspace/subscription/packages.py
 # -*- coding: utf-8 -*-
 
-# Each package lists workspaces by slug.
+"""
+MODULE_PACKAGES defines the purchasable units of the software.
+Each package activates specific Workspaces (seed_data/navigation_workspace/data.py).
+
+Rules:
+- School ERP must include the full education flow + finance + portals.
+- Portals cannot be sold standalone (always bundled).
+- Procurement can be included only as part of a bigger package (Full Suite).
+"""
+
 MODULE_PACKAGES = [
+    # ==========================================================
+    # SCHOOL ERP (Education + Fees + Accounting + Portals)
+    # ==========================================================
     {
-        "slug": "inventory",
-        "name": "Inventory",
-        "description": "Stock, warehouses, and movements",
-        "workspaces": ["stock", "hr"],
+        "slug": "school_erp",
+        "name": "School ERP",
+        "description": "Complete school system: admissions, academics, scheduling, assessment, fees, accounting, and portals",
+        "workspaces": [
+            # Education Core
+            "admission",
+            "academics",
+            "scheduling",
+            "assessment",
+
+            # Finance / Billing
+            "fees",
+            "accounting",
+
+            # Portals (bundled)
+            "student-portal",
+            "teacher-portal",
+            "guardian-portal",
+
+            # Admin / user management
+            "administration",
+        ],
         "is_enabled": True,
     },
-    {
-        "slug": "buying",
-        "name": "Buying",
-        "description": "Procurement & receipts",
-        "workspaces": ["buying", "hr"],
-        "is_enabled": True,
-    },
-    {
-        "slug": "selling",
-        "name": "Selling",
-        "description": "Sales & delivery",
-        "workspaces": ["selling", "hr"],
-        "is_enabled": True,
-    },
-    {
-        "slug": "accounting",
-        "name": "Accounting",
-        "description": "Finance & accounting",
-        "workspaces": ["accounting", "hr"],
-        "is_enabled": True,
-    },
+
+    # ==========================================================
+    # FULL SUITE (School ERP + Procurement)
+    # ==========================================================
     {
         "slug": "full_suite",
         "name": "Full Suite",
-        "description": "All business modules",
+        "description": "School ERP plus procurement and inventory management",
         "workspaces": [
-            "stock",
+            # Everything in School ERP
+            "admission",
+            "academics",
+            "scheduling",
+            "assessment",
+            "fees",
             "accounting",
-            "buying",
-            "selling",
-            "hr",
-            "access-control",
-            "doctype-directory",
-            # host-admin is system-only; do not bundle by default
+            "student-portal",
+            "teacher-portal",
+            "guardian-portal",
+            "administration",
+
+            # Add operations
+            "procurement",
         ],
         "is_enabled": True,
     },

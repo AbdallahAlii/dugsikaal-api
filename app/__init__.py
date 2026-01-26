@@ -146,7 +146,8 @@ def create_app() -> Flask:
     app.register_blueprint(data_imports_bp)
     from app.application_parties.endpoints import bp as parties_bp
     app.register_blueprint(parties_bp, url_prefix="/api/parties")
-
+    from app.application_org.endpoints import bp as org
+    app.register_blueprint(org, url_prefix="/api/platform-admin")
     from app.application_buying.endpoints import bp as buying_bp
     app.register_blueprint(buying_bp, url_prefix="/api/buying")
     from app.application_stock.endpoints import bp as stock_bp
@@ -163,4 +164,24 @@ def create_app() -> Flask:
 
     from app.application_pricing.api import bp as pricing_bp
     app.register_blueprint(pricing_bp)
+    from app.application_shareholder.endpoints import bp as shareholder_bp
+    app.register_blueprint(shareholder_bp)
+
+    from app.application_meta.endpoints import meta_bp as meta_bp
+    app.register_blueprint(meta_bp)
+
+    # ---- Print engine (HTML + /api/print) ----
+    from app.application_print import init_app as init_print_app
+    init_print_app(app)
+
+
+    from app.application_education.institution.endpoints import bp as academic_bp
+    app.register_blueprint(academic_bp, url_prefix="/api/academic")
+
+
+    from app.application_education.student.endpoints import bp as student_bp
+    app.register_blueprint(student_bp, url_prefix="/api/student")
+
+    from app.application_education.programs.endpoints import bp as program_bp
+    app.register_blueprint(program_bp, url_prefix="/api/program")
     return app

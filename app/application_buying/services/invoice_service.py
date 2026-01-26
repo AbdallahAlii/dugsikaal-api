@@ -46,9 +46,32 @@ class PurchaseInvoiceService:
         self.s: Session = session or db.session
         self.repo = PurchaseInvoiceRepository(self.s)
 
+
     # -------------------------------------------------------------------------
     # Helpers
     # -------------------------------------------------------------------------
+    def _derive_status_after_submit(self, pi_obj) -> DocStatusEnum:
+        """
+        Determine the correct status after submitting a Purchase Invoice.
+        Based on payment amount relative to total.
+        """
+        from decimal import Decimal as Dec, ROUND_HALF_UP
+
+        def _D(x) -> Dec:
+            return Dec(str(x or 0)).quantize(Dec("0.0001"), rounding=ROUND_HALF_UP)
+
+        # Returns (debit notes) get RETURNED status
+        if pi_obj.is_return:
+            return DocStatusEnum.RETURNED
+
+        paid = _D(pi_obj.paid_amount)
+        total = _D(pi_obj.total_amount)
+
+        if paid <= _D("0"):
+            return DocStatusEnum.UNPAID
+        if paid >= total:
+            return DocStatusEnum.PAID
+        return DocStatusEnum.PARTIALLY_PAID
     def _generate_or_validate_code(self, company_id: int, branch_id: int, code: Optional[str]) -> str:
         from app.common.generate_code.service import generate_next_code, ensure_manual_code_is_next_and_bump
 
@@ -1062,9 +1085,7 @@ class PurchaseInvoiceService:
                     )
                 )
 
-                pi_locked.doc_status = (
-                    DocStatusEnum.RETURNED if pi_locked.is_return else DocStatusEnum.SUBMITTED
-                )
+                pi_locked.doc_status = self._derive_status_after_submit(pi_locked)
                 self.repo.save(pi_locked)
 
             self.s.commit()
@@ -1169,9 +1190,7 @@ class PurchaseInvoiceService:
                 )
             )
 
-            pi_locked.doc_status = (
-                DocStatusEnum.RETURNED if pi_locked.is_return else DocStatusEnum.SUBMITTED
-            )
+            pi_locked.doc_status = self._derive_status_after_submit(pi_locked)
             self.repo.save(pi_locked)
 
         self.s.commit()

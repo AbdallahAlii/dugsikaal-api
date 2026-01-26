@@ -147,6 +147,11 @@ class WorkspacePageLink(BaseModel):
         Index("ix_wslink_section", "section_id"),
         Index("ix_wslink_page", "page_id"),
         Index("ix_wslink_order", "order_index"),
+    # exactly one of (page_id, target_route) must be set
+        CheckConstraint(
+            "((page_id IS NOT NULL) <> (target_route IS NOT NULL))",
+            name="ck_wslink_xor_page_vs_route"
+        )
     )
 
     section_id: Mapped[int] = mapped_column(
@@ -168,10 +173,4 @@ class WorkspacePageLink(BaseModel):
     section: Mapped["WorkspaceSection"] = relationship(back_populates="page_links")
     page:    Mapped[Optional["Page"]] = relationship()
 
-    __table_args__ = (
-        # exactly one of (page_id, target_route) must be set
-        CheckConstraint(
-            "((page_id IS NOT NULL) <> (target_route IS NOT NULL))",
-            name="ck_wslink_xor_page_vs_route"
-        ),
-    )
+

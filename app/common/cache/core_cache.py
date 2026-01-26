@@ -43,9 +43,19 @@ def get_version(vkey: str, default: int = 1) -> int:
     except Exception:
         return default
 
+# def bump_version(vkey: str) -> int:
+#     try:
+#         return int(r.incr(vkey))
+#     except Exception as e:
+#         log.error("bump_version failed vkey=%s err=%s", vkey, e)  # fixed arg order
+#         return 0
 def bump_version(vkey: str) -> int:
     try:
-        return int(r.incr(vkey))
+        n = int(r.incr(vkey))
+        # If key was missing, INCR returns 1 which doesn't invalidate when default=1.
+        if n == 1:
+            n = int(r.incr(vkey))  # make it 2
+        return n
     except Exception as e:
-        log.error("bump_version failed vkey=%s err=%s", vkey, e)  # fixed arg order
+        log.error("bump_version failed vkey=%s err=%s", vkey, e)
         return 0

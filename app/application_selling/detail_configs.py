@@ -5,11 +5,11 @@ from app.application_doctypes.core_lists.config import DetailConfig, register_de
 from app.application_selling.query_builders.detail_builders import (
     # resolvers
     resolve_sales_quotation_by_code,
-    resolve_delivery_note_by_code,
+
     resolve_sales_invoice_by_code,
     # loaders
     load_sales_quotation,
-    load_delivery_note,
+
     load_sales_invoice,
 )
 
@@ -20,12 +20,7 @@ SELLING_DETAIL_CONFIGS = {
         resolver_map={"code": resolve_sales_quotation_by_code},
         cache_enabled=False,
     ),
-    "sales_delivery_notes": DetailConfig(
-        permission_tag="Sales Delivery Note",
-        loader=load_delivery_note,
-        resolver_map={"code": resolve_delivery_note_by_code},
-        cache_enabled=False,
-    ),
+
     "sales_invoices": DetailConfig(
         permission_tag="Sales Invoice",
         loader=load_sales_invoice,

@@ -1,10 +1,10 @@
-# app/application_stock/query_builders/warehouse_detail_builders.py
 from __future__ import annotations
-from typing import Dict, Any, Optional
 
-from sqlalchemy import select, and_, func
-from sqlalchemy.orm import Session
-from werkzeug.exceptions import NotFound, Forbidden, BadRequest
+from typing import Dict, Any
+
+from sqlalchemy import select, func, case
+from sqlalchemy.orm import Session, aliased
+from werkzeug.exceptions import NotFound, BadRequest, Forbidden
 
 from app.security.rbac_effective import AffiliationContext
 from app.security.rbac_guards import ensure_scope_by_ids
@@ -20,6 +20,20 @@ def _status_slug(v) -> str:
     return (s or "inactive").lower()
 
 
+def _require_company_ctx(ctx: AffiliationContext) -> int | None:
+    """
+    For non-system admins, company_id must exist (tenant isolation).
+    System Admin bypass is handled by ensure_scope_by_ids, but we still
+    need company_id to resolve by company for normal users.
+    """
+    if getattr(ctx, "is_system_admin", False):
+        return None
+    co_id = getattr(ctx, "company_id", None)
+    if not co_id:
+        raise Forbidden("Company context is required.")
+    return int(co_id)
+
+
 # ---------- resolvers ----------
 def resolve_id_strict(_: Session, __: AffiliationContext, v: str) -> int:
     vv = (v or "").strip()
@@ -29,53 +43,65 @@ def resolve_id_strict(_: Session, __: AffiliationContext, v: str) -> int:
 
 
 def resolve_warehouse_by_code(s: Session, ctx: AffiliationContext, code: str) -> int:
+    """
+    Resolve warehouse id by code with strict tenant isolation:
+      - Non-system-admin: resolves ONLY inside ctx.company_id
+      - System-admin: can resolve any company (still returns first match)
+    """
     code = (code or "").strip()
     if not code:
         raise BadRequest("Code required.")
 
-    # First find the warehouse
-    row = s.execute(
-        select(Warehouse.id, Warehouse.company_id, Warehouse.branch_id)
-        .where(Warehouse.code == code)
-    ).first()
+    co_id = _require_company_ctx(ctx)
 
+    q = select(Warehouse.id, Warehouse.company_id).where(
+        func.lower(Warehouse.code) == func.lower(code)
+    )
+
+    # Tenant-safe resolution (most important fix)
+    if co_id is not None:
+        q = q.where(Warehouse.company_id == co_id)
+
+    row = s.execute(q.limit(1)).first()
     if not row:
         raise NotFound("Warehouse not found.")
 
-    # Use your existing RBAC system to check access
-    ensure_scope_by_ids(
-        context=ctx,
-        target_company_id=row.company_id,
-        target_branch_id=row.branch_id
-    )
+    # Company isolation (system-admin bypass inside)
+    ensure_scope_by_ids(context=ctx, target_company_id=row.company_id, target_branch_id=None)
 
     return int(row.id)
 
 
 def resolve_warehouse_by_name(s: Session, ctx: AffiliationContext, name: str) -> int:
+    """
+    Resolve warehouse id by name with strict tenant isolation:
+      - Non-system-admin: resolves ONLY inside ctx.company_id
+      - System-admin: can resolve any company (still returns first match)
+    """
     name = (name or "").strip()
     if not name:
         raise BadRequest("Name required.")
 
-    # URL decode the name (handles "Goods%20In%20Transit" -> "Goods In Transit")
     import urllib.parse
-    decoded_name = urllib.parse.unquote(name)
+    decoded_name = urllib.parse.unquote(name).strip()
+    if not decoded_name:
+        raise BadRequest("Name required.")
 
-    # First find the warehouse
-    row = s.execute(
-        select(Warehouse.id, Warehouse.company_id, Warehouse.branch_id)
-        .where(Warehouse.name == decoded_name)
-    ).first()
+    co_id = _require_company_ctx(ctx)
 
+    q = select(Warehouse.id, Warehouse.company_id).where(
+        func.lower(Warehouse.name) == func.lower(decoded_name)
+    )
+
+    # Tenant-safe resolution (important)
+    if co_id is not None:
+        q = q.where(Warehouse.company_id == co_id)
+
+    row = s.execute(q.limit(1)).first()
     if not row:
         raise NotFound("Warehouse not found.")
 
-    # Use your existing RBAC system to check access
-    ensure_scope_by_ids(
-        context=ctx,
-        target_company_id=row.company_id,
-        target_branch_id=row.branch_id
-    )
+    ensure_scope_by_ids(context=ctx, target_company_id=row.company_id, target_branch_id=None)
 
     return int(row.id)
 
@@ -83,83 +109,94 @@ def resolve_warehouse_by_name(s: Session, ctx: AffiliationContext, name: str) ->
 # ---------- loader ----------
 def load_warehouse_detail(s: Session, ctx: AffiliationContext, warehouse_id: int) -> Dict[str, Any]:
     """
-    Returns detailed warehouse information in Frappe-style grouped JSON
+    Detailed warehouse information (ERP-style grouped JSON)
+
+    RULE (your requirement):
+      - Any user within the SAME company can see ALL warehouses in that company
+        (global + all branches).
+      - No cross-company leakage.
     """
-    # Base warehouse info
-    base = s.execute(
-        select(
-            Warehouse.id, Warehouse.company_id, Warehouse.branch_id,
-            Warehouse.code, Warehouse.name, Warehouse.description,
-            Warehouse.is_group, Warehouse.status,
-            Warehouse.parent_warehouse_id
-        ).where(Warehouse.id == warehouse_id)
-    ).mappings().first()
 
-    if not base:
-        raise NotFound("Warehouse not found.")
+    W = aliased(Warehouse, name="w")
+    P = aliased(Warehouse, name="parent_w")
+    B = aliased(Branch, name="b")
+    C = aliased(Company, name="c")
 
-    # Use your existing RBAC system - this will handle system admins, company owners, etc.
-    ensure_scope_by_ids(
-        context=ctx,
-        target_company_id=base.company_id,
-        target_branch_id=base.branch_id
+    # child count as a correlated subquery (fast, single round-trip)
+    Child = aliased(Warehouse, name="child_w")
+    child_count_sq = (
+        select(func.count(Child.id))
+        .where(Child.parent_warehouse_id == W.id)
+        .correlate(W)
+        .scalar_subquery()
     )
 
-    # Company and branch info
-    company = s.execute(
-        select(Company.name).where(Company.id == base.company_id)
-    ).scalar()
+    # if not a group, child_count should be 0
+    child_count_expr = case(
+        (W.is_group.is_(True), child_count_sq),
+        else_=0,
+    ).label("child_warehouses_count")
 
-    branch = None
-    if base.branch_id:
-        branch = s.execute(
-            select(Branch.name).where(Branch.id == base.branch_id)
-        ).scalar()
+    row = s.execute(
+        select(
+            W.id.label("id"),
+            W.company_id.label("company_id"),
+            W.branch_id.label("branch_id"),
+            W.code.label("code"),
+            W.name.label("name"),
+            W.description.label("description"),
+            W.is_group.label("is_group"),
+            W.status.label("status"),
+            W.parent_warehouse_id.label("parent_warehouse_id"),
 
-    # Parent warehouse info
-    parent = None
-    if base.parent_warehouse_id:
-        parent = s.execute(
-            select(Warehouse.name, Warehouse.code).where(Warehouse.id == base.parent_warehouse_id)
-        ).mappings().first()
+            C.name.label("company_name"),
+            B.name.label("branch_name"),
 
-    # Child warehouses count (if this is a group)
-    child_count = 0
-    if base.is_group:
-        child_count = s.execute(
-            select(func.count(Warehouse.id)).where(Warehouse.parent_warehouse_id == warehouse_id)
-        ).scalar()
+            P.name.label("parent_name"),
+            P.code.label("parent_code"),
 
-    # Assemble ERP-style response
-    identity = {
-        "warehouse_id": int(base.id),
-        "company_id": int(base.company_id),
-        "code": base.code,
-        "name": base.name,
-        "status": _status_slug(base.status),
-        "is_group": bool(base.is_group),
-    }
+            child_count_expr,
+        )
+        .select_from(W)
+        .join(C, C.id == W.company_id)
+        .outerjoin(B, B.id == W.branch_id)
+        .outerjoin(P, P.id == W.parent_warehouse_id)
+        .where(W.id == warehouse_id)
+        .limit(1)
+    ).mappings().first()
 
-    location = {
-        "company": company,
-        "branch": branch or "Global",  # ERP-style: show "Global" for company-level warehouses
-        "branch_id": int(base.branch_id) if base.branch_id else None,
-    }
+    if not row:
+        raise NotFound("Warehouse not found.")
 
-    hierarchy = {
-        "parent_warehouse_id": int(base.parent_warehouse_id) if base.parent_warehouse_id else None,
-        "parent_name": parent["name"] if parent else None,
-        "parent_code": parent["code"] if parent else None,
-        "child_warehouses_count": child_count,
-    }
+    # Enforce company scope only (not branch) — exactly your requirement
+    ensure_scope_by_ids(
+        context=ctx,
+        target_company_id=int(row["company_id"]),
+        target_branch_id=None,
+    )
 
-    details = {
-        "description": base.description,
-    }
-
+    branch_id = row["branch_id"]
     return {
-        "identity": identity,
-        "location": location,
-        "hierarchy": hierarchy,
-        "details": details,
+        "identity": {
+            "warehouse_id": int(row["id"]),
+            "company_id": int(row["company_id"]),
+            "code": row["code"],
+            "name": row["name"],
+            "status": _status_slug(row["status"]),
+            "is_group": bool(row["is_group"]),
+        },
+        "location": {
+            "company": row["company_name"],
+            "branch": row["branch_name"] or "Global",
+            "branch_id": int(branch_id) if branch_id is not None else None,
+        },
+        "hierarchy": {
+            "parent_warehouse_id": int(row["parent_warehouse_id"]) if row["parent_warehouse_id"] else None,
+            "parent_name": row["parent_name"] if row["parent_name"] else None,
+            "parent_code": row["parent_code"] if row["parent_code"] else None,
+            "child_warehouses_count": int(row["child_warehouses_count"] or 0),
+        },
+        "details": {
+            "description": row["description"],
+        },
     }

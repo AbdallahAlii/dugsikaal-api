@@ -3,12 +3,12 @@ from __future__ import annotations
 
 from app.application_doctypes.core_lists.config import ListConfig, register_list_configs
 from app.application_selling.models import (
-    SalesQuotation, SalesDeliveryNote, SalesInvoice
+    SalesQuotation,  SalesInvoice
 )
 from app.application_parties.parties_models import Party
 from app.application_selling.query_builders.build_selling_queries import (
     build_sales_quotations_query,
-    build_sales_delivery_notes_query,
+
     build_sales_invoices_query,
 )
 from app.application_org.models.company import Branch
@@ -17,9 +17,9 @@ SELLING_LIST_CONFIGS = {
         permission_tag="Sales Invoice",
         query_builder=build_sales_invoices_query,
         # search by code or customer
-        search_fields=[SalesInvoice.code, Party.name, Branch.name],
+        search_fields=[SalesInvoice.code, Party.name],
 
-    # allow common sorts; expose both "code" and "document_number" for compatibility
+        # allow common sorts; expose both "code" and "document_number" for compatibility
         sort_fields={
             "posting_date": SalesInvoice.posting_date,
             "code": SalesInvoice.code,
@@ -39,26 +39,7 @@ SELLING_LIST_CONFIGS = {
         },
         cache_enabled=False,
     ),
-    "sales_delivery_notes": ListConfig(
-        permission_tag="Sales Delivery Note",
-        query_builder=build_sales_delivery_notes_query,
-        search_fields=[SalesDeliveryNote.code, Party.name],
-        sort_fields={
-            "posting_date": SalesDeliveryNote.posting_date,
-            "code": SalesDeliveryNote.code,
-            "document_number": SalesDeliveryNote.code,
-            "total_amount": SalesDeliveryNote.total_amount,
-            "id": SalesDeliveryNote.id,
-        },
-        filter_fields={
-            "company_id": SalesDeliveryNote.company_id,
-            "branch_id": SalesDeliveryNote.branch_id,
-            "customer_id": SalesDeliveryNote.customer_id,
-            "status": SalesDeliveryNote.doc_status,
-            "posting_date": SalesDeliveryNote.posting_date,
-        },
-        cache_enabled=False,
-    ),
+
     "sales_quotations": ListConfig(
         permission_tag="Sales Quotation",
         query_builder=build_sales_quotations_query,

@@ -30,9 +30,10 @@ docypelist_bp = Blueprint("docypelists", __name__, url_prefix="/api/docypelists"
 # Only modules in this mapping will be gated by subscription/visibility.
 DOCYPELIST_MODULE_TO_WORKSPACE = {
     # Education side (adjust to your actual list module names)
-    "hr": "hr",
+    # "hr": "hr",
+    "access-control": "access-control",
     "accounting": "accounting",
-    "stock": "stock",
+    "inventory": "inventory",
     "buying": "buying",
     "selling": "selling",
     # Example: if you register education lists as module_name="education"

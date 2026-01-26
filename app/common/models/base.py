@@ -5,11 +5,10 @@ from typing import Any, Iterable, Mapping, Optional
 import enum
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, BigInteger, String, ForeignKey, Boolean
 from sqlalchemy.inspection import inspect as sa_inspect
 from sqlalchemy.orm import Mapped, mapped_column
 from config.database import db
-
 
 # ---------- Mixins ----------
 
@@ -37,12 +36,30 @@ class TimestampMixin:
 
 class SoftDeleteMixin:
     """Soft-delete flags."""
-    is_deleted: Mapped[bool] = mapped_column(db.Boolean, default=False, nullable=False, index=True)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     deleted_at: Mapped[Optional[datetime]] = mapped_column(db.DateTime(timezone=True), nullable=True)
 
     def soft_delete(self) -> None:
         self.is_deleted = True
-        self.deleted_at = datetime.now(timezone.utc)  # timezone-aware
+        self.deleted_at = datetime.now(timezone.utc)
+
+
+class TenantMixin:
+    """Multi-tenant isolation."""
+    company_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("companies.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+
+class NamingSeriesMixin:
+    """ERP-style naming series support."""
+    naming_series: Mapped[str] = mapped_column(String(100), nullable=False)
+    docstatus: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)  # 0=Cancelled, 1=Draft, 2=Submitted
+
+
 
 
 # Example status enum you can reuse

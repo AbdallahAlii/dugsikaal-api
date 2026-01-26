@@ -1,7 +1,13 @@
 # app/scripts/invalidate_codetype_cache.py
+from __future__ import annotations
+import os, sys
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
 from app.common.cache.cache import bump_version
 from app.common.cache.cache_keys import detail_version_key
-import sys
 
 DEFAULT_PREFIXES = ("uoms", "JE")
 

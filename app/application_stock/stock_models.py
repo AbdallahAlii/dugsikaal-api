@@ -5,7 +5,7 @@ from typing import Optional, List
 from datetime import datetime, date
 import enum
 
-from sqlalchemy import UniqueConstraint, Index, CheckConstraint, ForeignKey
+from sqlalchemy import UniqueConstraint, Index, CheckConstraint, ForeignKey, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from config.database import db
@@ -94,48 +94,71 @@ class Warehouse(BaseModel):
     """
     __tablename__ = "warehouses"
 
-    # Keep global unique or switch to per-company (see __table_args__)
-    code: Mapped[str] = mapped_column(db.String(100), nullable=False, unique=True, index=True)
+    code: Mapped[str] = mapped_column(
+        db.String(100),
+        nullable=False,
+        index=True,
+    )
 
     company_id: Mapped[int] = mapped_column(
-        db.BigInteger, db.ForeignKey("companies.id", ondelete="RESTRICT"),
-        nullable=False, index=True
+        db.BigInteger,
+        db.ForeignKey("companies.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
     )
+
     branch_id: Mapped[Optional[int]] = mapped_column(
-        db.BigInteger, db.ForeignKey("branches.id", ondelete="RESTRICT"),
-        nullable=True, index=True
+        db.BigInteger,
+        db.ForeignKey("branches.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
     )
 
     name: Mapped[str] = mapped_column(db.String(150), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(db.Text)
 
-    is_group: Mapped[bool] = mapped_column(db.Boolean, nullable=False, default=True, index=True)
+    is_group: Mapped[bool] = mapped_column(
+        db.Boolean,
+        nullable=False,
+        default=True,
+        index=True,
+    )
 
     parent_warehouse_id: Mapped[Optional[int]] = mapped_column(
-        db.BigInteger, db.ForeignKey("warehouses.id", ondelete="RESTRICT"),
-        nullable=True, index=True
+        db.BigInteger,
+        db.ForeignKey("warehouses.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
     )
 
     # Relationships
-
     company: Mapped["Company"] = relationship()
     branch: Mapped[Optional["Branch"]] = relationship()
+
     parent_warehouse: Mapped[Optional["Warehouse"]] = relationship(
-        "Warehouse", remote_side="Warehouse.id", back_populates="child_warehouses"
+        "Warehouse",
+        remote_side="Warehouse.id",
+        back_populates="child_warehouses",
     )
     child_warehouses: Mapped[List["Warehouse"]] = relationship(
-        "Warehouse", back_populates="parent_warehouse"
+        "Warehouse",
+        back_populates="parent_warehouse",
     )
+
     bins: Mapped[List["Bin"]] = relationship(back_populates="warehouse")
     stock_ledger_entries: Mapped[List["StockLedgerEntry"]] = relationship(back_populates="warehouse")
     stock_reconciliation_items: Mapped[List["StockReconciliationItem"]] = relationship(back_populates="warehouse")
+
     stock_entry_items_source: Mapped[List["StockEntryItem"]] = relationship(
-        "StockEntryItem", foreign_keys="[StockEntryItem.source_warehouse_id]", back_populates="source_warehouse"
+        "StockEntryItem",
+        foreign_keys="[StockEntryItem.source_warehouse_id]",
+        back_populates="source_warehouse",
     )
     stock_entry_items_target: Mapped[List["StockEntryItem"]] = relationship(
-        "StockEntryItem", foreign_keys="[StockEntryItem.target_warehouse_id]", back_populates="target_warehouse"
+        "StockEntryItem",
+        foreign_keys="[StockEntryItem.target_warehouse_id]",
+        back_populates="target_warehouse",
     )
-
 
     purchase_receipts: Mapped[list["PurchaseReceipt"]] = relationship(
         "PurchaseReceipt",
@@ -149,35 +172,86 @@ class Warehouse(BaseModel):
     )
 
     status: Mapped[StatusEnum] = mapped_column(
-        db.Enum(StatusEnum), nullable=False, default=StatusEnum.ACTIVE, index=True
+        db.Enum(StatusEnum),
+        nullable=False,
+        default=StatusEnum.ACTIVE,
+        index=True,
     )
 
     __table_args__ = (
-        # Names unique within a branch (root group has branch_id NULL)
-        UniqueConstraint("company_id", "branch_id", "name", name="uq_wh_company_branch_name"),
-        # If you prefer sibling-unique instead, swap the line above for:
-        # UniqueConstraint("company_id", "parent_warehouse_id", "name", name="uq_wh_parent_name"),
+        # 1) Code uniqueness (per company, case-insensitive)
+        Index(
+            "uq_wh_company_code_lower",
+            "company_id",
+            func.lower(code),
+            unique=True,
+        ),
 
+        # 2) Name uniqueness with NULL-safe rules:
+        #    - company-level names (branch_id IS NULL): unique per company
+        #    - branch-level names (branch_id IS NOT NULL): unique per (company, branch)
+        Index(
+            "uq_wh_company_name_when_branch_null",
+            "company_id",
+            func.lower(name),
+            unique=True,
+            postgresql_where=text("branch_id IS NULL"),
+        ),
+        Index(
+            "uq_wh_company_branch_name_when_branch_not_null",
+            "company_id",
+            "branch_id",
+            func.lower(name),
+            unique=True,
+            postgresql_where=text("branch_id IS NOT NULL"),
+        ),
+
+        # 3) Exactly ONE company root per company
+        Index(
+            "uq_wh_one_root_per_company",
+            "company_id",
+            unique=True,
+            postgresql_where=text(
+                "parent_warehouse_id IS NULL AND branch_id IS NULL AND is_group = TRUE"
+            ),
+        ),
+
+        # 4) Shape rules (local invariants)
+        # If parent is NULL -> must be a root group and branch must be NULL
+        CheckConstraint(
+            "(parent_warehouse_id IS NOT NULL) OR (is_group = TRUE AND branch_id IS NULL)",
+            name="ck_wh_root_shape",
+        ),
+
+        # Leaf must have branch + parent
+        CheckConstraint(
+            "(is_group = TRUE) OR (branch_id IS NOT NULL AND parent_warehouse_id IS NOT NULL)",
+            name="ck_wh_leaf_requires_branch_and_parent",
+        ),
+
+        # If it's a group AND has a branch, it cannot be root => must have a parent
+        CheckConstraint(
+            "(is_group = FALSE) OR (branch_id IS NULL) OR (parent_warehouse_id IS NOT NULL)",
+            name="ck_wh_branch_group_requires_parent",
+        ),
+
+        # No self-parenting
+        CheckConstraint(
+            "parent_warehouse_id IS NULL OR parent_warehouse_id <> id",
+            name="ck_wh_not_self_parent",
+        ),
+
+        # 5) Helpful indexes
         Index("ix_wh_company_branch", "company_id", "branch_id"),
         Index("ix_wh_parent", "parent_warehouse_id"),
         Index("ix_wh_group_active", "company_id", "is_group", "status"),
-
-        # Physical warehouses must belong to a branch AND have a parent
-        CheckConstraint(
-            "(is_group = FALSE AND branch_id IS NOT NULL AND parent_warehouse_id IS NOT NULL) "
-            "OR (is_group = TRUE)",
-            name="ck_wh_leaf_requires_branch_and_parent",
-        ),
-        # Safety: no self-parenting
-        CheckConstraint("id IS NULL OR id <> parent_warehouse_id", name="ck_wh_not_self_parent"),
-
-        # If you want per-company unique codes instead of global unique:
-        # UniqueConstraint("company_id", "code", name="uq_wh_company_code"),
     )
 
     def __repr__(self) -> str:
-        return (f"<Warehouse id={self.id} company={self.company_id} branch={self.branch_id} "
-                f"is_group={self.is_group} name={self.name!r}>")
+        return (
+            f"<Warehouse id={self.id} company={self.company_id} branch={self.branch_id} "
+            f"is_group={self.is_group} name={self.name!r}>"
+        )
 
 
 class Bin(BaseModel):
@@ -393,7 +467,8 @@ class StockLedgerEntry(BaseModel):
         comment="Quantity in transaction UOM (before conversion)"
     )
 
-    code: Mapped[str] = mapped_column(db.String(100), nullable=False, unique=True, index=True)
+    code: Mapped[str] = mapped_column(db.String(100), nullable=False, index=True)  # remove unique=True
+
     posting_date: Mapped[date] = mapped_column(db.Date, nullable=False, index=True)
     posting_time: Mapped[datetime] = mapped_column(db.DateTime(timezone=True), nullable=False, index=True)
 
@@ -441,7 +516,7 @@ class StockLedgerEntry(BaseModel):
         Index("ix_sle_doc_ref", "doc_type_id", "doc_id"),
         Index("ix_sle_stock_entry", "stock_entry_id"),  # ADDED: For Stock Entry tracing
         Index("ix_sle_uom_tracking", "item_id", "base_uom_id", "transaction_uom_id"),  # ADDED: UOM conversion tracking
-        UniqueConstraint("code", name="uq_sle_code"),
+        UniqueConstraint("company_id", "code", name="uq_sle_company_code"),
     )
 
     def __repr__(self) -> str:

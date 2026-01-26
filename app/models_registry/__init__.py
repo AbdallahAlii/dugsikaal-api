@@ -88,9 +88,33 @@ from app.application_buying.models import (
 from app.application_selling.models import SalesInvoice, SalesInvoiceItem
 
 # HR Module
-from app.application_hr.models.hr import (
-    Employee, EmployeeEmergencyContact, EmployeeAssignment,
-    GenderEnum, PersonRelationshipEnum
+from app.application_hr.models.hr import(
+    # Core HR
+    Employee,
+    EmployeeEmergencyContact,
+    EmployeeAssignment,
+
+    # Attendance & Time
+    HolidayList,
+    Holiday,
+    ShiftType,
+    ShiftAssignment,
+    EmployeeCheckin,
+    Attendance,
+
+    # Payroll
+    PayrollPeriod,
+    SalaryStructure,
+    EmployeeSalaryAssignment,
+    SalarySlip,
+    BiometricDevice,
+
+    # Enums
+    EmploymentTypeEnum,
+    AttendanceStatusEnum,
+    CheckinLogTypeEnum,
+    CheckinSourceEnum,
+    PaymentFrequencyEnum,
 )
 
 # ==============================================================================
@@ -114,6 +138,136 @@ from app.application_accounting.chart_of_accounts.account_policies import (
     ModeOfPayment, ModeOfPaymentAccount, AccountAccessPolicy,
     ModeOfPaymentTypeEnum, AccountUseRoleEnum
 )
+# ==============================================================================
+# EDUCATION CORE MODELS
+# ==============================================================================
+
+from app.application_education.institution.academic_model import (
+    EducationSettings,
+    AcademicYear,
+    AcademicTerm,
+    AcademicStatusEnum,
+)
+
+# ==============================================================================
+# EDUCATION – STUDENTS & GUARDIANS
+# ==============================================================================
+
+from app.application_education.student.models import (
+    Student,
+    Guardian,
+    StudentGuardian,
+    BloodGroupEnum,
+    OrphanStatusEnum,
+)
+# ==============================================================================
+# EDUCATION – PROGRAMS & COURSES
+# ==============================================================================
+
+from app.application_education.programs.models.program_models import (
+    Program,
+    Course,
+    ProgramCourse,
+    ProgramTypeEnum,
+    CourseTypeEnum,
+)
+# ==============================================================================
+# EDUCATION – ENROLLMENTS & PROGRESSION
+# ==============================================================================
+
+from app.application_education.enrollments.enrollment_model import (
+    ProgramEnrollment,
+    CourseEnrollment,
+    ProgramProgressionRule,
+    EnrollmentStatusEnum,
+    EnrollmentResultEnum,
+)
+# ==============================================================================
+# EDUCATION – GROUPS & COHORTS
+# ==============================================================================
+
+from app.application_education.groups.student_group_model import (
+    Section,
+    Batch,
+    StudentCategory,
+    StudentGroup,
+    StudentGroupMembership,
+    GroupBasedOnEnum,
+)
+
+# ==============================================================================
+# EDUCATION – SCHEDULING & ATTENDANCE
+# ==============================================================================
+
+from app.application_education.timetable.model import (
+    # Scheduling
+    SchoolSession,
+    TimeSlot,
+    CourseAssignment,
+    Classroom,
+    CourseScheduleSlot,
+
+    # Attendance
+    StudentAttendance,
+    StudentAttendanceRow,
+
+    # Enums
+    WeekdayEnum,
+    StudentAttendanceSourceEnum,
+    StudentAttendanceStatusEnum,
+)
+# ==============================================================================
+# EDUCATION - ASSESSMENT / EXAMS V2  (REGISTER HERE)
+# ==============================================================================
+from app.application_education.assessment.exams_model import (
+    # Enums
+    AssessmentEventStatusEnum,
+    AssessmentAttendanceStatusEnum,
+    ResultHoldTypeEnum,
+    GradeRecalcJobStatusEnum,
+
+    # Grading
+    GradingScale,
+    GradingScaleBreakpoint,
+
+    # Templates
+    AssessmentScheme,
+    AssessmentComponent,
+    AssessmentComponentRule,
+
+    # Events + Marks
+    AssessmentEvent,
+    AssessmentMark,
+    AssessmentCriterion,
+    AssessmentMarkItem,
+
+    # Aggregates + Holds + Jobs
+    StudentCourseGrade,
+    StudentAnnualResult,
+    StudentResultHold,
+    GradeRecalcJob,
+)
+# ==============================================================================
+# EDUCATION – FEES
+# ==============================================================================
+
+from app.application_education.fees.fees_model import (
+    # Enums
+    FeeScheduleStatusEnum,
+    StudentFeeAdjustmentTypeEnum,
+
+    # Masters
+    FeeCategory,
+    FeeStructure,
+    FeeStructureComponent,
+
+    # Schedules
+    FeeSchedule,
+    FeeScheduleComponent,
+
+    # Adjustments
+    StudentFeeAdjustment,
+)
 
 # ==============================================================================
 # EXPLICIT MODEL REGISTRY FOR SQLALCHEMY
@@ -127,6 +281,11 @@ __all__ = [
     # ==================== DATA IMPORT MODELS ====================
     'DataImport', 'DataImportTemplateField', 'DataImportLog',
     'ImportStatus', 'ImportType', 'FileType',
+    # ==================== EDUCATION ====================
+    'EducationSettings',
+    'AcademicYear',
+    'AcademicTerm',
+
     # ==================== INVENTORY & STOCK ====================
     # Stock Models
     'Warehouse', 'Bin', 'StockEntry', 'StockEntryItem',
@@ -149,8 +308,72 @@ __all__ = [
     # Sales
     'SalesInvoice', 'SalesInvoiceItem',
 
-    # HR
-    'Employee', 'EmployeeEmergencyContact', 'EmployeeAssignment',
+    # ==================== HR & PAYROLL ====================
+    'Employee',
+    'EmployeeEmergencyContact',
+    'EmployeeAssignment',
+
+    'HolidayList',
+    'Holiday',
+
+    'ShiftType',
+    'ShiftAssignment',
+
+    'EmployeeCheckin',
+    'Attendance',
+
+    'PayrollPeriod',
+    'SalaryStructure',
+    'EmployeeSalaryAssignment',
+    'SalarySlip',
+    'BiometricDevice',
+    # ==================== EDUCATION ====================
+    # Core
+    'EducationSettings',
+    'AcademicYear',
+    'AcademicTerm',
+
+    # Groups & Cohorts
+    'Section',
+    'Batch',
+    'StudentCategory',
+    'StudentGroup',
+    'StudentGroupMembership',
+
+    # Students & Guardians
+    'Student',
+    'Guardian',
+    'StudentGuardian',
+
+    # Programs & Courses
+    'Program',
+    'Course',
+    'ProgramCourse',
+
+    # Enrollments & Progression
+    'ProgramEnrollment',
+    'CourseEnrollment',
+    'ProgramProgressionRule',
+    # Scheduling & Attendance
+    'SchoolSession',
+    'TimeSlot',
+    'CourseAssignment',
+    'Classroom',
+    'CourseScheduleSlot',
+    'StudentAttendance',
+    'StudentAttendanceRow',
+
+    "GradingScale", "GradingScaleBreakpoint",
+    "AssessmentScheme", "AssessmentComponent", "AssessmentComponentRule",
+    "AssessmentEvent", "AssessmentMark", "AssessmentCriterion", "AssessmentMarkItem",
+    "StudentCourseGrade", "StudentAnnualResult", "StudentResultHold", "GradeRecalcJob",
+
+    'FeeCategory',
+    'FeeStructure',
+    'FeeStructureComponent',
+    'FeeSchedule',
+    'FeeScheduleComponent',
+    'StudentFeeAdjustment',
 
     # ==================== ACCOUNTING ====================
     # Core Accounting
@@ -175,20 +398,47 @@ __all__ = [
     'ModeOfPaymentTypeEnum', 'AccountUseRoleEnum',
     'PartyNatureEnum', 'PartyRoleEnum',
     'GenderEnum', 'PersonRelationshipEnum', 'PaymentTypeEnum',
-    'AssetStatusEnum', 'DepreciationMethodEnum',
+    'AssetStatusEnum', 'DepreciationMethodEnum','AcademicStatusEnum',
+    'EmploymentTypeEnum',
+    'AttendanceStatusEnum',
+    'CheckinLogTypeEnum',
+    'CheckinSourceEnum',
+    'PaymentFrequencyEnum',
+
+    # Education enums
+    'ProgramTypeEnum',
+    'CourseTypeEnum',
+    'EnrollmentStatusEnum',
+    'EnrollmentResultEnum',
+    'BloodGroupEnum',
+    'OrphanStatusEnum',
+    'GroupBasedOnEnum',
+    # Scheduling & Attendance enums
+    'WeekdayEnum',
+    'StudentAttendanceSourceEnum',
+    'StudentAttendanceStatusEnum',
+    # Exams v2 Enums
+    "AssessmentEventStatusEnum", "AssessmentAttendanceStatusEnum",
+    "ResultHoldTypeEnum", "GradeRecalcJobStatusEnum",
+    # EDUCATION – FEES
+    'FeeScheduleStatusEnum',
+    'StudentFeeAdjustmentTypeEnum',
+
 ]
+
+from app.common.models.base import GenderEnum, PersonRelationshipEnum
 
 # ==============================================================================
 # OPTIONAL: Model count verification for production safety
 # ==============================================================================
 try:
-    expected_models = len(__all__)
-    imported_models = len([name for name in globals() if not name.startswith('_') and name in __all__])
+    expected = set(__all__)
+    present = {name for name in expected if name in globals()}
+    missing = sorted(expected - present)
 
-    if imported_models == expected_models:
-        print(f"✅ MODEL REGISTRY: Successfully imported {imported_models}/{expected_models} models")
+    if not missing:
+        print(f"✅ MODEL REGISTRY: Successfully imported {len(present)}/{len(expected)} models")
     else:
-        print(f"⚠️  MODEL REGISTRY: Imported {imported_models}/{expected_models} models - check for missing imports")
-
+        print(f"⚠️  MODEL REGISTRY: Imported {len(present)}/{len(expected)} models - missing: {missing}")
 except Exception as e:
     print(f"❌ MODEL REGISTRY: Error during import verification: {e}")

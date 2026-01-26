@@ -75,3 +75,28 @@ class PricingRepository:
         for k, v in updates.items():
             setattr(ip, k, v)
         self.s.flush([ip])
+
+    def delete_price_list(self, pl: PriceList) -> None:
+        self.s.delete(pl)
+        self.s.flush([pl])
+
+    def find_first_linked_document_price_list(self, company_id: int, pl_id: int) -> Optional[Dict[str, Any]]:
+        # 1. Item Price
+        stmt = select(ItemPrice.code).where(ItemPrice.price_list_id == pl_id).limit(1)
+        code = self.s.execute(stmt).scalar_one_or_none()
+        if code:
+             return {"doctype": "Item Price", "code": str(code)}
+        
+        # 2. Sales Order (if linked, speculative)
+        # 3. Sales Invoice (header)
+        try:
+            from app.application_selling.models import SalesInvoice
+            stmt = select(SalesInvoice.code).where(SalesInvoice.company_id == company_id, SalesInvoice.price_list_id == pl_id).limit(1)
+            code = self.s.execute(stmt).scalar_one_or_none()
+            if code:
+                return {"doctype": "Sales Invoice", "code": str(code)}
+        except (ImportError, AttributeError):
+            pass
+
+        return None
+

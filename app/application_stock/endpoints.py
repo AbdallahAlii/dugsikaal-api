@@ -8,7 +8,8 @@ from werkzeug.exceptions import NotFound, Forbidden, Conflict, BadRequest, HTTPE
 
 from app.application_stock.schemas.reconciliation_schemas import StockReconciliationCreate, StockReconciliationUpdate
 # Warehouse bits
-from app.application_stock.schemas.warehouse_schemas import WarehouseCreate, WarehouseUpdate, WarehouseOut, IdCode
+from app.application_stock.schemas.warehouse_schemas import WarehouseCreate, WarehouseUpdate, WarehouseOut, IdCode, \
+    WarehouseBulkDelete
 from app.application_stock.services.availability_service import StockAvailabilityService
 from app.application_stock.services.reconciliation_service import StockReconciliationService
 from app.application_stock.services.warehouse_service import WarehouseService
@@ -78,7 +79,7 @@ def update_warehouse(warehouse_id: int):
         return api_error("An unexpected server error occurred.", status_code=500)
 
 
-@bp.delete("/warehouses/<int:warehouse_id>")
+@bp.delete("/warehouses/<int:warehouse_id>/delete")
 @require_permission("Warehouse", "DELETE")
 def delete_warehouse(warehouse_id: int):
     try:
@@ -87,6 +88,24 @@ def delete_warehouse(warehouse_id: int):
         svc.delete_warehouse(warehouse_id=warehouse_id, context=ctx)
         return api_success(data={"id": warehouse_id}, status_code=200)
 
+    except WarehouseRuleError as e:
+        return api_error(str(e), status_code=400)
+    except HTTPException as e:
+        return api_error(getattr(e, "description", str(e)), status_code=getattr(e, "code", 400))
+    except Exception:
+        return api_error("An unexpected server error occurred.", status_code=500)
+@bp.post("/warehouses/bulk-delete")
+@require_permission("Warehouse", "DELETE")
+def bulk_delete_warehouses():
+    try:
+        ctx = _ctx()
+        payload = WarehouseBulkDelete.model_validate(request.get_json(silent=True) or {})
+        svc = WarehouseService()
+        out = svc.delete_warehouses_bulk(warehouse_ids=payload.ids, context=ctx)
+        return api_success(data=out, status_code=200)
+
+    except ValidationError as e:
+        return api_error(str(e), status_code=422)
     except WarehouseRuleError as e:
         return api_error(str(e), status_code=400)
     except HTTPException as e:

@@ -21,6 +21,7 @@ class StartImportInput(BaseModel):
     import_type: ImportType
     file_type: FileType
     mute_emails: bool = True
+    submit_after_import: bool = False
 
     # Optional (when not using multipart form-data)
     filename: Optional[str] = None
@@ -39,6 +40,12 @@ class CreateImportInput(BaseModel):
     import_type: ImportType
     file_type: FileType
     mute_emails: bool = True
+    submit_after_import: bool = False  # 🔹 user decides if auto-submit is desired
+
+    # 🔹 Optional override; if omitted, we use current user's context
+    company_id: Optional[int] = None
+    branch_id: Optional[int] = None
+
 
 
 class SetTemplateFieldsInput(BaseModel):

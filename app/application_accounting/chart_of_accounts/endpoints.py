@@ -21,11 +21,15 @@ from app.application_accounting.chart_of_accounts.services.expense_service impor
 from app.application_accounting.chart_of_accounts.services.fiscal_year_services import (
     FiscalYearService,
 )
+
 from app.application_accounting.chart_of_accounts.schemas.pcv_schemas import (
     PCVCreate as PeriodClosingVoucherCreateSchema,
     PCVUpdate as PeriodClosingVoucherUpdateSchema,
-    PCVOut as PeriodClosingVoucherOutSchema,
+    PCVSubmitSchema as PeriodClosingVoucherSubmitSchema,
+    PCVCancelSchema as PeriodClosingVoucherCancelSchema,
 )
+
+from pydantic import ValidationError
 
 from app.application_accounting.chart_of_accounts.services.pcv_service import PeriodClosingVoucherService
 
@@ -42,6 +46,7 @@ from app.application_accounting.chart_of_accounts.services.payment_service impor
 from app.business_validation.error_handling import format_validation_error
 from app.business_validation.item_validation import BizValidationError
 from app.common.api_response import api_success, api_error
+from app.navigation_workspace.services.subscription_guards import check_workspace_subscription
 from app.security.rbac_guards import require_permission
 from app.security.rbac_effective import AffiliationContext
 from app.auth.deps import get_current_user
@@ -54,6 +59,41 @@ fiscal_year_svc = FiscalYearService()
 cost_center_svc = CostCenterService()
 policies_svc = PoliciesService()
 
+# 👉 must match navigation_workspace.workspace.slug for Accounts module
+ACCOUNTS_WORKSPACE_SLUG = "accounting"
+
+# Any Accounts endpoints that should be allowed even if Accounts module is not subscribed
+ACCOUNTS_SUBSCRIPTION_EXEMPT_ENDPOINTS = set()
+
+
+@bp.before_request
+def _guard_accounts_subscription():
+    """
+    Runs for every /api/v1/coa/* request (after global auth middleware).
+
+    Enforces:
+      - user is authenticated (g.auth present)
+      - company has Accounts workspace in its packages
+      - Accounts workspace is not disabled by visibility
+    """
+    # Allow CORS preflight
+    if request.method == "OPTIONS":
+        return
+
+    # Skip some endpoints if you want them to work even when Accounts is not subscribed
+    if request.endpoint in ACCOUNTS_SUBSCRIPTION_EXEMPT_ENDPOINTS:
+        return
+
+    # Global auth middleware should already have attached g.auth
+    ctx: AffiliationContext = getattr(g, "auth", None)
+    if not ctx:
+        return api_error("Authentication required.", status_code=401)
+
+    ok, msg = check_workspace_subscription(ctx, workspace_slug=ACCOUNTS_WORKSPACE_SLUG)
+    if not ok:
+        # ERP-style, user-friendly message from subscription guard
+        return api_error(msg, status_code=403)
+
 def _get_context() -> AffiliationContext:
     """Match buying endpoints style: attach ctx and fail cleanly if missing."""
     _ = get_current_user()  # Ensures user is authenticated and g.auth is set
@@ -61,16 +101,16 @@ def _get_context() -> AffiliationContext:
     if not ctx:
         raise PermissionError("Authentication context not found.")
     return ctx
-
 # ======================= Period Closing Voucher =======================
-
 
 @bp.post("/period-closing-vouchers/create")
 @require_permission("PeriodClosingVoucher", "CREATE")
 def create_period_closing_voucher():
     try:
         ctx = _get_context()
-        payload = PeriodClosingVoucherCreateSchema.model_validate(request.get_json(silent=True) or {})
+        payload = PeriodClosingVoucherCreateSchema.model_validate(
+            request.get_json(silent=True) or {}
+        )
         svc = PeriodClosingVoucherService(db.session)
         pcv = svc.create(payload=payload, ctx=ctx)
         return api_success(
@@ -79,21 +119,29 @@ def create_period_closing_voucher():
             status_code=201,
         )
     except ValidationError as e:
+        # Pydantic structure errors (bad types, etc.)
         return api_error(format_validation_error(e), status_code=422)
     except BizValidationError as e:
+        # Business validation (missing fields, etc.)
         return api_error(str(e), status_code=422)
     except (BadRequest, Forbidden, NotFound, Conflict) as e:
-        return api_error(e.description if hasattr(e, "description") else str(e), status_code=getattr(e, "code", 400))
+        return api_error(
+            e.description if hasattr(e, "description") else str(e),
+            status_code=getattr(e, "code", 400),
+        )
     except Exception as e:
         logger.exception("create_period_closing_voucher: %s", str(e))
         return api_error("An unexpected error occurred.", status_code=500)
+
 
 @bp.put("/period-closing-vouchers/<int:pcv_id>/update")
 @require_permission("PeriodClosingVoucher", "UPDATE")
 def update_period_closing_voucher(pcv_id: int):
     try:
         ctx = _get_context()
-        payload = PeriodClosingVoucherUpdateSchema.model_validate(request.get_json(silent=True) or {})
+        payload = PeriodClosingVoucherUpdateSchema.model_validate(
+            request.get_json(silent=True) or {}
+        )
         svc = PeriodClosingVoucherService(db.session)
         pcv = svc.update(pcv_id=pcv_id, payload=payload, ctx=ctx)
         return api_success(
@@ -106,61 +154,73 @@ def update_period_closing_voucher(pcv_id: int):
     except BizValidationError as e:
         return api_error(str(e), status_code=422)
     except (BadRequest, Forbidden, NotFound, Conflict) as e:
-        return api_error(e.description if hasattr(e, "description") else str(e), status_code=getattr(e, "code", 400))
+        return api_error(
+            e.description if hasattr(e, "description") else str(e),
+            status_code=getattr(e, "code", 400),
+        )
     except Exception as e:
         logger.exception("update_period_closing_voucher: %s", str(e))
         return api_error("An unexpected error occurred.", status_code=500)
 
-# @bp.post("/period-closing-vouchers/<int:pcv_id>/submit")
-# @require_permission("PeriodClosingVoucher", "SUBMIT")
-# def submit_period_closing_voucher(pcv_id: int):
-#     try:
-#         ctx = _get_context()
-#         _ = PeriodClosingVoucherSubmitSchema.model_validate(request.get_json(silent=True) or {})
-#         svc = PeriodClosingVoucherService(db.session)
-#         pcv = svc.submit(pcv_id=pcv_id, ctx=ctx)
-#         return api_success(
-#             message="Period Closing Voucher submitted.",
-#             data={
-#                 "id": pcv.id,
-#                 "code": pcv.code,
-#                 "doc_status": str(pcv.doc_status),
-#                 "generated_journal_entry_id": pcv.generated_journal_entry_id,
-#             },
-#             status_code=200,
-#         )
-#     except ValidationError as e:
-#         return api_error(format_validation_error(e), status_code=422)
-#     except BizValidationError as e:
-#         return api_error(str(e), status_code=422)
-#     except (BadRequest, Forbidden, NotFound, Conflict) as e:
-#         return api_error(e.description if hasattr(e, "description") else str(e), status_code=getattr(e, "code", 400))
-#     except Exception as e:
-#         logger.exception("submit_period_closing_voucher: %s", str(e))
-#         return api_error("An unexpected error occurred.", status_code=500)
-#
-# @bp.post("/period-closing-vouchers/<int:pcv_id>/cancel")
-# @require_permission("PeriodClosingVoucher", "CANCEL")
-# def cancel_period_closing_voucher(pcv_id: int):
-#     try:
-#         ctx = _get_context()
-#         payload = PeriodClosingVoucherCancelSchema.model_validate(request.get_json(silent=True) or {})
-#         svc = PeriodClosingVoucherService(db.session)
-#         pcv = svc.cancel(pcv_id=pcv_id, ctx=ctx, reason=payload.reason)
-#         return api_success(
-#             message="Period Closing Voucher cancelled.",
-#             data={"id": pcv.id, "code": pcv.code, "doc_status": str(pcv.doc_status)},
-#             status_code=200,
-#         )
-#     except ValidationError as e:
-#         return api_error(format_validation_error(e), status_code=422)
-#     except BizValidationError as e:
-#         return api_error(str(e), status_code=422)
-#     except (BadRequest, Forbidden, NotFound, Conflict) as e:
-#         return api_error(e.description if hasattr(e, "description") else str(e), status_code=getattr(e, "code", 400))
-#     except Exception as e:
-#         logger.exception("cancel_period_closing_voucher: %s", str(e))
-#         return api_error("An unexpected error occurred.", status_code=500)
+
+@bp.post("/period-closing-vouchers/<int:pcv_id>/submit")
+@require_permission("PeriodClosingVoucher", "SUBMIT")
+def submit_period_closing_voucher(pcv_id: int):
+    try:
+        ctx = _get_context()
+        # Empty schema, but keeps contract consistent
+        PeriodClosingVoucherSubmitSchema.model_validate(
+            request.get_json(silent=True) or {}
+        )
+        svc = PeriodClosingVoucherService(db.session)
+        pcv = svc.submit(pcv_id=pcv_id, ctx=ctx)
+        return api_success(
+            message="Period Closing Voucher submitted.",
+            data={"id": pcv.id, "code": pcv.code, "doc_status": str(pcv.doc_status)},
+            status_code=200,
+        )
+    except ValidationError as e:
+        return api_error(format_validation_error(e), status_code=422)
+    except BizValidationError as e:
+        return api_error(str(e), status_code=422)
+    except (BadRequest, Forbidden, NotFound, Conflict) as e:
+        return api_error(
+            e.description if hasattr(e, "description") else str(e),
+            status_code=getattr(e, "code", 400),
+        )
+    except Exception as e:
+        logger.exception("submit_period_closing_voucher: %s", str(e))
+        return api_error("An unexpected error occurred.", status_code=500)
+
+
+@bp.post("/period-closing-vouchers/<int:pcv_id>/cancel")
+@require_permission("PeriodClosingVoucher", "CANCEL")
+def cancel_period_closing_voucher(pcv_id: int):
+    try:
+        ctx = _get_context()
+        payload = PeriodClosingVoucherCancelSchema.model_validate(
+            request.get_json(silent=True) or {}
+        )
+        svc = PeriodClosingVoucherService(db.session)
+        pcv = svc.cancel(pcv_id=pcv_id, ctx=ctx, reason=payload.reason)
+        return api_success(
+            message="Period Closing Voucher cancelled.",
+            data={"id": pcv.id, "code": pcv.code, "doc_status": str(pcv.doc_status)},
+            status_code=200,
+        )
+    except ValidationError as e:
+        return api_error(format_validation_error(e), status_code=422)
+    except BizValidationError as e:
+        return api_error(str(e), status_code=422)
+    except (BadRequest, Forbidden, NotFound, Conflict) as e:
+        return api_error(
+            e.description if hasattr(e, "description") else str(e),
+            status_code=getattr(e, "code", 400),
+        )
+    except Exception as e:
+        logger.exception("cancel_period_closing_voucher: %s", str(e))
+        return api_error("An unexpected error occurred.", status_code=500)
+
 
 
 # ------------------------- Fiscal Year -------------------------
@@ -193,6 +253,23 @@ def create_fiscal_year():
         logger.exception("Unexpected error in create_fiscal_year: %s", str(e))
         return api_error("An unexpected error occurred.", status_code=500)
 
+@bp.delete("/fiscal-years/<int:fiscal_year_id>")
+@require_permission("FiscalYear", "DELETE")
+def api_delete_fiscal_year(fiscal_year_id: int):
+    try:
+        ctx = _get_context()
+        fiscal_year_svc.delete_fiscal_year(fiscal_year_id, ctx)
+        return api_success(message="Fiscal Year deleted.", data=None, status_code=200)
+
+    except (BadRequest, Forbidden, NotFound) as e:
+        return api_error(e.description, status_code=e.code)
+    except BizValidationError as e:
+        return api_error(str(e), status_code=422)
+    except PermissionError:
+        return api_error("Unauthorized", status_code=401)
+    except Exception as e:
+        logger.exception("Unexpected error in delete_fiscal_year: %s", str(e))
+        return api_error("An unexpected error occurred.", status_code=500)
 
 @bp.put("/fiscal-years/<int:fiscal_year_id>/update")
 @require_permission("FiscalYear", "UPDATE")

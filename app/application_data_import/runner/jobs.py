@@ -1,3 +1,4 @@
+
 # application_data_import/runner/jobs.py
 from __future__ import annotations
 from typing import Any
@@ -7,37 +8,31 @@ from ..runner.pipeline import run_import
 from config.redis_config import get_redis_raw
 
 
-def enqueue_import_job(data_import_id: int) -> Any:
+def enqueue_import_job(data_import_id: int, only_failed: bool = False) -> Any:
     """
     Enqueue a data-import job.
 
-    - On Windows (os.name == "nt"): run synchronously (inline) because RQ's default
-      worker uses os.fork(), which is not available on Windows.
-    - On other platforms: try to enqueue to RQ "data-imports" queue; if that fails,
-      fall back to inline execution.
-
-    Returns an object with an `id` attribute for compatibility with existing code.
+    - On Windows: run synchronously (inline).
+    - On other platforms: enqueue to RQ "data-imports" queue.
+    - `only_failed=True` means "retry failed rows only".
     """
 
-    # 🔹 Windows: always run inline to avoid os.fork() issues.
     if os.name == "nt":
         class _InlineJob:
             id = "inline"
 
         # Run import immediately in the current process
-        run_import(data_import_id)
+        run_import(data_import_id, only_failed=only_failed)
         return _InlineJob()
 
-    # 🔹 Non-Windows: use RQ queue, with inline fallback
     try:
         from rq import Queue
         q = Queue("data-imports", connection=get_redis_raw())
-        job = q.enqueue(run_import, data_import_id, job_timeout=60 * 60)
+        job = q.enqueue(run_import, data_import_id, only_failed, job_timeout=60 * 60)
         return job
     except Exception:
-        # Fallback: run inline (still OK for dev / resilience)
         class _InlineJob:
             id = "inline"
 
-        run_import(data_import_id)
+        run_import(data_import_id, only_failed=only_failed)
         return _InlineJob()

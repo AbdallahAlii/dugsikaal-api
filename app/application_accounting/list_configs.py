@@ -1,25 +1,42 @@
+
 from __future__ import annotations
 
 from app.application_doctypes.core_lists.config import ListConfig, register_list_configs
-from app.application_accounting.chart_of_accounts.finance_model import ExpenseType, ExpenseItem,Expense
+from app.application_accounting.chart_of_accounts.finance_model import (
+    ExpenseType,
+    ExpenseItem,
+    Expense,
+    PaymentEntry,
+)
 from app.application_accounting.chart_of_accounts.account_policies import (
-    ModeOfPayment, AccountAccessPolicy
+    ModeOfPayment,
+    AccountAccessPolicy,
 )
 from app.application_accounting.chart_of_accounts.models import (
-    FiscalYear, CostCenter, Account,JournalEntry
+    FiscalYear,
+    CostCenter,
+    Account,
+    JournalEntry,
+    PeriodClosingVoucher,
 )
 from app.application_accounting.query_builders.build_accounting_queries import (
     build_modes_of_payment_query,
     build_fiscal_years_query,
     build_cost_centers_query,
     build_accounts_query,
-    build_account_access_policies_query, build_expenses_query,
-    build_expense_types_query, build_payments_query,  # keep if you still expose AAP lists
+    build_account_access_policies_query,
+    build_expenses_query,
+    build_expense_types_query,
+    build_payments_query,
+    build_period_closing_vouchers_query,
 )
 from app.application_org.models.company import Branch, Company
-from app.application_accounting.chart_of_accounts.finance_model import ExpenseType,PaymentEntry
-from app.application_stock.query_builders.build_journal_entries_query import build_journal_entries_query
+from app.application_stock.query_builders.build_journal_entries_query import (
+    build_journal_entries_query,
+)
 from app.auth.models.users import User
+
+
 ACCOUNTING_LIST_CONFIGS = {
     # ─────────────────── Modes of Payment ───────────────────
     "modes_of_payment": ListConfig(
@@ -92,7 +109,7 @@ ACCOUNTING_LIST_CONFIGS = {
             "account_number": Account.code,
             "account_name": Account.name,
             "account_type": Account.account_type,
-            "enabled": Account.enabled,       # ← replaced old status
+            "enabled": Account.enabled,
             "id": Account.id,
         },
         filter_fields={
@@ -100,13 +117,13 @@ ACCOUNTING_LIST_CONFIGS = {
             "account_type": Account.account_type,
             "report_type": Account.report_type,
             "is_group": Account.is_group,
-            "enabled": Account.enabled,       # ← replaced old status
+            "enabled": Account.enabled,
         },
         cache_enabled=True,
         cache_ttl=7200,
     ),
 
-    # ─────────────────── Account Access Policies (optional) ───────────────────
+    # ─────────────────── Account Access Policies ───────────────────
     "account_access_policies": ListConfig(
         permission_tag="Account Access Policy",
         query_builder=build_account_access_policies_query,
@@ -141,7 +158,6 @@ ACCOUNTING_LIST_CONFIGS = {
         filter_fields={
             "company_id": ExpenseType.company_id,
             "enabled": ExpenseType.enabled,
-            # optional UI switch: ensure_has_default_account handled in builder if you add it later
         },
         cache_enabled=True,
         cache_ttl=86400,  # master rarely changes → cache longer
@@ -168,30 +184,56 @@ ACCOUNTING_LIST_CONFIGS = {
         cache_enabled=True,
         cache_ttl=600,  # transactions change more often
     ),
-# ─────────────────── Payment Entries ───────────────────
-"payments": ListConfig(
-    permission_tag="PaymentEntry",
-    query_builder=build_payments_query,
-    search_fields=[PaymentEntry.code, "party_name", "mode_of_payment_name"],
-    sort_fields={
-        "code": PaymentEntry.code,
-        "payment_type": PaymentEntry.payment_type,
-        "status": PaymentEntry.doc_status,
-        "posting_date": PaymentEntry.posting_date,
-        "paid_amount": PaymentEntry.paid_amount,
-        "id": PaymentEntry.id,
-    },
-    filter_fields={
-        "company_id": PaymentEntry.company_id,
-        "branch_id": PaymentEntry.branch_id,
-        "doc_status": PaymentEntry.doc_status,
-        "payment_type": PaymentEntry.payment_type,
-        "posting_date": PaymentEntry.posting_date,
-        "party_type": PaymentEntry.party_type,
-        "mode_of_payment_id": PaymentEntry.mode_of_payment_id,
-    },
-    cache_enabled=False,
-),
+
+    # ─────────────────── Payment Entries ───────────────────
+    "payments": ListConfig(
+        permission_tag="Payment Entry",
+        query_builder=build_payments_query,
+        search_fields=[PaymentEntry.code, "party_name", "mode_of_payment_name"],
+        sort_fields={
+            "code": PaymentEntry.code,
+            "payment_type": PaymentEntry.payment_type,
+            "status": PaymentEntry.doc_status,
+            "posting_date": PaymentEntry.posting_date,
+            "paid_amount": PaymentEntry.paid_amount,
+            "id": PaymentEntry.id,
+        },
+        filter_fields={
+            "company_id": PaymentEntry.company_id,
+            "branch_id": PaymentEntry.branch_id,
+            "doc_status": PaymentEntry.doc_status,
+            "payment_type": PaymentEntry.payment_type,
+            "posting_date": PaymentEntry.posting_date,
+            "party_type": PaymentEntry.party_type,
+            "mode_of_payment_id": PaymentEntry.mode_of_payment_id,
+        },
+        cache_enabled=False,
+    ),
+
+    # ─────────────────── Period Closing Vouchers ───────────────────
+    "period_closing_vouchers": ListConfig(
+        permission_tag="Period Closing Voucher",
+        query_builder=build_period_closing_vouchers_query,
+        search_fields=[
+            PeriodClosingVoucher.code,
+            # fiscal_year_name is a computed field in the query builder
+        ],
+        sort_fields={
+            "code": PeriodClosingVoucher.code,
+            "posting_date": PeriodClosingVoucher.posting_date,
+            "status": PeriodClosingVoucher.doc_status,
+            "id": PeriodClosingVoucher.id,
+        },
+        filter_fields={
+            "company_id": PeriodClosingVoucher.company_id,
+            "closing_fiscal_year_id": PeriodClosingVoucher.closing_fiscal_year_id,
+            "doc_status": PeriodClosingVoucher.doc_status,
+            "posting_date": PeriodClosingVoucher.posting_date,
+        },
+        cache_enabled=False,
+    ),
+
+    # ─────────────────── Journal Entries ───────────────────
     "journal_entries": ListConfig(
         permission_tag="Journal Entry",
         query_builder=build_journal_entries_query,
@@ -221,6 +263,7 @@ ACCOUNTING_LIST_CONFIGS = {
         cache_enabled=False,
     ),
 }
+
 
 def register_module_lists() -> None:
     register_list_configs("accounting", ACCOUNTING_LIST_CONFIGS)

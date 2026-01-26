@@ -1,280 +1,304 @@
 from __future__ import annotations
-from sqlalchemy import select, case, and_, or_
+
+from typing import Mapping, Any, Optional
+
+from sqlalchemy import select, case, false
 from sqlalchemy.orm import Session
-from typing import Mapping, Any
 
 from app.application_stock.stock_models import Warehouse
-from app.application_org.models.company import Branch, Company
+from app.application_org.models.company import Branch
 from app.common.models.base import StatusEnum
 from app.security.rbac_effective import AffiliationContext
+from app.security.rbac_guards import ensure_scope_by_ids
 
 
-# --- Common scoping helpers ---
-def _co(ctx: AffiliationContext) -> int | None:
+# ──────────────────────────────────────────────────────────────────────────────
+# Context helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _co(ctx: AffiliationContext) -> Optional[int]:
     return getattr(ctx, "company_id", None)
 
 
-def _br(ctx: AffiliationContext) -> int | None:
+def _user_branch(ctx: AffiliationContext) -> Optional[int]:
+    # You already have this in ctx in many places; fallback to None
     return getattr(ctx, "branch_id", None)
 
 
-def _is_system_admin(ctx: AffiliationContext) -> bool:
-    return getattr(ctx, "is_system_admin", False)
+def _deny_dropdown():
+    # consistent empty dropdown
+    return select(Warehouse.id.label("value")).where(false())
 
 
-def _has_company_wide_access(ctx: AffiliationContext) -> bool:
-    """Check if user has company-wide access (Owner/Super Admin roles)"""
-    if _is_system_admin(ctx):
-        return True
-
-    roles = getattr(ctx, "roles", []) or []
-    company_wide_roles = {"Owner", "Super Admin", "Operations Manager"}
-    return any(role in company_wide_roles for role in roles)
+def _ensure_company_scope(ctx: AffiliationContext, company_id: int) -> None:
+    # company-wide view (admins bypass inside guard)
+    ensure_scope_by_ids(context=ctx, target_company_id=company_id, target_branch_id=None)
 
 
-def _get_user_branch_ids(ctx: AffiliationContext) -> list[int]:
-    """Get list of branch IDs the user has access to"""
-    return list(getattr(ctx, "branch_ids", []) or [])
+# ──────────────────────────────────────────────────────────────────────────────
+# Ordering strategy (advanced)
+# ──────────────────────────────────────────────────────────────────────────────
+def _order_user_branch_first(W, B, user_branch_id: Optional[int]):
+    """
+    Ranking:
+      0 -> current user's branch
+      1 -> other branches
+      2 -> global (branch_id is null)
+    Then: newest first, then name
+    """
+    # If user has no branch, treat "other branches" as same group (1),
+    # and global still last (2).
+    branch_rank = case(
+        (W.branch_id == user_branch_id, 0),
+        (W.branch_id.isnot(None), 1),
+        else_=2,
+    )
+
+    # Branch name in ordering needs outerjoin Branch; if global -> null, it sorts last anyway
+    return (
+        branch_rank.asc(),
+        B.name.asc(),
+        W.created_at.desc(),
+        W.name.asc(),
+    )
 
 
-# --- ALL WAREHOUSES (Default - for most transactions) ---
+def _location_display(W, B):
+    return case((W.branch_id.is_(None), "Global"), else_=B.name).label("branch_name")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 1) ALL WAREHOUSES (default dropdown)
+# ──────────────────────────────────────────────────────────────────────────────
 def build_all_warehouses_dropdown(session: Session, ctx: AffiliationContext, params: Mapping[str, Any]):
     """
-    All warehouses for user's accessible branches + global groups
-    - Super Admin/Owner: All warehouses in company
-    - Regular users: Global groups + warehouses from their assigned branches
+    Dropdown: all ACTIVE warehouses in the company.
+
+    Visibility:
+      - Any user inside the company sees ALL warehouses (global + all branches).
+      - No other-company leakage.
+
+    Ordering (best UX):
+      - User's branch first
+      - then other branches
+      - then Global
+      - newest first within each
     """
     co_id = _co(ctx)
     if not co_id:
-        return select(Warehouse.id.label("value")).where(Warehouse.id == -1)
+        return _deny_dropdown()
+
+    _ensure_company_scope(ctx, co_id)
+
+    W = Warehouse
+    B = Branch
+    user_branch_id = _user_branch(ctx)
 
     q = (
         select(
-            Warehouse.id.label("value"),
-            Warehouse.name.label("label"),  # Clean label - just the name
-            Warehouse.name.label("name"),
-            Warehouse.code.label("code"),
-            Warehouse.is_group.label("is_group"),
-            case((Warehouse.branch_id.is_(None), "Global"), else_=Branch.name).label("branch_name"),
-            Warehouse.status.label("status"),
-            Warehouse.created_at.label("created_at"),
+            W.id.label("value"),
+            W.name.label("label"),
+            W.name.label("name"),
+            W.code.label("code"),
+            W.is_group.label("is_group"),
+            _location_display(W, B),
+            W.status.label("status"),
+            W.created_at.label("created_at"),
         )
-        .select_from(Warehouse)
-        .join(Company, Company.id == Warehouse.company_id)
-        .outerjoin(Branch, Branch.id == Warehouse.branch_id)
+        .select_from(W)
+        .outerjoin(B, B.id == W.branch_id)
         .where(
-            Warehouse.company_id == co_id,
-            Warehouse.status == StatusEnum.ACTIVE  # Only active warehouses
+            W.company_id == co_id,
+            W.status == StatusEnum.ACTIVE,
         )
-    )
-
-    # Apply branch restrictions for non-admin users
-    if not _has_company_wide_access(ctx):
-        branch_ids = _get_user_branch_ids(ctx)
-        if branch_ids:
-            # Regular users: global groups + warehouses from their branches
-            q = q.where(
-                (Warehouse.branch_id.is_(None) & Warehouse.is_group.is_(True)) |  # Global groups
-                (Warehouse.branch_id.in_(branch_ids))  # All warehouses from their branches
-            )
-        else:
-            # Users with no branch access: only global groups
-            q = q.where(Warehouse.branch_id.is_(None) & Warehouse.is_group.is_(True))
-
-    # Order by: Global first, then by branch, groups before physical, then name
-    q = q.order_by(
-        case((Warehouse.branch_id.is_(None), 0), else_=1),  # Global first
-        Branch.name.asc(),  # Then by branch name
-        Warehouse.is_group.desc(),  # Groups before physical
-        Warehouse.name.asc()  # Then alphabetically
+        .order_by(*_order_user_branch_first(W, B, user_branch_id))
     )
 
     return q
 
 
-# --- PHYSICAL WAREHOUSES ONLY (for stock transactions) ---
+# ──────────────────────────────────────────────────────────────────────────────
+# 2) PHYSICAL WAREHOUSES ONLY
+# ──────────────────────────────────────────────────────────────────────────────
 def build_physical_warehouses_dropdown(session: Session, ctx: AffiliationContext, params: Mapping[str, Any]):
     """
-    Physical warehouses only (is_group = False) - for stock entries, issues, receipts
-    - Super Admin/Owner: All physical warehouses in company
-    - Regular users: Only physical warehouses from their assigned branches
+    Dropdown: ACTIVE physical warehouses (is_group=False) in the company.
+    (Used for stock moves, issues, receipts, etc.)
+
+    Visibility:
+      - Any user inside company can see all physical warehouses (all branches).
+    Ordering:
+      - user's branch first, newest first
     """
     co_id = _co(ctx)
     if not co_id:
-        return select(Warehouse.id.label("value")).where(Warehouse.id == -1)
+        return _deny_dropdown()
+
+    _ensure_company_scope(ctx, co_id)
+
+    W = Warehouse
+    B = Branch
+    user_branch_id = _user_branch(ctx)
 
     q = (
         select(
-            Warehouse.id.label("value"),
-            Warehouse.name.label("label"),  # Clean label - just the name
-            Warehouse.name.label("name"),
-            Warehouse.code.label("code"),
-            Branch.name.label("branch_name"),
-            Warehouse.created_at.label("created_at"),
+            W.id.label("value"),
+            W.name.label("label"),
+            W.name.label("name"),
+            W.code.label("code"),
+            B.name.label("branch_name"),
+            W.created_at.label("created_at"),
         )
-        .select_from(Warehouse)
-        .join(Company, Company.id == Warehouse.company_id)
-        .join(Branch, Branch.id == Warehouse.branch_id)  # Physical warehouses must have branch
+        .select_from(W)
+        .join(B, B.id == W.branch_id)  # physical warehouses must have branch_id
         .where(
-            Warehouse.company_id == co_id,
-            Warehouse.is_group.is_(False),  # Only physical warehouses
-            Warehouse.status == StatusEnum.ACTIVE
+            W.company_id == co_id,
+            W.status == StatusEnum.ACTIVE,
+            W.is_group.is_(False),
         )
-        .order_by(
-            Branch.name.asc(),
-            Warehouse.name.asc()
-        )
+        .order_by(*_order_user_branch_first(W, B, user_branch_id))
     )
-
-    # Apply branch restrictions for non-admin users
-    if not _has_company_wide_access(ctx):
-        branch_ids = _get_user_branch_ids(ctx)
-        if branch_ids:
-            q = q.where(Warehouse.branch_id.in_(branch_ids))
-        else:
-            q = q.where(Warehouse.id == -1)  # No access
 
     return q
 
 
-# --- WAREHOUSE GROUPS ONLY (for organization) ---
+# ──────────────────────────────────────────────────────────────────────────────
+# 3) GROUPS ONLY
+# ──────────────────────────────────────────────────────────────────────────────
 def build_warehouse_groups_dropdown(session: Session, ctx: AffiliationContext, params: Mapping[str, Any]):
     """
-    Warehouse groups only (is_group = True) - for organizational views
-    - Super Admin/Owner: All groups in company
-    - Regular users: Global groups + groups from their assigned branches
+    Dropdown: ACTIVE groups only (is_group=True) in the company.
+
+    Visibility:
+      - Any user inside company can see all groups (global + branches).
+    Ordering:
+      - user's branch first
+      - then other branches
+      - then Global
+      - newest first
     """
     co_id = _co(ctx)
     if not co_id:
-        return select(Warehouse.id.label("value")).where(Warehouse.id == -1)
+        return _deny_dropdown()
+
+    _ensure_company_scope(ctx, co_id)
+
+    W = Warehouse
+    B = Branch
+    user_branch_id = _user_branch(ctx)
 
     q = (
         select(
-            Warehouse.id.label("value"),
-            Warehouse.name.label("label"),  # Clean label - just the name
-            Warehouse.name.label("name"),
-            Warehouse.code.label("code"),
-            case((Warehouse.branch_id.is_(None), "Global"), else_=Branch.name).label("branch_name"),
-            Warehouse.created_at.label("created_at"),
+            W.id.label("value"),
+            W.name.label("label"),
+            W.name.label("name"),
+            W.code.label("code"),
+            _location_display(W, B),
+            W.created_at.label("created_at"),
         )
-        .select_from(Warehouse)
-        .join(Company, Company.id == Warehouse.company_id)
-        .outerjoin(Branch, Branch.id == Warehouse.branch_id)
+        .select_from(W)
+        .outerjoin(B, B.id == W.branch_id)
         .where(
-            Warehouse.company_id == co_id,
-            Warehouse.is_group.is_(True),  # Only groups
-            Warehouse.status == StatusEnum.ACTIVE
+            W.company_id == co_id,
+            W.status == StatusEnum.ACTIVE,
+            W.is_group.is_(True),
         )
-        .order_by(
-            case((Warehouse.branch_id.is_(None), 0), else_=1),  # Global first
-            Branch.name.asc(),
-            Warehouse.name.asc()
-        )
+        .order_by(*_order_user_branch_first(W, B, user_branch_id))
     )
-
-    # Apply branch restrictions for non-admin users
-    if not _has_company_wide_access(ctx):
-        branch_ids = _get_user_branch_ids(ctx)
-        if branch_ids:
-            q = q.where(
-                (Warehouse.branch_id.is_(None)) |  # Global groups
-                (Warehouse.branch_id.in_(branch_ids))  # Groups from their branches
-            )
-        else:
-            q = q.where(Warehouse.branch_id.is_(None))  # Only global groups
 
     return q
 
 
-# --- CHILD WAREHOUSES (for hierarchical selection) ---
+# ──────────────────────────────────────────────────────────────────────────────
+# 4) CHILD WAREHOUSES (under parent)
+# ──────────────────────────────────────────────────────────────────────────────
 def build_child_warehouses_dropdown(session: Session, ctx: AffiliationContext, params: Mapping[str, Any]):
     """
-    Child warehouses of a specific parent - for hierarchical selection
+    Dropdown: ACTIVE children under a given parent.
     Expects: params['parent_warehouse_id'] (required)
+
+    Visibility:
+      - Parent must belong to the user's company (enforced via company scope check).
+    Ordering:
+      - groups first, then newest, then name
+      - BUT also keeps user's-branch-first ordering when branches exist
     """
     co_id = _co(ctx)
     parent_id = params.get("parent_warehouse_id")
     if not co_id or not parent_id:
-        return select(Warehouse.id.label("value")).where(Warehouse.id == -1)
+        return _deny_dropdown()
+
+    _ensure_company_scope(ctx, co_id)
+
+    W = Warehouse
+    B = Branch
+    user_branch_id = _user_branch(ctx)
 
     q = (
         select(
-            Warehouse.id.label("value"),
-            Warehouse.name.label("label"),  # Clean label - just the name
-            Warehouse.name.label("name"),
-            Warehouse.code.label("code"),
-            Warehouse.is_group.label("is_group"),
-            case((Warehouse.branch_id.is_(None), "Global"), else_=Branch.name).label("branch_name"),
+            W.id.label("value"),
+            W.name.label("label"),
+            W.name.label("name"),
+            W.code.label("code"),
+            W.is_group.label("is_group"),
+            _location_display(W, B),
         )
-        .select_from(Warehouse)
-        .join(Company, Company.id == Warehouse.company_id)
-        .outerjoin(Branch, Branch.id == Warehouse.branch_id)
+        .select_from(W)
+        .outerjoin(B, B.id == W.branch_id)
         .where(
-            Warehouse.company_id == co_id,
-            Warehouse.parent_warehouse_id == int(parent_id),
-            Warehouse.status == StatusEnum.ACTIVE
+            W.company_id == co_id,
+            W.parent_warehouse_id == int(parent_id),
+            W.status == StatusEnum.ACTIVE,
         )
         .order_by(
-            Warehouse.is_group.desc(),  # Groups first
-            Warehouse.name.asc()
+            W.is_group.desc(),
+            *_order_user_branch_first(W, B, user_branch_id),
         )
     )
-
-    # Apply branch restrictions for non-admin users
-    if not _has_company_wide_access(ctx):
-        branch_ids = _get_user_branch_ids(ctx)
-        if branch_ids:
-            q = q.where(Warehouse.branch_id.in_(branch_ids))
-        else:
-            q = q.where(Warehouse.branch_id.is_(None))  # Only global children
 
     return q
 
 
-# --- ACTIVE WAREHOUSES (Optimized for transactions) ---
+# ──────────────────────────────────────────────────────────────────────────────
+# 5) ACTIVE WAREHOUSES (transaction optimized)
+# ──────────────────────────────────────────────────────────────────────────────
 def build_active_warehouses_dropdown(session: Session, ctx: AffiliationContext, params: Mapping[str, Any]):
     """
-    Active warehouses optimized for transactions - newest first
-    Same access rules as all_warehouses but optimized ordering
+    Dropdown: ACTIVE warehouses optimized for transaction UI usage.
+
+    Visibility:
+      - Any user in company sees all.
+    Ordering:
+      - user's branch first
+      - newest first globally
     """
     co_id = _co(ctx)
     if not co_id:
-        return select(Warehouse.id.label("value")).where(Warehouse.id == -1)
+        return _deny_dropdown()
+
+    _ensure_company_scope(ctx, co_id)
+
+    W = Warehouse
+    B = Branch
+    user_branch_id = _user_branch(ctx)
 
     q = (
         select(
-            Warehouse.id.label("value"),
-            Warehouse.name.label("label"),  # Clean label - just the name
-            Warehouse.name.label("name"),
-            Warehouse.code.label("code"),
-            Warehouse.is_group.label("is_group"),
-            Branch.name.label("branch_name"),
-            Warehouse.created_at.label("created_at"),
+            W.id.label("value"),
+            W.name.label("label"),
+            W.name.label("name"),
+            W.code.label("code"),
+            W.is_group.label("is_group"),
+            B.name.label("branch_name"),
+            W.created_at.label("created_at"),
         )
-        .select_from(Warehouse)
-        .join(Company, Company.id == Warehouse.company_id)
-        .outerjoin(Branch, Branch.id == Warehouse.branch_id)
+        .select_from(W)
+        .outerjoin(B, B.id == W.branch_id)
         .where(
-            Warehouse.company_id == co_id,
-            Warehouse.status == StatusEnum.ACTIVE
+            W.company_id == co_id,
+            W.status == StatusEnum.ACTIVE,
         )
-    )
-
-    # Apply branch restrictions for non-admin users
-    if not _has_company_wide_access(ctx):
-        branch_ids = _get_user_branch_ids(ctx)
-        if branch_ids:
-            q = q.where(
-                (Warehouse.branch_id.is_(None) & Warehouse.is_group.is_(True)) |
-                (Warehouse.branch_id.in_(branch_ids))
-            )
-        else:
-            q = q.where(Warehouse.branch_id.is_(None) & Warehouse.is_group.is_(True))
-
-    # Order by: newest first (transaction pattern), then name
-    q = q.order_by(
-        Warehouse.created_at.desc(),  # Newest first
-        Warehouse.name.asc()
+        .order_by(*_order_user_branch_first(W, B, user_branch_id))
     )
 
     return q

@@ -25,7 +25,7 @@ class MediaFolder:
     BRANCHES = "branches_img"
     EMPLOYEES = "employees_img"
     DATA_IMPORTS = "data_imports"
-
+    SHAREHOLDERS = "shareholders_img"
     # Add other entities like "products_img" or "vehicles_img" as needed.
 
 def ensure_local_media_folders():
@@ -39,6 +39,8 @@ def ensure_local_media_folders():
         MediaFolder.BRANCHES,
         MediaFolder.EMPLOYEES,
         MediaFolder.DATA_IMPORTS,
+
+        MediaFolder.SHAREHOLDERS,
     ]
 
     os.makedirs(base, exist_ok=True)

@@ -70,14 +70,11 @@ def run_migrations_offline():
 
     with context.begin_transaction():
         context.run_migrations()
-
-
 def run_migrations_online():
     """Run migrations in 'online' mode.
 
     In this scenario we need to create an Engine
     and associate a connection with the context.
-
     """
 
     # this callback is used to prevent an auto-migration from being generated
@@ -93,15 +90,52 @@ def run_migrations_online():
     connectable = get_engine()
 
     with connectable.connect() as connection:
+        # take existing args from Flask-Migrate
+        configure_args = current_app.extensions['migrate'].configure_args.copy()
+        # IMPORTANT: make each migration its own transaction
+        configure_args.setdefault("transaction_per_migration", True)
+
         context.configure(
             connection=connection,
             target_metadata=get_metadata(),
             process_revision_directives=process_revision_directives,
-            **current_app.extensions['migrate'].configure_args
+            **configure_args,
         )
 
         with context.begin_transaction():
             context.run_migrations()
+
+
+# def run_migrations_online():
+#     """Run migrations in 'online' mode.
+#
+#     In this scenario we need to create an Engine
+#     and associate a connection with the context.
+#
+#     """
+#
+#     # this callback is used to prevent an auto-migration from being generated
+#     # when there are no changes to the schema
+#     # reference: http://alembic.zzzcomputing.com/en/latest/cookbook.html
+#     def process_revision_directives(context, revision, directives):
+#         if getattr(config.cmd_opts, 'autogenerate', False):
+#             script = directives[0]
+#             if script.upgrade_ops.is_empty():
+#                 directives[:] = []
+#                 logger.info('No changes in schema detected.')
+#
+#     connectable = get_engine()
+#
+#     with connectable.connect() as connection:
+#         context.configure(
+#             connection=connection,
+#             target_metadata=get_metadata(),
+#             process_revision_directives=process_revision_directives,
+#             **current_app.extensions['migrate'].configure_args
+#         )
+#
+#         with context.begin_transaction():
+#             context.run_migrations()
 
 
 if context.is_offline_mode():

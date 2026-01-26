@@ -1,138 +1,93 @@
 # app/application_stock/services/adapters.py
 from __future__ import annotations
-from typing import Any, Dict, List, Optional
 
-from werkzeug.exceptions import BadRequest
+from typing import Any, Dict
 
-from app.application_stock.services.reconciliation_service import StockReconciliationService
-from app.security.rbac_effective import AffiliationContext
 from config.database import db
+from app.security.rbac_effective import AffiliationContext
+from app.application_stock.services.reconciliation_service import (
+    StockReconciliationService,
+)
 
 
 def _ctx_from_row(row: Dict[str, Any]) -> AffiliationContext:
     """
-    Build an AffiliationContext for Data Import rows.
+    Build AffiliationContext for stock import.
 
-    IMPORTANT:
-    - company_id / branch_id are injected by the pipeline from the DataImport row
-      (see application_data_import.runner.pipeline._inject_context).
-    - We **do not** hard-code any roles.
-    - We keep is_system_admin=True so ensure_scope_by_ids() will not block the
-      import job after the HTTP layer has already enforced "Data Import" permissions.
+    - company_id / branch_id / created_by_id are injected from DataImport
+      via _inject_context() in the pipeline.
+    - We mark is_system_admin=True because authorization was already
+      enforced at Data Import endpoint.
     """
     company_id = int(row.get("company_id") or 0)
-
     branch_id_raw = row.get("branch_id")
     branch_id = int(branch_id_raw) if branch_id_raw is not None else None
 
     user_id_raw = row.get("created_by_id")
     user_id = int(user_id_raw) if user_id_raw is not None else 0
 
-    # ----- roles -----
-    raw_roles = row.get("roles")
-    if isinstance(raw_roles, (list, set, tuple)):
-        roles = set(raw_roles)
-    elif isinstance(raw_roles, str) and raw_roles.strip():
-        roles = {r.strip() for r in raw_roles.split(",") if r.strip()}
-    else:
-        # No default business role; imports don't depend on roles
-        roles = set()
-
-    # ----- affiliations -----
-    affiliations: list = []
-
-    # ----- permissions -----
-    raw_permissions = row.get("permissions")
-    if isinstance(raw_permissions, (list, set, tuple)):
-        permissions = set(raw_permissions)
-    elif isinstance(raw_permissions, str) and raw_permissions.strip():
-        permissions = {p.strip() for p in raw_permissions.split(",") if p.strip()}
-    else:
-        permissions = set()
-
-    user_type = row.get("user_type") or "user"
-
     return AffiliationContext(
         user_id=user_id,
-        user_type=user_type,
+        user_type=row.get("user_type") or "user",
         company_id=company_id,
         branch_id=branch_id,
-        roles=roles,
-        affiliations=affiliations,
-        permissions=permissions,
-        is_system_admin=True,  # still system-level inside the import job
+        roles=set(),
+        affiliations=[],
+        permissions=set(),
+        is_system_admin=True,
     )
-
-
-def _require_field(row: Dict[str, Any], key: str) -> Any:
-    if row.get(key) in (None, ""):
-        raise BadRequest(f"Missing required field '{key}'.")
-    return row[key]
 
 
 def create_stock_reconciliation_via_import(row: Dict[str, Any]) -> None:
     """
-    Data Import adapter for StockReconciliation.
+    Single-row handler: one Stock Reconciliation document per row.
 
-    One CSV/Excel row -> one Stock Reconciliation document with ONE item line.
-
-    Expected final (resolved) columns in `row` after the import pipeline:
-      - company_id       (injected by pipeline)
-      - branch_id        (injected by pipeline OR resolved by Branch Name)
-      - created_by_id    (injected by pipeline)
-      - posting_date     (date or ISO date string)
-      - purpose          (optional, "Opening Stock" or "Stock Reconciliation")
-      - difference_account_id (optional, resolved from Account Name)
-      - notes            (optional)
-      - code             (optional manual code)
-      - item_id          (resolved from Item Name)
-      - warehouse_id     (resolved from Warehouse Name)
-      - quantity         (decimal / float / str)
-      - valuation_rate   (optional decimal)
+    The row dict is already:
+    - resolved: item_id / warehouse_id / difference_account_id (IDs)
+      via resolve_links_bulk + registry resolvers.
+    - enriched with company_id / branch_id / created_by_id.
+    - contains internal flags: _submit_after_import, _mute_emails.
     """
     ctx = _ctx_from_row(row)
-    svc = StockReconciliationService(session=db.session)
 
-    # ---- Required core fields ----
-    posting_date = _require_field(row, "posting_date")
-    item_id = int(_require_field(row, "item_id"))
-    warehouse_id = int(_require_field(row, "warehouse_id"))
-    quantity = row.get("quantity")
-    if quantity in (None, ""):
-        raise BadRequest("Missing required field 'quantity'.")
+    # IMPORTANT:
+    # auto_commit=False because the Data Import pipeline controls
+    # transactions (Session.begin / begin_nested). We must not commit()
+    # or rollback() here, otherwise we hit "closed transaction inside
+    # context manager" errors.
+    svc = StockReconciliationService(session=db.session, auto_commit=False)
 
-    # Optional / header-level fields
-    purpose = row.get("purpose")  # may be None -> service defaults to STOCK_RECONCILIATION
-    notes = row.get("notes")
-    difference_account_id = row.get("difference_account_id")
-    code = row.get("code")
-    valuation_rate = row.get("valuation_rate")
+    # Meta flags (remove from row so they don't go into payload)
+    submit_after = bool(row.pop("_submit_after_import", False))
+    row.pop("_mute_emails", None)  # not used here, but safe to drop
 
+    # Build payload in the same shape that your HTTP API expects:
     payload: Dict[str, Any] = {
-        # Header context – service will finalize company/branch via resolve_company_branch_and_scope
         "company_id": row.get("company_id"),
         "branch_id": row.get("branch_id"),
-
-        "posting_date": posting_date,
-        "purpose": purpose,
-        "notes": notes,
-        "difference_account_id": difference_account_id,
-        "code": code,
-        # Single line per document
+        "posting_date": row.get("posting_date"),
+        "purpose": row.get("purpose") or "Stock Reconciliation",
+        "notes": row.get("notes"),
+        "difference_account_id": row.get("difference_account_id"),
         "items": [
             {
-                "item_id": item_id,
-                "warehouse_id": warehouse_id,
-                "quantity": quantity,
-                "valuation_rate": valuation_rate,
+                "item_id": row.get("item_id"),
+                "warehouse_id": row.get("warehouse_id"),
+                "quantity": row.get("quantity"),
+                "valuation_rate": row.get("valuation_rate"),
             }
         ],
     }
 
-    # Service will:
-    # - validate items/warehouses
-    # - auto-pick difference account if not provided:
-    #     OPENING_STOCK        -> "Temporary Opening"
-    #     STOCK_RECONCILIATION -> "Stock Adjustments"
-    # - create as DRAFT
-    svc.create_stock_reconciliation(payload=payload, context=ctx)
+    # 1) Create as Draft (no commit; only flush under the hood)
+    recon = svc.create_stock_reconciliation(
+        payload=payload,
+        context=ctx,
+    )
+
+    # 2) Optionally submit (Opening Stock or normal Stock Reconciliation)
+    if submit_after:
+        svc.submit_stock_reconciliation(
+            recon_id=recon.id,
+            context=ctx,
+        )

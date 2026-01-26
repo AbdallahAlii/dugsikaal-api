@@ -1,119 +1,155 @@
-# app/application_pricing/repo/pricing_master_repo.py
 from __future__ import annotations
-from typing import Optional, Tuple
-from datetime import datetime
-from decimal import Decimal
 
-from sqlalchemy import select, func, exists
+from datetime import datetime
+from typing import Optional
+
+from sqlalchemy import select, func, exists, or_
 from sqlalchemy.orm import Session
 
 from config.database import db
-from app.common.models.base import StatusEnum
 from app.application_nventory.inventory_models import (
-    PriceList, ItemPrice, Item, UnitOfMeasure, UOMConversion
+    PriceList, ItemPrice, Item, UnitOfMeasure, UOMConversion, PriceListType
 )
-
-DEC4 = Decimal("0.0001")
+from app.application_org.models.company import Branch
 
 
 class PricingMasterRepository:
     def __init__(self, session: Optional[Session] = None):
         self.s: Session = session or db.session
 
-    # --------- save / flush ----------
     def save(self, obj):
         if obj not in self.s:
             self.s.add(obj)
         self.s.flush([obj])
         return obj
 
-    # --------- company from branch (defensive import) ----------
+    # -----------------------
+    # Branch / Company
+    # -----------------------
     def get_branch_company_id(self, branch_id: int) -> Optional[int]:
-        try:
-            from app.application_org.models.company import Branch  # canonical path
-        except Exception:  # legacy fallback
-            try:
-                from app import Branch  # type: ignore
-            except Exception:
-                return None
-        return self.s.execute(select(Branch.company_id).where(Branch.id == branch_id)).scalar_one_or_none()
+        return self.s.scalar(select(Branch.company_id).where(Branch.id == int(branch_id)))
 
-    # --------- PriceList lookups ----------
-    def price_list_by_id(self, company_id: int, pl_id: int) -> Optional[PriceList]:
-        return self.s.execute(
-            select(PriceList).where(PriceList.company_id == company_id, PriceList.id == pl_id)
-        ).scalar_one_or_none()
-
-    def price_list_by_name(self, company_id: int, name: str) -> Optional[PriceList]:
-        return self.s.execute(
+    # -----------------------
+    # Price List
+    # -----------------------
+    def get_price_list_by_id(self, *, company_id: int, price_list_id: int) -> Optional[PriceList]:
+        return self.s.scalar(
             select(PriceList).where(
-                PriceList.company_id == company_id,
-                func.lower(PriceList.name) == func.lower((name or "").strip())
+                PriceList.company_id == int(company_id),
+                PriceList.id == int(price_list_id),
             )
-        ).scalar_one_or_none()
+        )
 
-    def price_list_name_exists(self, company_id: int, name: str, *, exclude_id: Optional[int] = None) -> bool:
-        stmt = select(exists().where(
-            PriceList.company_id == company_id,
-            func.lower(PriceList.name) == func.lower((name or "").strip())
-        ))
-        if exclude_id:
-            stmt = stmt.where(PriceList.id != exclude_id)
-        return bool(self.s.execute(stmt).scalar())
-
-    # --------- Item / UOM checks ----------
-    def item_core(self, company_id: int, item_id: int) -> Optional[Tuple[bool, Optional[int]]]:
-        row = self.s.execute(
-            select(Item.status, Item.base_uom_id).where(Item.company_id == company_id, Item.id == item_id)
-        ).first()
-        if not row:
-            return None
-        return (row.status == StatusEnum.ACTIVE, row.base_uom_id)
-
-    def uom_exists(self, company_id: int, uom_id: int) -> bool:
-        return bool(self.s.execute(
-            select(exists().where(UnitOfMeasure.company_id == company_id,
-                                  UnitOfMeasure.id == uom_id,
-                                  UnitOfMeasure.status == StatusEnum.ACTIVE))
-        ).scalar())
-
-    def uom_compatible_with_item(self, item_id: int, uom_id: int, base_uom_id: Optional[int]) -> bool:
-        if base_uom_id and uom_id == base_uom_id:
-            return True
-        ok = self.s.execute(
-            select(exists().where(UOMConversion.item_id == item_id,
-                                  UOMConversion.uom_id == uom_id,
-                                  UOMConversion.is_active == True))  # noqa: E712
-        ).scalar()
-        return bool(ok)
-
-    # --------- ItemPrice fetch ----------
-    def item_price_by_id(self, ip_id: int) -> Optional[ItemPrice]:
-        return self.s.execute(select(ItemPrice).where(ItemPrice.id == ip_id)).scalar_one_or_none()
-
-    def item_price_code_exists(self, company_id: int, code: str) -> bool:
-        return bool(self.s.execute(
-            select(exists().where(ItemPrice.company_id == company_id, ItemPrice.code == code))
-        ).scalar())
-
-    def duplicate_item_price_exists(
-        self, *, price_list_id: int, item_id: int,
-        uom_id: Optional[int], branch_id: Optional[int],
-        exclude_id: Optional[int] = None
-    ) -> bool:
-        stmt = select(exists().where(
-            ItemPrice.price_list_id == price_list_id,
-            ItemPrice.item_id == item_id,
-            (ItemPrice.uom_id == uom_id) if uom_id is not None else ItemPrice.uom_id.is_(None),
-            (ItemPrice.branch_id == branch_id) if branch_id is not None else ItemPrice.branch_id.is_(None),
-        ))
-        if exclude_id:
-            stmt = stmt.where(ItemPrice.id != exclude_id)
-        return bool(self.s.execute(stmt).scalar())
-
-    # --------- validity predicate ----------
-    @staticmethod
-    def validity_ok(valid_from: Optional[datetime], valid_upto: Optional[datetime]) -> bool:
-        if valid_from and valid_upto and valid_from > valid_upto:
+    def price_list_name_exists(self, *, company_id: int, name: str, exclude_id: Optional[int] = None) -> bool:
+        nm = (name or "").strip()
+        if not nm:
             return False
-        return True
+
+        q = exists().where(
+            PriceList.company_id == int(company_id),
+            func.lower(PriceList.name) == func.lower(nm),
+        )
+        if exclude_id:
+            q = q.where(PriceList.id != int(exclude_id))
+        return bool(self.s.scalar(select(q)))
+
+    def default_price_list_exists(self, *, company_id: int, list_type: PriceListType, exclude_id: Optional[int]) -> bool:
+        if list_type in (PriceListType.SELLING, PriceListType.BOTH):
+            lt_set = (PriceListType.SELLING, PriceListType.BOTH)
+        else:
+            lt_set = (PriceListType.BUYING, PriceListType.BOTH)
+
+        q = exists().where(
+            PriceList.company_id == int(company_id),
+            PriceList.is_default.is_(True),
+            PriceList.is_active.is_(True),
+            PriceList.list_type.in_(lt_set),
+        )
+        if exclude_id:
+            q = q.where(PriceList.id != int(exclude_id))
+        return bool(self.s.scalar(select(q)))
+
+    # -----------------------
+    # Item / UOM checks - UPDATED for ERPNext style
+    # -----------------------
+    def get_item_base_uom_id(self, *, company_id: int, item_id: int) -> Optional[int]:
+        """Get item's base UOM ID - returns None if item doesn't exist OR if base_uom_id is NULL."""
+        return self.s.scalar(
+            select(Item.base_uom_id).where(
+                Item.company_id == int(company_id),
+                Item.id == int(item_id),
+            )
+        )
+
+    def item_exists_and_belongs_to_company(self, *, company_id: int, item_id: int) -> bool:
+        """Check if item exists and belongs to company - proper validation."""
+        q = exists().where(
+            Item.company_id == int(company_id),
+            Item.id == int(item_id),
+        )
+        return bool(self.s.scalar(select(q)))
+
+    def uom_belongs_to_company(self, *, company_id: int, uom_id: int) -> bool:
+        q = exists().where(
+            UnitOfMeasure.company_id == int(company_id),
+            UnitOfMeasure.id == int(uom_id),
+        )
+        return bool(self.s.scalar(select(q)))
+
+    def uom_conversion_exists(self, *, item_id: int, uom_id: int) -> bool:
+        """Check if UOM conversion exists for item (active conversion)."""
+        q = exists().where(
+            UOMConversion.item_id == int(item_id),
+            UOMConversion.uom_id == int(uom_id),
+            UOMConversion.is_active.is_(True),
+        )
+        return bool(self.s.scalar(select(q)))
+
+    def get_item_type(self, *, company_id: int, item_id: int) -> Optional[str]:
+        """Get item type (STOCK_ITEM, SERVICE, etc.)."""
+        return self.s.scalar(
+            select(Item.item_type).where(
+                Item.company_id == int(company_id),
+                Item.id == int(item_id),
+            )
+        )
+
+    # -----------------------
+    # Item Price
+    # -----------------------
+    def get_item_price_by_id(self, *, item_price_id: int) -> Optional[ItemPrice]:
+        return self.s.scalar(select(ItemPrice).where(ItemPrice.id == int(item_price_id)))
+
+    def item_price_code_exists(self, *, company_id: int, code: str) -> bool:
+        q = exists().where(
+            ItemPrice.company_id == int(company_id),
+            ItemPrice.code == str(code),
+        )
+        return bool(self.s.scalar(select(q)))
+
+    def item_price_overlaps(
+        self,
+        *,
+        company_id: int,
+        price_list_id: int,
+        item_id: int,
+        branch_id: Optional[int],
+        uom_id: Optional[int],
+        valid_from_utc: Optional[datetime],
+        valid_upto_utc: Optional[datetime],
+        exclude_id: Optional[int] = None,
+    ) -> bool:
+        conds = [
+            ItemPrice.company_id == int(company_id),
+            ItemPrice.price_list_id == int(price_list_id),
+            ItemPrice.item_id == int(item_id),
+            ItemPrice.branch_id == (int(branch_id) if branch_id is not None else None),
+            ItemPrice.uom_id == (int(uom_id) if uom_id is not None else None),
+            (True if valid_from_utc is None else or_(ItemPrice.valid_upto.is_(None), ItemPrice.valid_upto >= valid_from_utc)),
+            (True if valid_upto_utc is None else or_(ItemPrice.valid_from.is_(None), ItemPrice.valid_from <= valid_upto_utc)),
+        ]
+
+        q = exists().where(*conds)
+        if exclude_id:
+            q = q.where(ItemPrice.id != int(exclude_id))
+        return bool(self.s.scalar(select(q)))

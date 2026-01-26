@@ -452,26 +452,40 @@ class PurchaseInvoice(BaseModel):
         # - No payment: paid_amount = 0 → no MOP / cash-bank
         # - Normal invoice: paid_amount > 0 → require MOP + cash-bank
         # - Return: paid_amount < 0 (refund from supplier) → require MOP + cash-bank
+
         CheckConstraint(
             """
             (
+                -- Case 1: Unpaid invoice
                 paid_amount = 0
                 AND mode_of_payment_id IS NULL
                 AND cash_bank_account_id IS NULL
             )
             OR
             (
+                -- Case 2: Regular invoice with payment (direct OR via Payment Entry)
                 is_return = false
                 AND paid_amount > 0
-                AND mode_of_payment_id IS NOT NULL
-                AND cash_bank_account_id IS NOT NULL
+                AND (
+                    -- Either direct payment details exist
+                    (mode_of_payment_id IS NOT NULL AND cash_bank_account_id IS NOT NULL)
+                    OR
+                    -- OR payment was made via Payment Entry (details remain NULL)
+                    (mode_of_payment_id IS NULL AND cash_bank_account_id IS NULL)
+                )
             )
             OR
             (
+                -- Case 3: Debit note with refund (direct OR via Payment Entry)
                 is_return = true
                 AND paid_amount < 0
-                AND mode_of_payment_id IS NOT NULL
-                AND cash_bank_account_id IS NOT NULL
+                AND (
+                    -- Either direct refund details exist
+                    (mode_of_payment_id IS NOT NULL AND cash_bank_account_id IS NOT NULL)
+                    OR
+                    -- OR refund was made via Payment Entry (details remain NULL)
+                    (mode_of_payment_id IS NULL AND cash_bank_account_id IS NULL)
+                )
             )
             """,
             name="ck_pin_payment_consistency_signed",

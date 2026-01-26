@@ -9,12 +9,15 @@ from flask.cli import with_appcontext
 
 from app.seed_data.coa.seeder import seed_chart_of_accounts
 from app.seed_data.codes.seeder import seed_code_types
-from app.seed_data.core.seeder import seed_initial_organization
+
 from app.seed_data.doctypes.seeder import seed_document_types
 from app.seed_data.gl_templates.seeder import seed_gl_templates
+from app.seed_data.meta_doctypes.seeder import seed_meta_doctypes
 from app.seed_data.navigation_workspace.seeder import seed_navigation_workspaces, seed_module_packages
+from app.seed_data.navigation_workspace.seeder_workspace_roles import seed_workspace_roles
 from app.seed_data.subscription.seeder import seed_company_packages
 from app.seed_data.pricing.seeder import seed_price_lists
+from app.seed_data.print_formats.seeder import seed_print_framework
 
 # Your Flask-SQLAlchemy db
 from config.database import db
@@ -64,7 +67,7 @@ def seed_all():
         # Core data (users, companies) must exist before RBAC roles can be assigned.
 
         click.echo("🏢 Seeding initial organization (companies, branches, departments, owners)...")
-        seed_initial_organization(db.session)
+
         click.echo("🔐 Seeding RBAC...")
         seed_rbac(db.session)
 
@@ -85,10 +88,13 @@ def seed_all():
 @seed_cli.command("core")
 @with_appcontext
 def seed_core_only():
-    """Run only the core organization seeder."""
+    """Run only the core system seeder (users, roles, global sections)."""
     try:
-        click.echo("🌱 Seeding core organization data...")
-        seed_initial_organization(db.session)
+        click.echo("🌱 Seeding core system data...")
+
+        from app.seed_data.core.seeder import seed_core  # adjust path if needed
+        seed_core(db.session)   # ✅ THIS WAS MISSING
+
         db.session.commit()
         click.secho("✅ Core data seeded successfully!", fg="green")
     except Exception as e:
@@ -96,6 +102,7 @@ def seed_core_only():
         logger.error("Core seeding failed", exc_info=True)
         click.secho(f"❌ Error seeding core data: {e}", fg="red")
         raise SystemExit(1)
+
 
 
 @seed_cli.command("rbac")
@@ -229,6 +236,24 @@ def seed_nav_only():
         click.secho(f"❌ Error seeding Navigation/Packages: {e}", fg="red")
         raise SystemExit(1)
 
+@seed_cli.command("nav-roles")
+@with_appcontext
+def seed_nav_roles_only():
+    """
+    Seed workspace ↔ role visibility (ERPNext Has Role equivalent).
+    """
+    try:
+        click.echo("👥 Seeding Workspace Roles...")
+        seed_workspace_roles(db.session)
+
+        db.session.commit()
+        click.secho("✅ Workspace Roles seeded successfully!", fg="green")
+
+    except Exception as e:
+        db.session.rollback()
+        logger.error("Workspace role seeding failed", exc_info=True)
+        click.secho(f"❌ Error seeding Workspace Roles: {e}", fg="red")
+        raise SystemExit(1)
 
 
 @seed_cli.command("company-packages")
@@ -269,3 +294,33 @@ def seed_price_lists_only(company_ids: tuple[int, ...]):
         click.secho(f"❌ Error seeding Price Lists: {e}", fg="red")
         raise SystemExit(1)
 
+@seed_cli.command("print-framework")
+@with_appcontext
+def seed_print_framework_only():
+    """
+    Seed PrintStyles, PrintSettings and built-in PrintFormats (e.g. PaymentEntry).
+    """
+    try:
+        click.echo("🌱 Seeding Print Framework (styles, settings, formats)...")
+        seed_print_framework(db.session)
+        db.session.commit()
+        click.secho("✅ Print framework seeded successfully!", fg="green")
+    except Exception as e:
+        db.session.rollback()
+        logger.error("Print framework seeding failed", exc_info=True)
+        click.secho(f"❌ Error seeding print framework: {e}", fg="red")
+        raise SystemExit(1)
+@seed_cli.command("meta-doctypes")
+@with_appcontext
+def seed_meta_doctypes_only():
+    """Run only the Doctype/DocField/DocLink meta seeder."""
+    try:
+        click.echo("🌱 Seeding Meta Doctypes (Doctype, DocField, DocLink)...")
+        seed_meta_doctypes(db.session)
+        db.session.commit()
+        click.secho("✅ Meta Doctypes seeded successfully!", fg="green")
+    except Exception as e:
+        db.session.rollback()
+        logger.error("Meta doctypes seeding failed", exc_info=True)
+        click.secho(f"❌ Error seeding meta doctypes: {e}", fg="red")
+        raise SystemExit(1)

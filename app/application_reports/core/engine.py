@@ -259,10 +259,25 @@ class QueryReport(BaseReport):
         except Exception as e:
             raise ValueError(f"Error loading SQL file {self.sql_file}: {e}")
 
-    def _extract_bind_parameters(self, sql_query: str) -> set:
-        colon_params = set(re.findall(r':(\w+)', sql_query))
-        percent_params = set(re.findall(r'%\((\w+)\)s', sql_query))
-        return colon_params.union(percent_params)
+    # def _extract_bind_parameters(self, sql_query: str) -> set:
+    #     colon_params = set(re.findall(r':(\w+)', sql_query))
+    #     percent_params = set(re.findall(r'%\((\w+)\)s', sql_query))
+    #     return colon_params.union(percent_params)
+    def _extract_bind_parameters(self, sql_query: str) -> set[str]:
+        try:
+            stmt = text(sql_query)
+
+            # Prefer compiled params (less "private" than _bindparams)
+            try:
+                return set(stmt.compile().params.keys())
+            except Exception:
+                return set(stmt._bindparams.keys())  # fallback
+
+        except Exception:
+            # last-resort fallback to regex (keeps system resilient)
+            colon_params = set(re.findall(r':(\w+)', sql_query))
+            percent_params = set(re.findall(r'%\((\w+)\)s', sql_query))
+            return colon_params.union(percent_params)
 
     def _ensure_all_bind_params(self, filters: Dict[str, Any]) -> None:
         if not self._bind_parameters:
@@ -281,7 +296,27 @@ class ScriptReport(BaseReport):
 
     def get_columns(self, filters: Optional[Dict[str, Any]] = None) -> List[ColumnDefinition]:
         if hasattr(self.script_class, 'get_columns'):
-            return self.script_class.get_columns(filters)
+            try:
+                # Try to call as class method first
+                return self.script_class.get_columns(filters)
+            except AttributeError as e:
+                # If it fails with instance method error, create instance
+                if "'dict' object has no attribute" in str(e) or \
+                        "'type' object has no attribute" in str(e):
+                    if self._script_instance is None:
+                        # Create instance with default parameters
+                        try:
+                            # Try to create instance with minimal params
+                            self._script_instance = self.script_class()
+                        except TypeError:
+                            # If constructor needs params, provide defaults
+                            from app.application_reports.core.accounting_utils import ReportAccountTypeEnum
+                            self._script_instance = self.script_class(
+                                account_type=ReportAccountTypeEnum.RECEIVABLE,
+                                is_summary=True
+                            )
+                    return self._script_instance.get_columns(filters)
+                raise
         return []
 
     def get_filters(self) -> List[FilterDefinition]:

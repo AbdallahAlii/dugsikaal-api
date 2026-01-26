@@ -55,10 +55,9 @@ STOCK_LIST_CONFIGS = {
             "item_id": Bin.item_id,
             "code": Bin.code,
         },
-        cache_enabled=True,
-        cache_ttl=600,
-        cache_scope="BRANCH",
+        cache_enabled=False,  # ✅ disable cache (bins must always be fresh)
     ),
+
     "stock_reconciliations": ListConfig(
         permission_tag="Stock Reconciliation",
         query_builder=build_stock_reconciliations_query,

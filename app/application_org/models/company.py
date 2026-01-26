@@ -1,5 +1,9 @@
+
+
 # app/apps/application_org/models.py
 from __future__ import annotations
+
+from datetime import date
 from typing import Optional, List
 
 from sqlalchemy import UniqueConstraint
@@ -33,7 +37,34 @@ class Company(BaseModel):
         db.ForeignKey("cities.id", ondelete="SET NULL"),
         index=True,
     )
-    prefix: Mapped[str] = mapped_column(db.String(20), unique=True, nullable=True, index=True)
+    # Abbreviation / prefix used in naming series, account numbers, etc.
+    # (Equivalent to ERPNext 'Abbr')
+    prefix: Mapped[Optional[str]] = mapped_column(
+        db.String(20),
+        unique=True,
+        nullable=True,
+        index=True,
+        comment="Short code/abbreviation used in naming series (e.g. 'D').",
+    )
+    # Country & currency are global properties used by all modules
+    country: Mapped[Optional[str]] = mapped_column(
+        db.String(100),
+        nullable=True,
+        index=True,
+        comment="Country where this legal entity is based.",
+    )
+
+    default_currency: Mapped[Optional[str]] = mapped_column(
+        db.String(10),
+        nullable=True,
+        index=True,
+        comment="Default currency code (e.g. 'USD', 'SOS').",
+    )
+    date_of_establishment: Mapped[Optional[date]] = mapped_column(
+        db.Date,
+        nullable=True,
+        comment="Date the company was legally established.",
+    )
 
     status: Mapped[StatusEnum] = mapped_column(
         db.Enum(StatusEnum, name="company_status_enum"),
@@ -57,20 +88,20 @@ class Company(BaseModel):
         "DataImport",
         back_populates="company",
         cascade="all, delete-orphan",
-        lazy="selectin"
+        lazy="select"
     )
-    city: Mapped["City"] = db.relationship("City", back_populates="companies", lazy="selectin")
+    city: Mapped["City"] = db.relationship("City", back_populates="companies",  lazy="select")
     branches: Mapped[list["Branch"]] = db.relationship(
         "Branch",
         back_populates="company",
         cascade="all, delete-orphan",
-        lazy="selectin",
+        lazy="select"
     )
     departments: Mapped[list["Department"]] = db.relationship(
         "Department",
         back_populates="company",
         cascade="all, delete-orphan",
-        lazy="selectin",
+        lazy="select"
     )
 
     # Accounting relationships
@@ -181,7 +212,171 @@ class Company(BaseModel):
         back_populates="company",
         cascade="all, delete-orphan",
     )
+    # ------------------------------------------------------------------
+    # Shareholders / equity (simple ERPNext-style setup)
+    # ------------------------------------------------------------------
+    shareholders: Mapped[list["Shareholder"]] = db.relationship(
+        "Shareholder",
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
 
+    share_types: Mapped[list["ShareType"]] = db.relationship(
+        "ShareType",
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+
+    share_ledger_entries: Mapped[list["ShareLedgerEntry"]] = db.relationship(
+        "ShareLedgerEntry",
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+    # ------------------------------------------------------------------
+    # 🔹 NEW: Print / Letterhead relationships (to match app/application_print/models.py)
+    # ------------------------------------------------------------------
+    print_letterheads: Mapped[list["PrintLetterhead"]] = db.relationship(
+        "PrintLetterhead",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        lazy="select"
+    )
+
+    print_styles: Mapped[list["PrintStyle"]] = db.relationship(
+        "PrintStyle",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        lazy="select"
+    )
+
+    # One row per company (UniqueConstraint), so use uselist=False
+    print_settings: Mapped[Optional["PrintSettings"]] = db.relationship(
+        "PrintSettings",
+        back_populates="company",
+        uselist=False,
+        cascade="all, delete-orphan",
+        lazy="select"
+    )
+
+    print_formats: Mapped[list["PrintFormat"]] = db.relationship(
+        "PrintFormat",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        lazy="select"
+    )
+    # ---- Education ----
+    education_settings: Mapped[Optional["EducationSettings"]] = db.relationship(
+        "EducationSettings",
+        back_populates="company",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    academic_years: Mapped[list["AcademicYear"]] = db.relationship(
+        "AcademicYear",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        lazy="select"
+    )
+    academic_terms: Mapped[list["AcademicTerm"]] = db.relationship(
+        "AcademicTerm",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        lazy="select"
+    )
+    accounting_settings: Mapped[Optional["AccountingSettings"]] = db.relationship(
+        "AccountingSettings",
+        back_populates="company",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    # ---- Education: Guardians / Students ----
+    guardians: Mapped[list["Guardian"]] = db.relationship(
+        "Guardian",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        lazy="select"
+    )
+
+    students: Mapped[list["Student"]] = db.relationship(
+        "Student",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        lazy="select"
+    )
+    programs: Mapped[list["Program"]] = db.relationship(
+        "Program",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        lazy="select"
+    )
+
+    courses: Mapped[list["Course"]] = db.relationship(
+        "Course",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        lazy="select"
+    )
+    # ------------------------------------------------------------------
+    # Education: enrollments & progression
+    # ------------------------------------------------------------------
+
+    program_enrollments: Mapped[list["ProgramEnrollment"]] = db.relationship(
+        "ProgramEnrollment",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        lazy="select"
+    )
+
+    course_enrollments: Mapped[list["CourseEnrollment"]] = db.relationship(
+        "CourseEnrollment",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        lazy="select"
+    )
+
+    program_progression_rules: Mapped[list["ProgramProgressionRule"]] = db.relationship(
+        "ProgramProgressionRule",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        lazy="select"
+    )
+    # ------------------------------------------------------------------
+    # Education: batches, groups, categories
+    # ------------------------------------------------------------------
+
+    batches: Mapped[list["Batch"]] = db.relationship(
+        "Batch",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        lazy="select"
+    )
+
+    student_categories: Mapped[list["StudentCategory"]] = db.relationship(
+        "StudentCategory",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        lazy="select"
+    )
+
+    student_groups: Mapped[list["StudentGroup"]] = db.relationship(
+        "StudentGroup",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        lazy="select"
+    )
+    grading_scales: Mapped[list["GradingScale"]] = db.relationship(
+        "GradingScale",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        lazy="select"
+    )
+
+    assessment_criteria: Mapped[list["AssessmentCriterion"]] = db.relationship(
+        "AssessmentCriterion",
+        back_populates="company",
+        cascade="all, delete-orphan",
+        lazy="select"
+    )
 
     def __repr__(self) -> str:
         return f"<Company id={self.id} name={self.name!r}>"
@@ -228,7 +423,7 @@ class Branch(BaseModel):
         "DataImport",
         back_populates="branch",
         cascade="all, delete-orphan",
-        lazy="selectin"
+        lazy="select"
     )
 
     company: Mapped["Company"] = db.relationship("Company", back_populates="branches")
@@ -326,6 +521,7 @@ class Department(BaseModel):
 
     def __repr__(self) -> str:
         return f"<Department id={self.id} name={self.name!r} company_id={self.company_id}>"
+
 
 
 

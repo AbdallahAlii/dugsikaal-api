@@ -1,63 +1,98 @@
 from __future__ import annotations
+
 import logging
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, Dict, List, Tuple
 
-from sqlalchemy import select, and_, or_, desc
+import sqlalchemy as sa
+from sqlalchemy import select, and_, or_, desc, case, func
 from sqlalchemy.orm import Session
+from sqlalchemy.dialects.postgresql import array as pg_array
 
 from config.database import db
 from app.common.models.base import StatusEnum
-from app.application_nventory.inventory_models import Item, PriceList, ItemPrice, ItemTypeEnum, PriceListType
+from app.application_nventory.inventory_models import (
+    Item, PriceList, ItemPrice, ItemTypeEnum, PriceListType, UOMConversion
+)
+from app.application_stock.stock_models import Bin, StockLedgerEntry, DocStatusEnum
 
 log = logging.getLogger(__name__)
-
 DEC4 = Decimal("0.0001")
-def _q4(v) -> Decimal:
-    return (Decimal(str(v or 0))).quantize(DEC4)
 
 
 class PricingRepository:
-    """DB reads for pricing (no UOM conversion)."""
     def __init__(self, session: Optional[Session] = None):
         self.s: Session = session or db.session
 
-    # --- Item core ---
-    def get_item_core(self, company_id: int, item_id: int) -> dict | None:
-        row = self.s.execute(
-            select(Item.item_type, Item.base_uom_id, Item.status)
-            .where(Item.company_id == company_id, Item.id == item_id)
-        ).first()
-        if not row:
-            return None
-        out = {
-            "is_stock_item": row.item_type == ItemTypeEnum.STOCK_ITEM,
-            "base_uom_id": row.base_uom_id,
-            "is_active": row.status == StatusEnum.ACTIVE,
-        }
-        log.debug("get_item_core: %s", out)
+    def get_item_core_bulk(self, *, company_id: int, item_ids: List[int]) -> Dict[int, Dict]:
+        if not item_ids:
+            return {}
+        rows = self.s.execute(
+            select(Item.id, Item.item_type, Item.base_uom_id, Item.status)
+            .where(Item.company_id == company_id, Item.id.in_(item_ids))
+        ).all()
+        out: Dict[int, Dict] = {}
+        for r in rows:
+            out[int(r.id)] = {
+                "is_stock_item": r.item_type == ItemTypeEnum.STOCK_ITEM,
+                "base_uom_id": int(r.base_uom_id) if r.base_uom_id is not None else None,
+                "is_active": r.status == StatusEnum.ACTIVE,
+            }
         return out
 
-    # --- Price List by id or name ---
     def get_price_list(self, company_id: int, *, price_list_id: Optional[int], price_list_name: Optional[str]) -> dict | None:
         q = select(
-            PriceList.id, PriceList.price_not_uom_dependent, PriceList.is_active, PriceList.list_type
+            PriceList.id,
+            PriceList.price_not_uom_dependent,
+            PriceList.is_active,
+            PriceList.list_type,
+            PriceList.is_default,
         ).where(PriceList.company_id == company_id)
+
         if price_list_id:
-            q = q.where(PriceList.id == price_list_id)
+            q = q.where(PriceList.id == int(price_list_id))
         elif price_list_name:
-            q = q.where(PriceList.name == price_list_name)
+            q = q.where(PriceList.name == str(price_list_name))
         else:
             return None
+
         row = self.s.execute(q).first()
         if not row:
             return None
-        out = {"id": int(row.id), "pnu": bool(row.price_not_uom_dependent), "active": bool(row.is_active), "type": row.list_type}
-        log.debug("get_price_list: %s", out)
-        return out
+        return {
+            "id": int(row.id),
+            "pnu": bool(row.price_not_uom_dependent),
+            "active": bool(row.is_active),
+            "type": row.list_type,
+            "is_default": bool(row.is_default),
+        }
 
-    # --- Validity clause helper ---
+    def resolve_company_default_price_list_id(self, company_id: int, target: PriceListType) -> Optional[int]:
+        q = (
+            select(PriceList.id)
+            .where(
+                PriceList.company_id == company_id,
+                PriceList.is_active.is_(True),
+                PriceList.list_type.in_([target, PriceListType.BOTH]),
+            )
+            .order_by(desc(PriceList.is_default), PriceList.id.asc())
+            .limit(1)
+        )
+        row = self.s.execute(q).first()
+        return int(row[0]) if row else None
+
+    def get_uom_factor(self, *, item_id: int, txn_uom_id: int) -> Decimal:
+        row = self.s.execute(
+            select(UOMConversion.conversion_factor)
+            .where(
+                UOMConversion.item_id == int(item_id),
+                UOMConversion.uom_id == int(txn_uom_id),
+                UOMConversion.is_active.is_(True),
+            )
+        ).first()
+        return Decimal(str(row[0])) if row else Decimal("1")
+
     def _validity_filter(self, at: Optional[datetime]):
         now = at or datetime.utcnow()
         return and_(
@@ -65,101 +100,192 @@ class PricingRepository:
             or_(ItemPrice.valid_upto.is_(None), ItemPrice.valid_upto >= now),
         )
 
-    # --- Pick one row with precedence helper (now with ANY-BRANCH fallback) ---
-    def _pick_one(self, base_q, prefer_branch: Optional[int], source_tag: str):
-        """
-        Precedence:
-          If prefer_branch is not None: branch → global → any-branch
-          If prefer_branch is None:     global → any-branch
-        """
-        def _one(q):
-            return self.s.execute(q.limit(1)).first()
-
-        # explicit branch first
-        if prefer_branch is not None:
-            r = _one(base_q.where(ItemPrice.branch_id == prefer_branch))
-            if r:
-                return {"rate": _q4(r.rate), "uom_id": r.uom_id, "branch_override": True, "source": f"{source_tag}_branch"}
-
-            # then global
-            r = _one(base_q.where(ItemPrice.branch_id.is_(None)))
-            if r:
-                return {"rate": _q4(r.rate), "uom_id": r.uom_id, "branch_override": False, "source": f"{source_tag}_global"}
-
-            # finally ANY branch
-            r = _one(base_q.where(ItemPrice.branch_id.is_not(None)))
-            if r:
-                return {"rate": _q4(r.rate), "uom_id": r.uom_id, "branch_override": True, "source": f"{source_tag}_any_branch"}
-
-            return None
-
-        # prefer_branch is None → global then ANY branch
-        r = _one(base_q.where(ItemPrice.branch_id.is_(None)))
-        if r:
-            return {"rate": _q4(r.rate), "uom_id": r.uom_id, "branch_override": False, "source": f"{source_tag}_global"}
-
-        r = _one(base_q.where(ItemPrice.branch_id.is_not(None)))
-        if r:
-            return {"rate": _q4(r.rate), "uom_id": r.uom_id, "branch_override": True, "source": f"{source_tag}_any_branch"}
-
-        return None
-
-    # --- SQL finder (NO UOM conversion) ---
-    def find_item_price(
+    def find_item_prices_best_bulk(
         self,
         *,
         company_id: int,
-        item_id: int,
         price_list_id: int,
         branch_id: Optional[int],
-        uom_id: Optional[int],
-        at: Optional[datetime],
-        pnu: bool,  # price_not_uom_dependent
-    ) -> dict | None:
-        """
-        Selection (no conversion):
-        - If branch_id is None => global first, then ANY branch.
-        - If branch_id is set    => branch first, then global, then ANY branch.
-        - If pnu=True            => prefer NULL uom_id rows; else follow uom preference if provided.
-        - If a preferred row isn't found, fall back to ANY UOM with same branch precedence.
-        Returns: {"rate": Decimal, "uom_id": Optional[int], "branch_override": bool, "source": str}
-        """
-        vf = self._validity_filter(at)
+        when: datetime,
+        lines: List[object],
+        price_not_uom_dependent: bool,
+        core_map: Dict[int, Dict],
+    ) -> List[Dict]:
+        if not lines:
+            return []
 
-        base = (
-            select(ItemPrice.rate, ItemPrice.uom_id, ItemPrice.branch_id)
-            .where(ItemPrice.price_list_id == price_list_id, ItemPrice.item_id == item_id, vf)
-            .order_by(desc(ItemPrice.valid_from).nullslast(), desc(ItemPrice.id))
+        vf = self._validity_filter(when)
+
+        req_rows = [
+            (str(ln.row_id), int(ln.item_id), int(ln.uom_id) if ln.uom_id is not None else None)
+            for ln in lines
+        ]
+
+        row_ids = [r[0] for r in req_rows]
+        item_ids = [r[1] for r in req_rows]
+        txn_uoms = [r[2] for r in req_rows]
+
+        req = select(
+            func.unnest(pg_array(row_ids, type_=sa.Text())).label("row_id"),
+            func.unnest(pg_array(item_ids, type_=sa.Integer())).label("item_id"),
+            func.unnest(pg_array(txn_uoms, type_=sa.Integer())).label("txn_uom_id"),
+        ).subquery("req")
+
+        if branch_id is None:
+            branch_filter = ItemPrice.branch_id.is_(None)
+            branch_rank = case((ItemPrice.branch_id.is_(None), 0), else_=99)
+        else:
+            branch_filter = or_(ItemPrice.branch_id == int(branch_id), ItemPrice.branch_id.is_(None))
+            branch_rank = case(
+                (ItemPrice.branch_id == int(branch_id), 0),
+                (ItemPrice.branch_id.is_(None), 1),
+                else_=99,
+            )
+
+        uom_rank = case(
+            (ItemPrice.uom_id == req.c.txn_uom_id, 0),
+            (ItemPrice.uom_id.is_(None), 1),
+            else_=2,
         )
 
-        if pnu:
-            res = self._pick_one(base.where(ItemPrice.uom_id.is_(None)), branch_id, "NULL-UOM")
-            if res:
-                log.debug("find_item_price: PNU prefer NULL-UOM %s", res)
-                return res
-            if uom_id is not None:
-                res = self._pick_one(base.where(ItemPrice.uom_id == uom_id), branch_id, "EXACT-UOM")
-                if res:
-                    log.debug("find_item_price: PNU exact UOM %s", res)
-                    return res
-            res = self._pick_one(base, branch_id, "ANY-UOM")
-            if res:
-                log.debug("find_item_price: PNU any UOM %s", res)
-                return res
-            log.debug("find_item_price: MISS (PNU)")
-            return None
+        if price_not_uom_dependent:
+            uom_filter = or_(ItemPrice.uom_id == req.c.txn_uom_id, ItemPrice.uom_id.is_(None))
+        else:
+            uom_filter = sa.true()
 
-        # UOM-dependent
-        if uom_id is not None:
-            res = self._pick_one(base.where(ItemPrice.uom_id == uom_id), branch_id, "EXACT-UOM")
-            if res:
-                log.debug("find_item_price: EXACT-UOM %s", res)
-                return res
+        cand = (
+            select(
+                req.c.row_id,
+                ItemPrice.item_id,
+                ItemPrice.rate,
+                ItemPrice.uom_id.label("stored_uom_id"),
+                ItemPrice.valid_from,
+                ItemPrice.id.label("ip_id"),
+                branch_rank.label("branch_rank"),
+                uom_rank.label("uom_rank"),
+                func.row_number().over(
+                    partition_by=req.c.row_id,
+                    order_by=(
+                        branch_rank,
+                        uom_rank,
+                        desc(ItemPrice.valid_from).nullslast(),
+                        desc(ItemPrice.id),
+                    ),
+                ).label("rn"),
+            )
+            .select_from(req)
+            .join(
+                ItemPrice,
+                and_(
+                    ItemPrice.company_id == company_id,
+                    ItemPrice.price_list_id == price_list_id,
+                    ItemPrice.item_id == req.c.item_id,
+                    vf,
+                    branch_filter,
+                    uom_filter,
+                ),
+            )
+        ).subquery("cand")
 
-        res = self._pick_one(base, branch_id, "ANY-UOM")
-        if res:
-            log.debug("find_item_price: ANY-UOM %s", res)
-            return res
+        best = select(cand.c.row_id, cand.c.item_id, cand.c.rate, cand.c.stored_uom_id).where(cand.c.rn == 1)
+        rows = self.s.execute(best).all()
 
-        log.debug("find_item_price: MISS")
+        txn_map = {r[0]: r[2] for r in req_rows}
+        out: List[Dict] = []
+
+        for row_id, item_id, rate, stored_uom_id in rows:
+            core = core_map.get(int(item_id)) or {}
+            base_uom_id = int(core.get("base_uom_id") or 0)
+            txn_uom_id = txn_map.get(str(row_id)) or base_uom_id
+
+            rr = float(rate)
+
+            if stored_uom_id is None and txn_uom_id and base_uom_id and txn_uom_id != base_uom_id:
+                factor = self.get_uom_factor(item_id=int(item_id), txn_uom_id=int(txn_uom_id))
+                rr = rr * float(factor)
+
+            out.append({
+                "row_id": str(row_id),
+                "item_id": int(item_id),
+                "uom_id": int(txn_uom_id) if txn_uom_id else None,
+                "rate": float(rr),
+                "source": "item_price",
+            })
+
+        return out
+
+    # ---------------- Buying fallbacks ----------------
+
+    def get_last_purchase_rate(self, *, company_id: int, item_id: int, branch_id: Optional[int], warehouse_id: Optional[int]) -> Optional[Decimal]:
+        q = select(StockLedgerEntry.incoming_rate).where(
+            StockLedgerEntry.company_id == company_id,
+            StockLedgerEntry.item_id == item_id,
+            StockLedgerEntry.is_cancelled.is_(False),
+            StockLedgerEntry.actual_qty > 0,
+            StockLedgerEntry.incoming_rate.is_not(None),
+        )
+
+        if warehouse_id is not None:
+            q = q.where(StockLedgerEntry.warehouse_id == int(warehouse_id))
+        elif branch_id is not None:
+            q = q.where(StockLedgerEntry.branch_id == int(branch_id))
+
+        q = q.order_by(StockLedgerEntry.posting_time.desc(), StockLedgerEntry.id.desc()).limit(1)
+        row = self.s.execute(q).first()
+        return Decimal(str(row[0])) if row and row[0] is not None else None
+
+    def get_valuation_rate_from_bin(self, *, company_id: int, item_id: int, branch_id: Optional[int], warehouse_id: Optional[int]) -> Optional[Decimal]:
+        q = select(Bin.valuation_rate).where(Bin.company_id == company_id, Bin.item_id == item_id)
+
+        if warehouse_id is not None:
+            row = self.s.execute(q.where(Bin.warehouse_id == int(warehouse_id)).limit(1)).first()
+            return Decimal(str(row[0])) if row and row[0] is not None else None
+
+        row = self.s.execute(q.order_by(Bin.actual_qty.desc(), Bin.id.desc()).limit(1)).first()
+        return Decimal(str(row[0])) if row and row[0] is not None else None
+
+    # ---------------- Selling fallback ----------------
+
+    def get_last_selling_rate(self, *, company_id: int, item_id: int, branch_id: Optional[int]) -> Optional[Tuple[Decimal, Optional[int]]]:
+        # Import inside to avoid circular imports
+        from app.application_selling.models import SalesInvoice, SalesInvoiceItem
+
+        def _query_for_status(status: DocStatusEnum, use_branch: bool):
+            q = (
+                select(SalesInvoiceItem.rate, SalesInvoiceItem.uom_id)
+                .join(SalesInvoice, SalesInvoiceItem.invoice_id == SalesInvoice.id)
+                .where(
+                    SalesInvoice.company_id == company_id,
+                    SalesInvoiceItem.item_id == item_id,
+                    SalesInvoice.is_return.is_(False),
+                    SalesInvoice.doc_status == status,
+                    SalesInvoiceItem.rate.is_not(None),
+                    SalesInvoiceItem.quantity > 0,
+                )
+            )
+            if use_branch and branch_id is not None:
+                q = q.where(SalesInvoice.branch_id == int(branch_id))
+            return q.order_by(SalesInvoice.posting_date.desc(), SalesInvoice.id.desc(), SalesInvoiceItem.id.desc()).limit(1)
+
+        # 1) Submitted + branch (best)
+        if branch_id is not None:
+            row = self.s.execute(_query_for_status(DocStatusEnum.SUBMITTED, use_branch=True)).first()
+            if row and row[0] is not None:
+                return (Decimal(str(row[0])), int(row[1]) if row[1] is not None else None)
+
+            # 2) Draft + branch (helpful in your workflow)
+            row = self.s.execute(_query_for_status(DocStatusEnum.DRAFT, use_branch=True)).first()
+            if row and row[0] is not None:
+                return (Decimal(str(row[0])), int(row[1]) if row[1] is not None else None)
+
+        # 3) Submitted without branch (company-wide)
+        row = self.s.execute(_query_for_status(DocStatusEnum.SUBMITTED, use_branch=False)).first()
+        if row and row[0] is not None:
+            return (Decimal(str(row[0])), int(row[1]) if row[1] is not None else None)
+
+        # 4) Draft without branch
+        row = self.s.execute(_query_for_status(DocStatusEnum.DRAFT, use_branch=False)).first()
+        if row and row[0] is not None:
+            return (Decimal(str(row[0])), int(row[1]) if row[1] is not None else None)
+
         return None

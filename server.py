@@ -17,7 +17,7 @@ if __name__ == "__main__":
     """
     # Use custom HOST/PORT/DEBUG env variables, which is more idiomatic for app.run
     host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", 2000))
+    port = int(os.getenv("PORT", 9000))
 
     # Enable debug mode based on the DEBUG environment variable
     # The reloader is also controlled by the debug flag.

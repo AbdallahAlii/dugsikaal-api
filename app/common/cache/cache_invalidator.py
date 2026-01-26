@@ -8,7 +8,7 @@ from typing import Any, Optional
 from .cache import get_version
 from .core_cache import bump_version
 from .cache_keys import detail_version_key, list_version_key, user_profile_version_key, build_detail_cache_key, \
-    price_list_version_key, coa_balance_version_key
+    price_list_version_key, coa_balance_version_key, global_epoch_key
 from app.application_doctypes.core_lists.config import CacheScope, get_list_config
 from app.application_doctypes.core_lists.cache import build_list_scope_key
 from app.security.rbac_effective import AffiliationContext
@@ -213,3 +213,39 @@ def bump_account_detail(account_id: int) -> int:
     return bump_accounting_detail("accounts", account_id)
 
 
+# ─────────────────────────────────────────────────────────────
+# Org-specific convenience bumpers (companies / branches)
+# ─────────────────────────────────────────────────────────────
+
+def bump_org_companies_list() -> int:
+    """
+    Bump the global companies list used by platform admin.
+    """
+    return bump_list_cache_global("org", "companies")
+
+
+def bump_org_company_detail(company_id: int) -> int:
+    """
+    Bump the detail cache for a single company.
+    """
+    return bump_detail("org:companies", company_id)
+
+
+def bump_org_branches_list_company(company_id: int) -> int:
+    """
+    Branch list is typically scoped by company.
+    """
+    return bump_list_cache_company("org", "branches", company_id)
+
+
+def bump_org_branch_detail(branch_id: int) -> int:
+    """
+    Bump the detail cache for a single branch.
+    """
+    return bump_detail("org:branches", branch_id)
+
+
+def bump_all_cache() -> int:
+    v = bump_version(global_epoch_key())
+    log.info("[cache] BUMP ALL (epoch) -> e%s", v)
+    return v

@@ -1,8 +1,16 @@
 #
 # app/application_hr/endpoints.py
 from __future__ import annotations
+import os
+import logging
+
+from app.application_hr.schemas.biometric_dp4500_schemas import DP4500EnrollIn, DP4500VerifyIn
+from app.application_hr.services.biometric_dp4500_service import BiometricDP4500Service
+from app.application_hr.device.dp4500_reader import DP4500Reader
+from app.application_hr.models.biometric_dp4500 import FingerIndexEnum
 
 import json
+import logging
 from datetime import date
 
 from flask import Blueprint, request, g
@@ -32,7 +40,7 @@ bp = Blueprint("hr", __name__, url_prefix="/api/hr")
 svc = HrService()
 attendance_svc = AttendanceService()
 
-HR_WORKSPACE_SLUG = "hr"
+HR_WORKSPACE_SLUG = "access-control"
 
 # Any HR endpoints that should be allowed even if HR module is not subscribed
 # Example: biometric agent config; you can add more here later if needed.
@@ -40,6 +48,27 @@ HR_SUBSCRIPTION_EXEMPT_ENDPOINTS = {
     "hr.biometric_devices_agent_config",
     # "hr.create_employee_checkin",  # uncomment if you want checkin open even without HR
 }
+
+
+
+
+
+
+log = logging.getLogger(__name__)
+
+def _build_dp4500_reader():
+    mode = os.getenv("DP4500_MODE", "MOCK")
+    exe_path = os.getenv("DP4500_EXE_PATH", "")
+    exe_timeout = int(os.getenv("DP4500_EXE_TIMEOUT", "15"))
+    exe_args = os.getenv("DP4500_EXE_ARGS", "")
+    return DP4500Reader(
+        mode=mode,
+        exe_path=exe_path,
+        exe_args=exe_args,
+        timeout_sec=exe_timeout,
+        logger=log,
+    )
+
 @bp.before_request
 def _guard_hr_subscription():
     """
@@ -171,7 +200,7 @@ def update_employee(employee_id: int):
 # HOLIDAY LIST ENDPOINTS
 # ======================================================================
 
-@bp.post("/holiday-lists")
+@bp.post("/holiday-lists/create")
 @require_permission("Holiday List", "Create")
 def create_holiday_list():
     """
@@ -193,12 +222,18 @@ def create_holiday_list():
 
     return api_success(
         message=msg,
-        data={"holiday_list_id": hl.id},
+        data={
+            "holiday_list": {
+                "id": hl.id,
+                "name": hl.name,
+                "is_default": hl.is_default,
+            }
+        },
         status_code=201,
     )
 
 
-@bp.put("/holiday-lists/<int:holiday_list_id>")
+@bp.put("/holiday-lists/<int:holiday_list_id>/update")
 @require_permission("Holiday List", "Update")
 def update_holiday_list(holiday_list_id: int):
     """
@@ -224,7 +259,13 @@ def update_holiday_list(holiday_list_id: int):
 
     return api_success(
         message=msg,
-        data={"holiday_list_id": hl.id},
+        data={
+            "holiday_list": {
+                "id": hl.id,
+                "name": hl.name,
+
+            }
+        },
         status_code=200,
     )
 
@@ -233,7 +274,7 @@ def update_holiday_list(holiday_list_id: int):
 # SHIFT TYPE ENDPOINTS
 # ======================================================================
 
-@bp.post("/shift-types")
+@bp.post("/shift-types/create")
 @require_permission("Shift Type", "Create")
 def create_shift_type():
     """
@@ -255,12 +296,18 @@ def create_shift_type():
 
     return api_success(
         message=msg,
-        data={"shift_type_id": st.id},
+        data={
+            "shift_type": {
+                "id": st.id,
+                "name": st.name,
+
+            }
+        },
         status_code=201,
     )
 
 
-@bp.put("/shift-types/<int:shift_type_id>")
+@bp.put("/shift-types/<int:shift_type_id>/update")
 @require_permission("Shift Type", "Update")
 def update_shift_type(shift_type_id: int):
     """
@@ -286,16 +333,21 @@ def update_shift_type(shift_type_id: int):
 
     return api_success(
         message=msg,
-        data={"shift_type_id": st.id},
+        data={
+            "shift_type": {
+                "id": st.id,
+                "name": st.name,
+
+            }
+        },
         status_code=200,
     )
-
 
 # ======================================================================
 # SHIFT ASSIGNMENT ENDPOINTS
 # ======================================================================
 
-@bp.post("/shift-assignments")
+@bp.post("/shift-assignments/create")
 @require_permission("Shift Assignment", "Create")
 def create_shift_assignment():
     """
@@ -317,7 +369,14 @@ def create_shift_assignment():
 
     return api_success(
         message=msg,
-        data={"shift_assignment_id": sa.id},
+        data={
+            "shift_assignment": {
+                "id": sa.id,
+                "employee_id": sa.employee_id,
+                "employee_name": getattr(sa.employee, "full_name", None),
+
+            }
+        },
         status_code=201,
     )
 
@@ -487,3 +546,84 @@ def biometric_devices_agent_config():
         for d in devices
     ]
     return api_success(data=data)
+
+
+@bp.post("/dp4500/enroll")
+def dp4500_enroll():
+    """
+    Enroll a fingerprint template.
+    Body:
+      { "company_id": 1, "employee_id": 123, "finger_index": "RIGHT_THUMB" }
+    OR:
+      { "company_id": 1, "device_employee_id": "EMP-0001", "finger_index": "RIGHT_THUMB" }
+    """
+    ctx: AffiliationContext = getattr(g, "auth", None)
+    body = request.get_json(silent=True) or {}
+
+    try:
+        payload = DP4500EnrollIn.model_validate(body)
+    except Exception as e:
+        return api_error(f"Invalid JSON body: {e}", status_code=422)
+
+    company_id = payload.company_id or (ctx.company_id if ctx else None)
+    if not company_id:
+        return api_error("company_id is required.", status_code=422)
+
+    reader = _build_dp4500_reader()
+    svc = BiometricDP4500Service(reader=reader)
+
+    ok, msg, obj = svc.enroll(
+        company_id=company_id,
+        employee_id=payload.employee_id,
+        device_employee_id=payload.device_employee_id,
+        finger_index=payload.finger_index,
+        context=ctx,
+    )
+    if not ok or not obj:
+        return api_error(msg, status_code=400)
+
+    return api_success(
+        message=msg,
+        data={
+            "template_id": obj.id,
+            "employee_id": obj.employee_id,
+            "finger_index": obj.finger_index.value,
+            "device_name": obj.device_name,
+            "device_serial": obj.device_serial,
+        },
+        status_code=201,
+    )
+
+
+@bp.post("/dp4500/verify")
+def dp4500_verify():
+    """
+    Verify a fingerprint (1:1).
+    Body:
+      { "company_id": 1, "employee_id": 123, "finger_index": "RIGHT_THUMB" }
+    """
+    ctx: AffiliationContext = getattr(g, "auth", None)
+    body = request.get_json(silent=True) or {}
+
+    try:
+        payload = DP4500VerifyIn.model_validate(body)
+    except Exception as e:
+        return api_error(f"Invalid JSON body: {e}", status_code=422)
+
+    company_id = payload.company_id or (ctx.company_id if ctx else None)
+    if not company_id:
+        return api_error("company_id is required.", status_code=422)
+
+    reader = _build_dp4500_reader()
+    svc = BiometricDP4500Service(reader=reader)
+
+    ok, msg, match = svc.verify_1to1(
+        company_id=company_id,
+        employee_id=payload.employee_id,
+        device_employee_id=payload.device_employee_id,
+        finger_index=payload.finger_index,
+    )
+    if not ok:
+        return api_error(msg, status_code=400)
+
+    return api_success(message=msg, data={"match": match})

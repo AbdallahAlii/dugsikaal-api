@@ -1,74 +1,59 @@
 # app/application_reports/scripts/balance_sheet.py
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from collections import defaultdict
 
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text, bindparam
 
 from app.security.rbac_effective import AffiliationContext
+from app.application_reports.core.date_utils import parse_date_flex, format_date_for_display
+from app.application_reports.core.accounting_utils import get_currency_precision
 
 from app.application_accounting.chart_of_accounts.models import (
     Account,
     AccountTypeEnum,
     ReportTypeEnum,
-    GeneralLedgerEntry,
     FiscalYear,
 )
-from app.application_reports.core.columns import (
-    currency_column,
-    data_column,
-    int_column,
-)
+
+from app.application_reports.core.columns import currency_column, data_column, int_column
+
+log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Period model
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class PeriodDef:
+    fieldname: str
+    label: str
+    from_date: date
+    to_date: date
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-@dataclass
-class PeriodDef:
-    fieldname: str  # safe key for data row, e.g. "p_2024", "p_2024_q1"
-    label: str      # header label, e.g. "2024", "2024-Q1", "Jan-2024"
-    from_date: date
-    to_date: date
-
-
-def _parse_date_flex(v: Any) -> Optional[date]:
-    """Same idea as in Accounts Payable report."""
-    if isinstance(v, date) and not isinstance(v, datetime):
-        return v
-    if isinstance(v, datetime):
-        return v.date()
-    if isinstance(v, str):
-        s = v.strip()
-        for fmt in (
-            "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d",
-            "%Y-%m-%d", "%d-%m-%Y", "%m-%d-%Y",
-        ):
-            try:
-                return datetime.strptime(s, fmt).date()
-            except Exception:
-                continue
-        try:
-            return datetime.fromisoformat(s).date()
-        except Exception:
-            return None
-    return None
-
-
 def _coerce_bool(v: Any) -> bool:
     if isinstance(v, bool):
         return v
     if isinstance(v, str):
-        return v.lower() in ("true", "1", "yes", "y", "on")
+        return v.strip().lower() in ("true", "1", "yes", "y", "on")
+    if isinstance(v, (int, float)):
+        return bool(v)
     return False
 
 
 def _add_months(d: date, months: int) -> date:
-    """Simple add months without external libs."""
     month = d.month - 1 + months
     year = d.year + month // 12
     month = month % 12 + 1
@@ -82,34 +67,90 @@ def _add_months(d: date, months: int) -> date:
 
 
 def _sanitize_fieldname(label: str) -> str:
-    """
-    Turn labels like '2024', '2024-Q1', 'Jan-2024' into safe fieldname keys.
-    """
     import re
     base = label.strip().lower()
-    base = re.sub(r"[^0-9a-z]+", "_", base)
-    base = base.strip("_")
-    if not base:
-        base = "period"
-    return f"p_{base}"
+    base = re.sub(r"[^0-9a-z]+", "_", base).strip("_")
+    return f"p_{base or 'period'}"
+
+
+def _parse_int(v: Any) -> Optional[int]:
+    if v is None:
+        return None
+    if isinstance(v, int):
+        return v
+    s = str(v).strip()
+    if not s:
+        return None
+    try:
+        return int(s)
+    except Exception:
+        return None
+
+
+def _resolve_cost_center_id(
+    session: Session,
+    company_id: int,
+    branch_id: Optional[int],
+    cost_center_value: Any,
+) -> Optional[int]:
+    """
+    Your UI might send:
+      - cost_center as ID (int/string)
+      - cost_center as name (string)
+    We resolve both safely.
+    """
+    if not cost_center_value:
+        return None
+
+    # Numeric ID path
+    cc_id = _parse_int(cost_center_value)
+    if cc_id:
+        # verify it belongs to this company (+ optionally branch)
+        sql = """
+            SELECT id
+            FROM cost_centers
+            WHERE id = :id
+              AND company_id = :company_id
+              AND enabled = TRUE
+        """
+        params: Dict[str, Any] = {"id": cc_id, "company_id": company_id}
+        if branch_id:
+            sql += " AND branch_id = :branch_id"
+            params["branch_id"] = branch_id
+        row = session.execute(text(sql), params).first()
+        return int(row[0]) if row else None
+
+    # Name path
+    name = str(cost_center_value).strip()
+    if not name:
+        return None
+
+    sql = """
+        SELECT id
+        FROM cost_centers
+        WHERE company_id = :company_id
+          AND name = :name
+          AND enabled = TRUE
+    """
+    params = {"company_id": company_id, "name": name}
+    if branch_id:
+        sql += " AND branch_id = :branch_id"
+        params["branch_id"] = branch_id
+
+    row = session.execute(text(sql), params).first()
+    return int(row[0]) if row else None
 
 
 # ---------------------------------------------------------------------------
-# Filter + Column definitions (ERP-style)
+# Filters
 # ---------------------------------------------------------------------------
 
 def get_filters() -> List[Dict[str, Any]]:
-    """
-    Frontend filters for Balance Sheet.
-    Mirrors ERPNext: Company, Branch, Cost Center, Based On, Date Range / Fiscal Year, Periodicity.
-    """
     return [
-        # Core
         {"fieldname": "company", "label": "Company", "fieldtype": "Link", "options": "Company", "required": True},
         {"fieldname": "branch_id", "label": "Branch", "fieldtype": "Link", "options": "Branch"},
         {"fieldname": "cost_center", "label": "Cost Center", "fieldtype": "Link", "options": "Cost Center"},
 
-        # Basis
         {
             "fieldname": "basis",
             "label": "Based On",
@@ -119,11 +160,9 @@ def get_filters() -> List[Dict[str, Any]]:
             "required": True,
         },
 
-        # Date Range
         {"fieldname": "from_date", "label": "From Date", "fieldtype": "Date"},
         {"fieldname": "to_date", "label": "To Date", "fieldtype": "Date"},
 
-        # Fiscal Year range
         {"fieldname": "from_fiscal_year", "label": "From Fiscal Year", "fieldtype": "Link", "options": "Fiscal Year"},
         {"fieldname": "to_fiscal_year", "label": "To Fiscal Year", "fieldtype": "Link", "options": "Fiscal Year"},
 
@@ -136,77 +175,54 @@ def get_filters() -> List[Dict[str, Any]]:
             "required": True,
         },
 
-        # Behaviour flags
-        {
-            "fieldname": "include_closing_entries",
-            "label": "Include Period Closing Entries",
-            "fieldtype": "Check",
-            "default": 1,
-        },
-        {
-            "fieldname": "show_zero_rows",
-            "label": "Show Zero Balance Accounts",
-            "fieldtype": "Check",
-            "default": 0,
-        },
-        {
-            "fieldname": "hide_group_amounts",
-            "label": "Hide Group Amounts",
-            "fieldtype": "Check",
-            "default": 0,
-        },
-        {
-            "fieldname": "consolidate_columns",
-            "label": "Consolidate Columns",
-            "fieldtype": "Check",
-            "default": 0,
-        },
+        # Behavior
+        {"fieldname": "include_closing_entries", "label": "Include Period Closing Entries", "fieldtype": "Check", "default": 1},
+        {"fieldname": "show_zero_rows", "label": "Show Zero Balance Accounts", "fieldtype": "Check", "default": 0},
+        {"fieldname": "hide_group_amounts", "label": "Hide Group Amounts", "fieldtype": "Check", "default": 0},
+
+        # In balance sheet, “consolidate columns” here means show just one column (last period)
+        {"fieldname": "consolidate_columns", "label": "Show Only Last Period", "fieldtype": "Check", "default": 0},
     ]
 
 
-def _build_periods_for_date_range(
-    from_date: date,
-    to_date: date,
-    periodicity: str,
-) -> List[PeriodDef]:
-    """
-    Build periods for BASIS = Date Range.
-    periodicity: 'yearly' | 'quarterly' | 'monthly'
-    """
+def _format_filters_for_output(filters: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(filters)
+    for k in ("from_date", "to_date"):
+        if out.get(k) and isinstance(out[k], (date, datetime)):
+            out[k] = format_date_for_display(out[k])
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Period building
+# ---------------------------------------------------------------------------
+
+def _build_periods_for_date_range(from_date: date, to_date: date, periodicity: str) -> List[PeriodDef]:
+    periodicity = (periodicity or "Yearly").strip().lower()
     periods: List[PeriodDef] = []
-    periodicity = periodicity.lower()
 
     if periodicity == "yearly":
-        start_year = from_date.year
-        end_year = to_date.year
-        for year in range(start_year, end_year + 1):
-            p_from = from_date if year == start_year else date(year, 1, 1)
-            p_to = to_date if year == end_year else date(year, 12, 31)
+        for year in range(from_date.year, to_date.year + 1):
+            p_from = from_date if year == from_date.year else date(year, 1, 1)
+            p_to = to_date if year == to_date.year else date(year, 12, 31)
             label = str(year)
-            fieldname = _sanitize_fieldname(label)
-            periods.append(PeriodDef(fieldname, label, p_from, p_to))
+            periods.append(PeriodDef(_sanitize_fieldname(label), label, p_from, p_to))
         return periods
 
-    # Quarterly / Monthly → rolling window using add_months
-    cur_start = from_date
-    while cur_start <= to_date:
+    cur = from_date
+    while cur <= to_date:
         if periodicity == "quarterly":
-            span_months = 3
-            # Label "YYYY-Qx" based on month
-            quarter = ((cur_start.month - 1) // 3) + 1
-            label = f"{cur_start.year}-Q{quarter}"
-        else:  # monthly
-            span_months = 1
-            label = cur_start.strftime("%b-%Y")  # "Jan-2024"
+            span = 3
+            q = ((cur.month - 1) // 3) + 1
+            label = f"{cur.year}-Q{q}"
+        else:
+            span = 1
+            label = cur.strftime("%b-%Y")
 
-        next_start = _add_months(cur_start, span_months)
+        next_start = _add_months(cur, span)
         p_to = min(next_start - timedelta(days=1), to_date)
-        p_from = cur_start
-
-        fieldname = _sanitize_fieldname(label)
-        periods.append(PeriodDef(fieldname, label, p_from, p_to))
-
-        cur_start = p_to + timedelta(days=1)
+        periods.append(PeriodDef(_sanitize_fieldname(label), label, cur, p_to))
+        cur = p_to + timedelta(days=1)
 
     return periods
 
@@ -218,13 +234,8 @@ def _build_periods_for_fiscal_year(
     to_fy_name: str,
     periodicity: str,
 ) -> Tuple[List[PeriodDef], date, date]:
-    """
-    Build periods for BASIS = Fiscal Year.
-    Returns (periods, min_date, max_date)
-    """
-    periodicity = periodicity.lower()
+    periodicity = (periodicity or "Yearly").strip().lower()
 
-    # Load fiscal years by name
     f1 = session.query(FiscalYear).filter(
         FiscalYear.company_id == company_id,
         FiscalYear.name == from_fy_name,
@@ -233,11 +244,9 @@ def _build_periods_for_fiscal_year(
         FiscalYear.company_id == company_id,
         FiscalYear.name == to_fy_name,
     ).one_or_none()
-
     if not f1 or not f2:
         raise ValueError("Invalid Fiscal Year range selected.")
 
-    # Ensure correct order by date
     if f1.start_date > f2.start_date:
         f1, f2 = f2, f1
 
@@ -254,9 +263,9 @@ def _build_periods_for_fiscal_year(
     if not fy_list:
         raise ValueError("No Fiscal Years found in the selected range.")
 
-    periods: List[PeriodDef] = []
     overall_min = fy_list[0].start_date.date()
     overall_max = fy_list[-1].end_date.date()
+    periods: List[PeriodDef] = []
 
     for fy in fy_list:
         fy_start = fy.start_date.date()
@@ -264,330 +273,296 @@ def _build_periods_for_fiscal_year(
 
         if periodicity == "yearly":
             label = fy.name
-            fieldname = _sanitize_fieldname(label)
-            periods.append(PeriodDef(fieldname, label, fy_start, fy_end))
+            periods.append(PeriodDef(_sanitize_fieldname(label), label, fy_start, fy_end))
             continue
 
-        # quarterly / monthly inside each FY
-        cur_start = fy_start
-        while cur_start <= fy_end:
+        cur = fy_start
+        while cur <= fy_end:
             if periodicity == "quarterly":
-                span_months = 3
-                quarter = ((cur_start.month - 1) // 3) + 1
-                label = f"{fy.name} Q{quarter}"
-            else:  # monthly
-                span_months = 1
-                label = f"{cur_start.strftime('%b-%Y')} ({fy.name})"
+                span = 3
+                q = ((cur.month - 1) // 3) + 1
+                label = f"{fy.name} Q{q}"
+            else:
+                span = 1
+                label = f"{cur.strftime('%b-%Y')} ({fy.name})"
 
-            next_start = _add_months(cur_start, span_months)
+            next_start = _add_months(cur, span)
             p_to = min(next_start - timedelta(days=1), fy_end)
-            p_from = cur_start
-
-            fieldname = _sanitize_fieldname(label)
-            periods.append(PeriodDef(fieldname, label, p_from, p_to))
-
-            cur_start = p_to + timedelta(days=1)
+            periods.append(PeriodDef(_sanitize_fieldname(label), label, cur, p_to))
+            cur = p_to + timedelta(days=1)
 
     return periods, overall_min, overall_max
 
 
-def _build_periods(
-    filters: Dict[str, Any],
-    session: Session,
-    company_id: int,
-) -> Tuple[List[PeriodDef], date, date]:
-    """
-    Core period builder. Decides between Date Range / Fiscal Year.
-    Returns (periods, overall_from_date, overall_to_date).
-    """
-    basis_raw = (filters.get("basis") or "Date Range").strip().lower()
-    periodicity = (filters.get("periodicity") or "Yearly").strip().lower()
+def _build_periods(filters: Dict[str, Any], session: Session, company_id: int) -> Tuple[List[PeriodDef], date, date]:
+    basis = (filters.get("basis") or "Date Range").strip().lower()
+    periodicity = (filters.get("periodicity") or "Yearly").strip()
 
-    if basis_raw.startswith("fiscal"):
-        from_fy_name = (filters.get("from_fiscal_year") or "").strip()
-        to_fy_name = (filters.get("to_fiscal_year") or "").strip()
-        if not from_fy_name or not to_fy_name:
+    if basis.startswith("fiscal"):
+        f1 = (filters.get("from_fiscal_year") or "").strip()
+        f2 = (filters.get("to_fiscal_year") or "").strip()
+        if not f1 or not f2:
             raise ValueError("From Fiscal Year and To Fiscal Year are required when Based On = Fiscal Year.")
-        periods, overall_min, overall_max = _build_periods_for_fiscal_year(
-            session=session,
-            company_id=company_id,
-            from_fy_name=from_fy_name,
-            to_fy_name=to_fy_name,
-            periodicity=periodicity,
-        )
-        return periods, overall_min, overall_max
+        return _build_periods_for_fiscal_year(session, company_id, f1, f2, periodicity)
 
-    # Date Range path
-    to_date = _parse_date_flex(filters.get("to_date")) or date.today()
-    from_date = _parse_date_flex(filters.get("from_date"))
-    if not from_date:
-        # default to start of the year of to_date
-        from_date = date(to_date.year, 1, 1)
-
-    periods = _build_periods_for_date_range(from_date, to_date, periodicity)
+    to_d = parse_date_flex(filters.get("to_date")) or date.today()
+    from_d = parse_date_flex(filters.get("from_date")) or date(to_d.year, 1, 1)
+    periods = _build_periods_for_date_range(from_d, to_d, periodicity)
     if not periods:
         raise ValueError("No periods could be derived from the selected date range.")
+    return periods, periods[0].from_date, periods[-1].to_date
 
-    overall_min = periods[0].from_date
-    overall_max = periods[-1].to_date
-    return periods, overall_min, overall_max
 
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
 
 def _load_bs_accounts(session: Session, company_id: int) -> List[Account]:
-    """
-    Load all Balance Sheet accounts (Assets, Liabilities, Equity) for a company.
-    """
     return (
         session.query(Account)
         .filter(
             Account.company_id == company_id,
             Account.enabled.is_(True),
             Account.report_type == ReportTypeEnum.BALANCE_SHEET,
-            Account.account_type.in_(
-                [AccountTypeEnum.ASSET, AccountTypeEnum.LIABILITY, AccountTypeEnum.EQUITY]
-            ),
+            Account.account_type.in_([AccountTypeEnum.ASSET, AccountTypeEnum.LIABILITY, AccountTypeEnum.EQUITY]),
         )
         .all()
     )
 
 
-def _load_gl_aggregated(
+def _load_gl_daily_net(
     session: Session,
     company_id: int,
     max_to_date: date,
+    include_closing: bool,
+    account_ids: List[int],
     branch_id: Optional[int] = None,
-    cost_center_name: Optional[str] = None,
-    include_closing: bool = True,
+    cost_center_id: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Load aggregated GL by account + posting_date for Balance Sheet accounts.
+    Loads daily net movement per account with correct sign:
+      Asset: (debit - credit)
+      Liability/Equity: (credit - debit)
 
-    - Only SUBMITTED journal entries
-    - Only Asset / Liability / Equity accounts
-    - Only enabled accounts
-    - Up to max_to_date (inclusive)
-
-    NOTE:
-    - branch_id, cost_center_name, include_closing are accepted to match the
-      execute() call signature; you can wire them into the SQL WHEN your GL
-      schema fields are confirmed.
+    Filters supported:
+      - company_id (required)
+      - account_ids (required; prevents pulling non-BS accounts)
+      - posting_date <= max_to_date
+      - only SUBMITTED journal entries
+      - branch_id (optional)
+      - cost_center_id (optional)
+      - include_closing_entries: if False, exclude journal_entries.entry_type == 'Closing'
     """
+    if not account_ids:
+        return []
+
     sql = """
         SELECT
             gle.account_id,
-            gle.posting_date::date         AS posting_date,
-            SUM(gle.debit - gle.credit)    AS amount
+            gle.posting_date::date AS posting_date,
+            SUM(
+                CASE
+                    WHEN acc.account_type::text IN ('Asset','ASSET')
+                        THEN (gle.debit - gle.credit)
+                    ELSE (gle.credit - gle.debit)
+                END
+            ) AS amount
         FROM general_ledger_entries gle
         JOIN journal_entries je ON je.id = gle.journal_entry_id
         JOIN accounts acc ON acc.id = gle.account_id
-        WHERE gle.company_id = :company
+        WHERE gle.company_id = :company_id
           AND gle.posting_date::date <= :max_to_date
-          -- report_type is a PostgreSQL ENUM; cast to text so both
-          -- 'Balance Sheet' and 'BALANCE_SHEET' enum labels are accepted.
-          AND acc.report_type::text IN ('Balance Sheet', 'BALANCE_SHEET')
+          AND gle.account_id IN :account_ids
           AND acc.enabled = TRUE
           AND je.doc_status = 'SUBMITTED'
-       AND acc.account_type::text IN ('Asset','Liability','Equity','ASSET','LIABILITY','EQUITY')
+    """
 
+    params: Dict[str, Any] = {
+        "company_id": company_id,
+        "max_to_date": max_to_date,
+        "account_ids": account_ids,
+    }
+
+    if branch_id:
+        sql += " AND gle.branch_id = :branch_id"
+        params["branch_id"] = branch_id
+
+    if cost_center_id:
+        sql += " AND gle.cost_center_id = :cost_center_id"
+        params["cost_center_id"] = cost_center_id
+
+    if not include_closing:
+        # Your enum value label is "Closing"
+        sql += " AND je.entry_type::text <> 'Closing'"
+
+    sql += """
         GROUP BY gle.account_id, gle.posting_date::date
         ORDER BY gle.account_id, posting_date
     """
 
-    params = {
-        "company": company_id,
-        "max_to_date": max_to_date,
-    }
-
-    rows = session.execute(text(sql), params).mappings().all()
+    stmt = text(sql).bindparams(bindparam("account_ids", expanding=True))
+    rows = session.execute(stmt, params).mappings().all()
     return [dict(r) for r in rows]
 
 
-def _build_account_tree(accounts: List[Account]) -> Tuple[
-    Dict[int, Account],
-    Dict[Optional[int], List[int]],
-    Dict[int, int],
-]:
-    """
-    Build:
-    - account_map: id -> Account
-    - children: parent_id -> [child_id...]
-    - depth: account_id -> level (0 = root)
-    """
+# ---------------------------------------------------------------------------
+# Tree + balances
+# ---------------------------------------------------------------------------
+
+def _build_account_tree(
+    accounts: List[Account],
+) -> Tuple[Dict[int, Account], Dict[Optional[int], List[int]], Dict[int, int], List[int]]:
     account_map: Dict[int, Account] = {a.id: a for a in accounts}
     children: Dict[Optional[int], List[int]] = defaultdict(list)
 
     for a in accounts:
         children[a.parent_account_id].append(a.id)
 
-    # simple DFS to compute depth
     depth: Dict[int, int] = {}
+    roots = [a.id for a in accounts if a.parent_account_id not in account_map]
 
-    def dfs(acc_id: int, lvl: int) -> None:
-        depth[acc_id] = lvl
-        for cid in children.get(acc_id, []):
-            dfs(cid, lvl + 1)
-
-    # roots = accounts whose parent is None or not in map
-    roots = [a for a in accounts if a.parent_account_id not in account_map]
-
-    # sort roots by account_type then code
-    def _root_sort_key(a: Account):
-        at = a.account_type
+    def root_key(acc_id: int) -> Tuple[int, str]:
+        a = account_map[acc_id]
         order = {
             AccountTypeEnum.ASSET: 0,
             AccountTypeEnum.LIABILITY: 1,
             AccountTypeEnum.EQUITY: 2,
-        }.get(at, 9)
+        }.get(a.account_type, 9)
         return (order, a.code or "")
 
-    roots.sort(key=_root_sort_key)
+    roots.sort(key=root_key)
 
-    for r in roots:
-        dfs(r.id, 0)
+    def dfs(acc_id: int, lvl: int) -> None:
+        depth[acc_id] = lvl
+        for cid in sorted(children.get(acc_id, []), key=lambda x: (account_map[x].code or "")):
+            dfs(cid, lvl + 1)
 
-    return account_map, children, depth
+    for rid in roots:
+        dfs(rid, 0)
+
+    return account_map, children, depth, roots
 
 
-def _compute_account_balances_per_period(
+def _compute_closing_balances_fast(
     gl_rows: List[Dict[str, Any]],
     periods: List[PeriodDef],
 ) -> Dict[int, Dict[str, float]]:
     """
-    For each account, and each period.fieldname, compute closing balance as of period.to_date.
-    gl_rows: (account_id, posting_date, amount)
-    Returns: balances[account_id][period.fieldname] = float
+    Fast closing-balance calculation:
+    - group by account_id
+    - within each account, cumulative sum across posting_date
+    - fill each period.to_date in one pass
     """
     by_acc: Dict[int, List[Tuple[date, float]]] = defaultdict(list)
     for r in gl_rows:
         acc_id = int(r["account_id"])
-        posting = r["posting_date"]
-        if isinstance(posting, datetime):
-            posting = posting.date()
+        d = r["posting_date"]
+        if isinstance(d, datetime):
+            d = d.date()
         amt = float(r["amount"] or 0.0)
-        by_acc[acc_id].append((posting, amt))
+        by_acc[acc_id].append((d, amt))
 
-    # ensure sorted
     for acc_id in by_acc:
         by_acc[acc_id].sort(key=lambda x: x[0])
 
-    balances: Dict[int, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    periods_sorted = sorted(periods, key=lambda p: p.to_date)
+    balances: Dict[int, Dict[str, float]] = defaultdict(dict)
 
     for acc_id, entries in by_acc.items():
-        # Precompute prefix sums (posting_date -> cumulative)
-        dates: List[date] = []
-        prefix: List[float] = []
+        i = 0
         running = 0.0
-        for d, amt in entries:
-            running += amt
-            dates.append(d)
-            prefix.append(running)
+        n = len(entries)
 
-        # For each period, closing = last prefix where date <= to_date
-        for p in periods:
-            closing = 0.0
-            # linear scan is fine (accounts not huge in practice); can optimize if needed
-            for idx, d in enumerate(dates):
-                if d <= p.to_date:
-                    closing = prefix[idx]
-                else:
-                    break
-            balances[acc_id][p.fieldname] = closing
+        for p in periods_sorted:
+            cutoff = p.to_date
+            while i < n and entries[i][0] <= cutoff:
+                running += entries[i][1]
+                i += 1
+            balances[acc_id][p.fieldname] = running
 
     return balances
 
 
-def _rollup_group_balances(
+def _rollup_groups(
     accounts: List[Account],
     children: Dict[Optional[int], List[int]],
+    depth: Dict[int, int],
     periods: List[PeriodDef],
-    leaf_balances: Dict[int, Dict[str, float]],
+    base_balances: Dict[int, Dict[str, float]],
 ) -> Dict[int, Dict[str, float]]:
-    """
-    Roll-up balances to group accounts bottom-up.
-    leaf_balances may already contain some group balances (if GL hits group accounts directly),
-    but we recompute groups as sum(children).
-    """
     balances: Dict[int, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
-    # start with whatever we have for detail accounts
-    for acc_id, per in leaf_balances.items():
-        for fld, val in per.items():
-            balances[acc_id][fld] = val
 
-    # compute depth map to process bottom-up
-    _, _, depth = _build_account_tree(accounts)
-    # sort accounts by depth descending
+    # seed
+    for acc_id, per in base_balances.items():
+        for k, v in per.items():
+            balances[acc_id][k] = float(v or 0.0)
+
+    # bottom-up (groups = sum(children))
     sorted_accounts = sorted(accounts, key=lambda a: depth.get(a.id, 0), reverse=True)
-
     for acc in sorted_accounts:
         if not acc.is_group:
             continue
-        # sum children balances
         for p in periods:
             total = 0.0
-            for child_id in children.get(acc.id, []):
-                total += balances[child_id].get(p.fieldname, 0.0)
+            for cid in children.get(acc.id, []):
+                total += float(balances[cid].get(p.fieldname, 0.0) or 0.0)
             balances[acc.id][p.fieldname] = total
 
     return balances
 
 
-def _compute_totals(
+def _compute_section_totals(
     accounts: List[Account],
     balances: Dict[int, Dict[str, float]],
     periods: List[PeriodDef],
 ) -> Dict[str, Dict[str, float]]:
     """
-    Compute Total Assets / Liabilities / Equity / Provisional P&L per period.
-    Only leaf accounts are used to avoid double-counting.
+    Uses leaf accounts only to avoid double-counting.
+    Signs are already normalized:
+      Total Assets = sum(asset leaf balances)
+      Total Liabilities = sum(liability leaf balances)
+      Total Equity = sum(equity leaf balances)
+      Provisional P/L = Assets - (Liabilities + Equity)
     """
-    totals_assets: Dict[str, float] = defaultdict(float)
-    totals_liab: Dict[str, float] = defaultdict(float)
-    totals_equity: Dict[str, float] = defaultdict(float)
+    ta: Dict[str, float] = defaultdict(float)
+    tl: Dict[str, float] = defaultdict(float)
+    te: Dict[str, float] = defaultdict(float)
 
-    # leaf = not group
     for acc in accounts:
         if acc.is_group:
             continue
         acc_bal = balances.get(acc.id, {})
         for p in periods:
-            val = float(acc_bal.get(p.fieldname, 0.0) or 0.0)
+            v = float(acc_bal.get(p.fieldname, 0.0) or 0.0)
             if acc.account_type == AccountTypeEnum.ASSET:
-                totals_assets[p.fieldname] += val
+                ta[p.fieldname] += v
             elif acc.account_type == AccountTypeEnum.LIABILITY:
-                totals_liab[p.fieldname] += val
+                tl[p.fieldname] += v
             elif acc.account_type == AccountTypeEnum.EQUITY:
-                totals_equity[p.fieldname] += val
+                te[p.fieldname] += v
 
-    provisional_pl: Dict[str, float] = {}
+    ppl: Dict[str, float] = {}
     for p in periods:
-        a = totals_assets.get(p.fieldname, 0.0)
-        l = totals_liab.get(p.fieldname, 0.0)
-        e = totals_equity.get(p.fieldname, 0.0)
-        provisional_pl[p.fieldname] = a - (l + e)
+        ppl[p.fieldname] = float(ta.get(p.fieldname, 0.0) - (tl.get(p.fieldname, 0.0) + te.get(p.fieldname, 0.0)))
 
     return {
-        "total_assets": dict(totals_assets),
-        "total_liabilities": dict(totals_liab),
-        "total_equity": dict(totals_equity),
-        "provisional_pl": provisional_pl,
+        "total_assets": dict(ta),
+        "total_liabilities": dict(tl),
+        "total_equity": dict(te),
+        "provisional_pl": ppl,
     }
 
 
-def get_columns(filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    """
-    Dynamic column model for Balance Sheet.
-    - Account, Indent, Account Code, Root Type
-    - + one currency column per period.
-    """
-    filters = filters or {}
-    # we don't have session here; so just derive periods roughly from filters
-    # using only date range. For fiscal-year-based calls to /columns, the
-    # frontend usually calls /execute shortly after, so this is "best effort".
-    to_date = _parse_date_flex(filters.get("to_date")) or date.today()
-    from_date = _parse_date_flex(filters.get("from_date")) or date(to_date.year, 1, 1)
-    periodicity = (filters.get("periodicity") or "Yearly").strip().lower()
+# ---------------------------------------------------------------------------
+# Columns (for UI / metadata calls)
+# ---------------------------------------------------------------------------
 
-    periods = _build_periods_for_date_range(from_date, to_date, periodicity)
+def get_columns(filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    filters = filters or {}
+    to_d = parse_date_flex(filters.get("to_date")) or date.today()
+    from_d = parse_date_flex(filters.get("from_date")) or date(to_d.year, 1, 1)
+    periodicity = (filters.get("periodicity") or "Yearly").strip()
+    periods = _build_periods_for_date_range(from_d, to_d, periodicity)
 
     cols: List[Dict[str, Any]] = [
         data_column("account", "Account", 260),
@@ -597,7 +572,6 @@ def get_columns(filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]
     ]
     for p in periods:
         cols.append(currency_column(p.fieldname, p.label))
-
     return cols
 
 
@@ -614,94 +588,99 @@ class BalanceSheetReport:
     def get_columns(cls, filters=None):
         return get_columns(filters)
 
-    def execute(
-        self,
-        filters: Dict[str, Any],
-        session: Session,
-        context: AffiliationContext,
-    ) -> Dict[str, Any]:
-        # -------------------------------------------------------------------
-        # 1) Normalize / validate filters
-        # -------------------------------------------------------------------
+    def execute(self, filters: Dict[str, Any], session: Session, context: AffiliationContext) -> Dict[str, Any]:
+        start = time.time()
+
+        # -----------------------------
+        # 1) Normalize / validate
+        # -----------------------------
         if not filters.get("company"):
-            # fallback to context if available
-            company_id = getattr(context, "company_id", None)
-            if not company_id:
+            company_id_ctx = getattr(context, "company_id", None)
+            if not company_id_ctx:
                 raise ValueError("Company is required.")
-            filters["company"] = int(company_id)
+            filters["company"] = int(company_id_ctx)
+
         company_id = int(filters["company"])
 
-        branch_id = filters.get("branch_id")
-        if isinstance(branch_id, str) and branch_id.strip() != "":
-            try:
-                branch_id = int(branch_id)
-            except Exception:
-                branch_id = None
-        elif not branch_id:
-            branch_id = None
+        branch_id = _parse_int(filters.get("branch_id"))
+        include_closing = _coerce_bool(filters.get("include_closing_entries", True))
+        show_zero_rows = _coerce_bool(filters.get("show_zero_rows", False))
+        hide_group_amounts = _coerce_bool(filters.get("hide_group_amounts", False))
+        show_only_last = _coerce_bool(filters.get("consolidate_columns", False))
 
-        cost_center_name = (filters.get("cost_center") or "").strip() or None
+        currency_precision = int(get_currency_precision() or 2)
+        tol = 10 ** (-(currency_precision + 1))  # tiny tolerance to decide "zero"
 
-        include_closing = _coerce_bool(filters.get("include_closing_entries"))
-        show_zero_rows = _coerce_bool(filters.get("show_zero_rows"))
-        hide_group_amounts = _coerce_bool(filters.get("hide_group_amounts"))
-        consolidate_columns = _coerce_bool(filters.get("consolidate_columns"))
+        cost_center_id = _resolve_cost_center_id(
+            session=session,
+            company_id=company_id,
+            branch_id=branch_id,
+            cost_center_value=filters.get("cost_center"),
+        )
 
-        # Build periods (using DB for fiscal-year mode)
+        # -----------------------------
+        # 2) Build periods
+        # -----------------------------
         periods, overall_from, overall_to = _build_periods(filters, session, company_id)
-
-        # -------------------------------------------------------------------
-        # 2) Load accounts + GL movements
-        # -------------------------------------------------------------------
-        accounts = _load_bs_accounts(session, company_id)
-        if not accounts:
+        if not periods:
             return {
                 "columns": get_columns(filters),
                 "data": [],
-                "filters": filters,
-                "summary": {
-                    "periods": [],
-                    "totals": {},
-                },
+                "filters": _format_filters_for_output(filters),
+                "summary": {},
                 "chart": None,
-                "has_more": False,  # to disable outer paging
+                "report_name": "Balance Sheet",
+                "execution_time": round(time.time() - start, 4),
+                "total_count": 0,
+                "has_more": False,
+                "next_cursor": None,
             }
 
-        gl_rows = _load_gl_aggregated(
+        if show_only_last:
+            periods = [periods[-1]]
+
+        # -----------------------------
+        # 3) Load accounts + GL movements
+        # -----------------------------
+        accounts = _load_bs_accounts(session, company_id)
+        if not accounts:
+            return {
+                "columns": self._build_columns(periods),
+                "data": [],
+                "filters": _format_filters_for_output(filters),
+                "summary": {"periods": [], "totals": {}, "header": {}},
+                "chart": None,
+                "report_name": "Balance Sheet",
+                "execution_time": round(time.time() - start, 4),
+                "total_count": 0,
+                "has_more": False,
+                "next_cursor": None,
+            }
+
+        account_ids = [a.id for a in accounts]
+
+        gl_rows = _load_gl_daily_net(
             session=session,
             company_id=company_id,
-            max_to_date=overall_to,
-            branch_id=branch_id,
-            cost_center_name=cost_center_name,
+            max_to_date=periods[-1].to_date,
             include_closing=include_closing,
+            account_ids=account_ids,
+            branch_id=branch_id,
+            cost_center_id=cost_center_id,
         )
 
-        # -------------------------------------------------------------------
-        # 3) Compute balances per account & period
-        # -------------------------------------------------------------------
-        leaf_balances = _compute_account_balances_per_period(gl_rows, periods)
-        account_map, children, depth = _build_account_tree(accounts)
-        balances = _rollup_group_balances(accounts, children, periods, leaf_balances)
-        totals = _compute_totals(accounts, balances, periods)
+        # -----------------------------
+        # 4) Compute balances
+        # -----------------------------
+        base_balances = _compute_closing_balances_fast(gl_rows, periods)
+        account_map, children, depth, roots = _build_account_tree(accounts)
+        balances = _rollup_groups(accounts, children, depth, periods, base_balances)
+        totals = _compute_section_totals(accounts, balances, periods)
 
-        # -------------------------------------------------------------------
-        # 4) Build rows in tree order
-        # -------------------------------------------------------------------
+        # -----------------------------
+        # 5) Build rows (tree)
+        # -----------------------------
         rows: List[Dict[str, Any]] = []
-
-        # roots (same as in _build_account_tree)
-        roots = [a for a in accounts if a.parent_account_id not in account_map]
-
-        def _root_sort_key(a: Account):
-            at = a.account_type
-            order = {
-                AccountTypeEnum.ASSET: 0,
-                AccountTypeEnum.LIABILITY: 1,
-                AccountTypeEnum.EQUITY: 2,
-            }.get(at, 9)
-            return (order, a.code or "")
-
-        roots.sort(key=_root_sort_key)
 
         def walk(acc_id: int):
             acc = account_map[acc_id]
@@ -713,68 +692,70 @@ class BalanceSheetReport:
                 "indent": indent,
                 "root_type": acc.account_type.value,
                 "is_group": acc.is_group,
-                "account_id": acc.id,  # helpful for frontend, even if no column
+                "account_id": acc.id,
             }
 
-            # attach balances for each period
             acc_bal = balances.get(acc_id, {})
-            # If hide_group_amounts: zero / blank out group rows
             for p in periods:
-                val = float(acc_bal.get(p.fieldname, 0.0) or 0.0)
+                v = float(acc_bal.get(p.fieldname, 0.0) or 0.0)
                 if acc.is_group and hide_group_amounts:
                     row[p.fieldname] = None
                 else:
-                    row[p.fieldname] = round(val, 2)
+                    row[p.fieldname] = round(v, currency_precision)
 
-            # skip zero rows if requested (only non-group or optionally all)
+            # filter leaf zeros
             if not show_zero_rows and not acc.is_group:
-                # check if all periods are zero/None
                 all_zero = True
                 for p in periods:
                     v = row.get(p.fieldname)
-                    if v not in (0, 0.0, None):
+                    if isinstance(v, (int, float)) and abs(float(v)) > tol:
                         all_zero = False
                         break
                 if all_zero:
-                    # do not append this leaf row
-                    pass
-                else:
-                    rows.append(row)
-            else:
-                rows.append(row)
+                    return
 
-            # recurse children (sorted by code)
-            for cid in sorted(children.get(acc_id, []), key=lambda cid: account_map[cid].code or ""):
+            rows.append(row)
+
+            for cid in sorted(children.get(acc_id, []), key=lambda x: (account_map[x].code or "")):
                 walk(cid)
 
-        for r in roots:
-            walk(r.id)
+        for rid in roots:
+            walk(rid)
 
-        # -------------------------------------------------------------------
-        # 5) Consolidate columns (optional) – simple implementation:
-        #    If consolidate_columns = True → add a "Total" column as sum of all periods.
-        #    (We still keep individual period columns; frontend can choose what to show.)
-        # -------------------------------------------------------------------
-        if consolidate_columns:
-            total_field = "p_total"
-            for row in rows:
-                total_val = 0.0
-                for p in periods:
-                    v = row.get(p.fieldname)
-                    if isinstance(v, (int, float)):
-                        total_val += float(v)
-                row[total_field] = round(total_val, 2)
+        # -----------------------------
+        # 6) Inject Provisional Profit/Loss row (ERPNext-style)
+        # -----------------------------
+        pl_should_show = show_zero_rows
+        for p in periods:
+            if abs(float(totals["provisional_pl"].get(p.fieldname, 0.0) or 0.0)) > tol:
+                pl_should_show = True
+                break
 
-            # Add Total column meta at the end via summary
-            totals["total_column"] = {"fieldname": total_field, "label": "Total"}
+        if pl_should_show:
+            pl_row: Dict[str, Any] = {
+                "account": "Provisional Profit/Loss (Current Period)",
+                "account_code": "",
+                "indent": 1,
+                "root_type": "Equity",
+                "is_group": False,
+                "account_id": None,
+            }
+            for p in periods:
+                pl_row[p.fieldname] = round(float(totals["provisional_pl"].get(p.fieldname, 0.0) or 0.0), currency_precision)
+            rows.append(pl_row)
 
-        # Header cards use latest period (right-most)
-        last_period = periods[-1]
-        last_key = last_period.fieldname
-        last_assets = totals["total_assets"].get(last_key, 0.0)
-        last_liab = totals["total_liabilities"].get(last_key, 0.0)
-        last_equity = totals["total_equity"].get(last_key, 0.0)
-        last_pl = totals["provisional_pl"].get(last_key, 0.0)
+        # -----------------------------
+        # 7) Summary + integrity check
+        # -----------------------------
+        last = periods[-1]
+        k = last.fieldname
+        last_assets = float(totals["total_assets"].get(k, 0.0) or 0.0)
+        last_liab = float(totals["total_liabilities"].get(k, 0.0) or 0.0)
+        last_equity = float(totals["total_equity"].get(k, 0.0) or 0.0)
+        last_pl = float(totals["provisional_pl"].get(k, 0.0) or 0.0)
+
+        liab_plus_equity_plus_pl = last_liab + last_equity + last_pl
+        diff = round(last_assets - liab_plus_equity_plus_pl, currency_precision)
 
         summary = {
             "periods": [
@@ -788,15 +769,37 @@ class BalanceSheetReport:
             ],
             "totals": totals,
             "header": {
-                "total_assets": round(last_assets, 2),
-                "total_liabilities": round(last_liab, 2),
-                "total_equity": round(last_equity, 2),
-                "provisional_pl": round(last_pl, 2),
-                "as_on_label": last_period.label,
+                "total_assets": round(last_assets, currency_precision),
+                "total_liabilities": round(last_liab, currency_precision),
+                "total_equity": round(last_equity, currency_precision),
+                "provisional_pl": round(last_pl, currency_precision),
+                "total_liab_equity_pl": round(liab_plus_equity_plus_pl, currency_precision),
+                "as_on_label": last.label,
+                "integrity_diff": diff,  # should be ~0 when balanced (with P/L line)
             },
         }
 
-        # Use dynamic columns based on actual periods
+        chart = self._build_chart(periods, totals, currency_precision)
+
+        exec_time = round(time.time() - start, 4)
+
+        return {
+            "columns": self._build_columns(periods),
+            "data": rows,
+            "filters": _format_filters_for_output(filters),
+            "summary": summary,
+            "chart": chart,
+            "report_name": "Balance Sheet",
+            "execution_time": exec_time,
+            "total_count": len(rows),
+            "has_more": False,
+            "next_cursor": None,
+        }
+
+    # -----------------------------
+    # Column builder (uses exact periods)
+    # -----------------------------
+    def _build_columns(self, periods: List[PeriodDef]) -> List[Dict[str, Any]]:
         cols: List[Dict[str, Any]] = [
             data_column("account", "Account", 260),
             int_column("indent", "Indent", 60),
@@ -805,15 +808,45 @@ class BalanceSheetReport:
         ]
         for p in periods:
             cols.append(currency_column(p.fieldname, p.label))
-        if consolidate_columns:
-            cols.append(currency_column("p_total", "Total"))
+        return cols
+
+    # -----------------------------
+    # Chart builder (simple overview)
+    # -----------------------------
+    def _build_chart(
+        self,
+        periods: List[PeriodDef],
+        totals: Dict[str, Dict[str, float]],
+        precision: int,
+    ) -> Optional[Dict[str, Any]]:
+        if not periods:
+            return None
+
+        labels = [p.label for p in periods]
+
+        def series(key: str) -> List[float]:
+            return [
+                round(float(totals.get(key, {}).get(p.fieldname, 0.0) or 0.0), precision)
+                for p in periods
+            ]
+
+        assets = series("total_assets")
+        liab = series("total_liabilities")
+        equity = series("total_equity")
+
+        if all(v == 0 for v in assets + liab + equity):
+            return None
 
         return {
-            "columns": cols,
-            "data": rows,
-            "filters": filters,
-            "summary": summary,
-            "chart": None,
-            "has_more": False,   # IMPORTANT: disable generic paging truncation
-            "next_cursor": None,
+            "type": "bar" if len(periods) > 1 else "line",
+            "title": "Balance Sheet Overview",
+            "data": {
+                "labels": labels,
+                "datasets": [
+                    {"name": "Assets", "values": assets},
+                    {"name": "Liabilities", "values": liab},
+                    {"name": "Equity", "values": equity},
+                ],
+            },
+            "height": 300,
         }

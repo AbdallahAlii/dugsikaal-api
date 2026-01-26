@@ -25,12 +25,13 @@ _HOT_REPORTS = {
     "General Ledger",
     "Accounts Payable Summary",
     "Accounts Receivable Summary",
-    "Accounts Payable",
-    "Accounts Receivable",
+    "Accounts Payable Detail",
+    "Accounts Receivable Detail",
     "Stock Ledger",
     "Trial Balance",
     "Balance Sheet",
     "Profit and Loss",
+    "Cash Flow Statement",
 }
 
 def _ctx() -> AffiliationContext:

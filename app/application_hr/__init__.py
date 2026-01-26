@@ -9,5 +9,5 @@ def register_module_details() -> None:
     register_hr_detail_configs()
 
 def register_module_dropdowns() -> None:
-    # none for HR right now
-    pass
+    from app.application_hr.dropdown_configs import register_hr_dropdowns
+    register_hr_dropdowns()

@@ -32,6 +32,10 @@ class PriceListOut(BaseModel):
         from_attributes = True
 
 
+
+
+
+
 # ───────────────────────── Item Price ─────────────────────────
 
 class ItemPriceCreate(BaseModel):

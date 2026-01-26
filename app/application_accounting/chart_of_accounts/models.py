@@ -166,16 +166,17 @@ class PeriodClosingVoucher(BaseModel):
     # Table Constraints & Indices (ADDED performance indexes)
     __table_args__ = (
         UniqueConstraint("company_id", "code", name="uq_pcv_company_code"),
-        UniqueConstraint("closing_fiscal_year_id", "company_id", name="uq_pcv_fiscal_year_company"),
+        # 🔴 removed uq_pcv_fiscal_year_company to allow multiple PCVs per FY
         CheckConstraint(
             "NOT (doc_status = 'SUBMITTED' AND submitted_by_id IS NULL)",
-            name="ck_human_submission_required"
+            name="ck_human_submission_required",
         ),
-        # Performance indexes
         Index("ix_pcv_company_status", "company_id", "doc_status"),
         Index("ix_pcv_posted_date", "posting_date", "doc_status"),
         Index("ix_pcv_auto_status", "auto_prepared", "doc_status"),
     )
+
+
 
     def __repr__(self) -> str:
         return f"<PeriodClosingVoucher code={self.code} year={self.closing_fiscal_year_id} status={self.doc_status}>"
@@ -698,3 +699,35 @@ class  GLTemplateItem(BaseModel):
 
     def __repr__(self) -> str:
         return f"<GLTemplateItem id={self.id} effect={self.effect} source={self.amount_source}>"
+class AccountingSettings(BaseModel):
+    __tablename__ = "accounting_settings"
+
+    company_id: Mapped[int] = mapped_column(
+        db.BigInteger,
+        db.ForeignKey("companies.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+
+    # Example ERP-style defaults
+    default_receivable_account_id: Mapped[Optional[int]] = mapped_column(
+        db.BigInteger, db.ForeignKey("accounts.id"), nullable=True
+    )
+    default_payable_account_id: Mapped[Optional[int]] = mapped_column(
+        db.BigInteger, db.ForeignKey("accounts.id"), nullable=True
+    )
+    allow_negative_stock: Mapped[bool] = mapped_column(
+        db.Boolean, nullable=False, default=False
+    )
+
+    company: Mapped["Company"] = relationship(
+        back_populates="accounting_settings"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("company_id", name="uq_accounting_settings_company"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<AccountingSettings company_id={self.company_id}>"

@@ -55,6 +55,23 @@ DOCTYPE_TYPES: List[Dict] = [
     dict(code="ASSET_DEPRECIATION",   label="Asset Depreciation",   domain="ASSETS",    affects_stock=False, affects_gl=True),
     dict(code="DEPRECIATION_ENTRY",   label="Depreciation Entry",   domain="ASSETS",    affects_stock=False, affects_gl=True),
 
+    # ---------- Education ----------
+    dict(code="STUDENT",              label="Student",              domain="EDUCATION", affects_stock=False, affects_gl=False),
+    dict(code="INSTRUCTOR",           label="Instructor",           domain="EDUCATION", affects_stock=False, affects_gl=False),
+
+    dict(code="FEE_STRUCTURE", label="Fee Structure", domain="EDUCATION", affects_stock=False, affects_gl=False),
+    dict(code="FEE_SCHEDULE", label="Fee Schedule", domain="EDUCATION", affects_stock=False, affects_gl=False),
+    dict(code="FEES", label="Fees", domain="EDUCATION", affects_stock=False, affects_gl=False),
+
+    dict(code="STUDENT_ATTENDANCE", label="Student Attendance", domain="EDUCATION", affects_stock=False,
+         affects_gl=False),
+
+    dict(code="ASSESSMENT_EVENT", label="Assessment Event", domain="EDUCATION", affects_stock=False, affects_gl=False),
+    dict(code="ASSESSMENT_MARK", label="Assessment Mark", domain="EDUCATION", affects_stock=False, affects_gl=False),
+    dict(code="GRADE_RECALC_JOB", label="Grade Recalc Job", domain="EDUCATION", affects_stock=False, affects_gl=False),
+    dict(code="STUDENT_ANNUAL_RESULT", label="Student Annual Result", domain="EDUCATION", affects_stock=False,
+         affects_gl=False),
+
     # ---------- Other ----------
     dict(code="PAYROLL_JOURNAL",      label="Payroll Journal",      domain="OTHER",     affects_stock=False, affects_gl=True),
     dict(code="OPENING_ENTRY",        label="Opening Entry",        domain="OTHER",     affects_stock=False, affects_gl=True),

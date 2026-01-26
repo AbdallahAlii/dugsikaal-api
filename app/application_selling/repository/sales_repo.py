@@ -55,7 +55,14 @@ class SalesRepository:
         return self.s.execute(stmt).scalar_one_or_none()
 
     def get_si_with_items(self, si_id: int) -> Optional[SalesInvoice]:
-        return self.s.query(SalesInvoice).options(joinedload(SalesInvoice.items)).filter(SalesInvoice.id == si_id).first()
+        stmt = (
+            select(SalesInvoice)
+            .options(selectinload(SalesInvoice.items))
+            .where(SalesInvoice.id == si_id)
+        )
+        return self.s.execute(stmt).scalar_one_or_none()
+    # def get_si_with_items(self, si_id: int) -> Optional[SalesInvoice]:
+    #     return self.s.query(SalesInvoice).options(joinedload(SalesInvoice.items)).filter(SalesInvoice.id == si_id).first()
 
     # ---------- Update line sync ----------
     def sync_dn_lines(self, dn: SalesDeliveryNote, lines: List[Dict]) -> None:
@@ -121,16 +128,20 @@ class SalesRepository:
         )
         return set(self.s.execute(stmt).scalars().all())
 
-    def get_transactional_warehouse_ids(self, company_id: int, branch_id: int, warehouse_ids: List[int]) -> Set[int]:
-        if not warehouse_ids: return set()
-        W = aliased(Warehouse)
-        child_exists = self.s.execute(
-            select(Warehouse.id, func.exists(select(1).where(W.parent_warehouse_id == Warehouse.id))).where(
-                Warehouse.id.in_(warehouse_ids)
-            )
-        )  # not used directly; below is efficient path
-        # efficient form:
+    def get_transactional_warehouse_ids(
+            self,
+            company_id: int,
+            branch_id: int,
+            warehouse_ids: List[int],
+    ) -> Set[int]:
+        """
+        Return only ACTIVE leaf warehouses (no children) that belong to company+branch.
+        """
+        if not warehouse_ids:
+            return set()
+
         W_child = aliased(Warehouse)
+
         stmt = (
             select(Warehouse.id)
             .where(
@@ -138,9 +149,12 @@ class SalesRepository:
                 Warehouse.company_id == company_id,
                 Warehouse.branch_id == branch_id,
                 Warehouse.status == StatusEnum.ACTIVE,
-                ~exists(select(1).where(W_child.parent_warehouse_id == Warehouse.id)),
+
+                # leaf only (no child warehouse rows)
+                ~exists().where(W_child.parent_warehouse_id == Warehouse.id),
             )
         )
+
         return set(self.s.execute(stmt).scalars().all())
 
     def get_item_details_batch(self, company_id: int, item_ids: List[int]) -> Dict[int, Dict]:

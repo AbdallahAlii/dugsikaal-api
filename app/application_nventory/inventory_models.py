@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Optional, List
 import enum
 
-from sqlalchemy import UniqueConstraint, Index, func, text, CheckConstraint
+from sqlalchemy import UniqueConstraint, Index, func, text, CheckConstraint, and_
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from config.database import db
@@ -243,70 +243,102 @@ class PriceListType(str, enum.Enum):
     SELLING = "Selling"
     BOTH = "Both"
 
-
 class PriceList(BaseModel):
-    """
-    Defines a list of prices, like "Standard Selling", "Wholesale", or "Retail".
-    Each list has its own currency and purpose (buying/selling).
-    """
     __tablename__ = "price_lists"
 
-    # --- Foreign Keys ---
-    company_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("companies.id"), nullable=False, index=True)
+    company_id: Mapped[int] = mapped_column(
+        db.BigInteger, db.ForeignKey("companies.id"), nullable=False, index=True
+    )
 
-    # --- Core Fields ---
-    name: Mapped[str] = mapped_column(db.String(255), nullable=False,
-                                      comment="e.g., 'Standard Selling Price', 'Wholesale Purchase Price'")
+    name: Mapped[str] = mapped_column(db.String(255), nullable=False)
 
     list_type: Mapped[PriceListType] = mapped_column(
         db.Enum(PriceListType),
         nullable=False,
         default=PriceListType.SELLING,
-        comment="Determines if this price list is used for Sales, Purchases, or both."
     )
+
     price_not_uom_dependent: Mapped[bool] = mapped_column(
-        db.Boolean, nullable=False, default=True, index=True,
-        comment="ERP-style: if true, use same price irrespective of txn UOM; convert for display."
+        db.Boolean, nullable=False, default=True, index=True
     )
 
-    is_active: Mapped[bool] = mapped_column(db.Boolean, default=True, index=True,
-                                            comment="A disabled price list cannot be used in new transactions.")
+    is_active: Mapped[bool] = mapped_column(db.Boolean, nullable=False, default=True, index=True)
 
+    # ✅ NEW: company default price list (replaces "Selling Settings Default Price List")
+    is_default: Mapped[bool] = mapped_column(db.Boolean, nullable=False, default=False, index=True)
 
     # Relationships
-    item_prices: Mapped[List["ItemPrice"]] = relationship(back_populates="price_list", cascade="all, delete-orphan")
+    item_prices: Mapped[List["ItemPrice"]] = relationship(
+        back_populates="price_list", cascade="all, delete-orphan"
+    )
     company: Mapped["Company"] = relationship("Company", back_populates="price_lists")
 
-    # --- Table Constraints & Indices ---
     __table_args__ = (
         UniqueConstraint("company_id", "name", name="uq_price_list_company_name"),
-        Index("ix_price_list_type_active", "list_type", "is_active"),
+
+        # Useful query index
+        Index("ix_price_list_company_type_active_default", "company_id", "list_type", "is_active", "is_default"),
+
+        # ✅ Postgres-only: ensure only one default SELLING-compatible list per company
+        Index(
+            "uq_price_list_default_selling",
+            "company_id",
+            unique=True,
+            postgresql_where=db.and_(
+                is_default.is_(True),
+                list_type.in_([PriceListType.SELLING, PriceListType.BOTH]),
+            ),
+        ),
+
+        # ✅ Postgres-only: ensure only one default BUYING-compatible list per company
+        Index(
+            "uq_price_list_default_buying",
+            "company_id",
+            unique=True,
+            postgresql_where=db.and_(
+                is_default.is_(True),
+                list_type.in_([PriceListType.BUYING, PriceListType.BOTH]),
+            ),
+        ),
     )
 
     def __repr__(self) -> str:
-        return f"<PriceList {self.name} ({self.list_type.value})>"
+        return f"<PriceList {self.name} ({self.list_type.value}) default={self.is_default}>"
 
-# ──────────────────────────────────────────────────────────────────────────────
-# ITEM PRICE MODEL - Final Clean Version
-# ──────────────────────────────────────────────────────────────────────────────
+
+# ------------------------------------------------------------------------------
+# ITEM PRICE MODEL
+# ------------------------------------------------------------------------------
+
 class ItemPrice(BaseModel):
-    """
-    Specific price for an item in a price list, with optional branch override
-    """
     __tablename__ = "item_prices"
-    code: Mapped[str] = mapped_column(
-        db.String(100), nullable=False, index=True,
-        comment="An optional external or human-readable code for this specific item price rule."
+
+    code: Mapped[str] = mapped_column(db.String(100), nullable=False, index=True)
+
+    company_id: Mapped[int] = mapped_column(
+        db.BigInteger, db.ForeignKey("companies.id"), nullable=False, index=True
     )
-    company_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("companies.id"), nullable=False, index=True)
-    item_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("items.id", ondelete="CASCADE"), nullable=False, index=True)
-    price_list_id: Mapped[int] = mapped_column(db.BigInteger, db.ForeignKey("price_lists.id", ondelete="CASCADE"), nullable=False, index=True)
-    branch_id: Mapped[Optional[int]] = mapped_column(db.BigInteger, db.ForeignKey("branches.id"), nullable=True, index=True)
-    uom_id: Mapped[Optional[int]] = mapped_column(db.BigInteger, db.ForeignKey("units_of_measure.id"), nullable=True, index=True)
+    item_id: Mapped[int] = mapped_column(
+        db.BigInteger, db.ForeignKey("items.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    price_list_id: Mapped[int] = mapped_column(
+        db.BigInteger, db.ForeignKey("price_lists.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+
+    # Branch override: NULL = global
+    branch_id: Mapped[Optional[int]] = mapped_column(
+        db.BigInteger, db.ForeignKey("branches.id"), nullable=True, index=True
+    )
+
+    # UOM override: NULL = base / not uom dependent (depending on price list behavior)
+    uom_id: Mapped[Optional[int]] = mapped_column(
+        db.BigInteger, db.ForeignKey("units_of_measure.id"), nullable=True, index=True
+    )
 
     rate: Mapped[Decimal] = mapped_column(db.Numeric(14, 4), nullable=False)
-    valid_from: Mapped[Optional[datetime]] = mapped_column(db.DateTime(timezone=True), nullable=True)
-    valid_upto: Mapped[Optional[datetime]] = mapped_column(db.DateTime(timezone=True), nullable=True)
+
+    valid_from: Mapped[Optional[datetime]] = mapped_column(db.DateTime(timezone=True), nullable=True, index=True)
+    valid_upto: Mapped[Optional[datetime]] = mapped_column(db.DateTime(timezone=True), nullable=True, index=True)
 
     # Relationships
     item: Mapped["Item"] = relationship(back_populates="item_prices")
@@ -314,36 +346,37 @@ class ItemPrice(BaseModel):
     branch: Mapped[Optional["Branch"]] = relationship(back_populates="item_prices")
     uom: Mapped[Optional["UnitOfMeasure"]] = relationship(back_populates="item_prices")
     company: Mapped["Company"] = relationship("Company", back_populates="item_prices")
+
     __table_args__ = (
-        UniqueConstraint("price_list_id", "item_id", "uom_id", "branch_id", name="uq_item_price_branch_unique"),
-        Index("ix_item_price_company_code_lookup", "company_id", "code"),
-       Index("ix_item_price_lookup", "item_id", "price_list_id", "branch_id"),
-        Index("ix_item_price_uom", "item_id", "uom_id", "price_list_id"),
-        Index("ix_item_price_validity", "valid_from", "valid_upto"),
-    # ✅ NEW: Full lookup path + validity; includes rate for index-only scans
-        Index(
-            "ix_item_price_lookup_full",
-            price_list_id, item_id, uom_id, branch_id, valid_from, valid_upto,
-            postgresql_include=["rate"],
+        # ✅ Allow multiple rows for same item+price_list if validity differs (ERPNext style)
+        # No UniqueConstraint here.
+
+        CheckConstraint(
+            "valid_from IS NULL OR valid_upto IS NULL OR valid_from <= valid_upto",
+            name="ck_item_price_valid_from_upto",
         ),
 
-        # ✅ NEW: Fast path for company-wide prices (branch_id IS NULL)
+        # Fast lookup index (the one that matters)
+        Index(
+            "ix_item_price_lookup",
+            "company_id", "price_list_id", "item_id", "branch_id", "uom_id", "valid_from", "valid_upto",
+        ),
+
+        # Optional: speed branch/global scans in Postgres
         Index(
             "ix_item_price_branch_null",
-            price_list_id, item_id, uom_id, valid_from, valid_upto,
-            postgresql_where=(branch_id.is_(None)),
+            "company_id", "price_list_id", "item_id", "uom_id", "valid_from", "valid_upto",
+            postgresql_where=branch_id.is_(None),
         ),
-
-        # ✅ NEW: Fast path for branch overrides (branch_id IS NOT NULL)
         Index(
             "ix_item_price_branch_some",
-            price_list_id, item_id, uom_id, branch_id, valid_from, valid_upto,
-            postgresql_where=(branch_id.is_not(None)),
+            "company_id", "price_list_id", "item_id", "branch_id", "uom_id", "valid_from", "valid_upto",
+            postgresql_where=branch_id.is_not(None),
         ),
     )
 
     def __repr__(self) -> str:
-        return f"<ItemPrice {self.item_id} @ {self.rate} in {self.price_list_id}>"
+        return f"<ItemPrice item={self.item_id} pl={self.price_list_id} rate={self.rate}>"
 
 
 # ──────────────────────────────────────────────────────────────────────────────

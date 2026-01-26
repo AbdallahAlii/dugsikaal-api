@@ -50,6 +50,11 @@ class DataImport(BaseModel):
         db.BigInteger, ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False, index=True
     )
+    # === Human-friendly identifier === DIMP-2025-0001
+    code: Mapped[str] = mapped_column(
+        db.String(100),
+        nullable=False
+    )
 
     # === Only 3 Essential Fields for First Save ===
     reference_doctype: Mapped[str] = mapped_column(
@@ -101,7 +106,12 @@ class DataImport(BaseModel):
     mute_emails: Mapped[bool] = mapped_column(
         Boolean, default=True
     )
-
+    # New: If True and the DocType is submittable (e.g. Stock Reconciliation,
+    # Journal Entry, Opening Stock), the import adapters/services are allowed
+    # to "submit" the created documents after insert.
+    submit_after_import: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     # === Relationships ===
     template_fields: Mapped[List["DataImportTemplateField"]] = relationship(
         "DataImportTemplateField",
@@ -134,6 +144,9 @@ class DataImport(BaseModel):
     )
 
     __table_args__ = (
+        # Direct index on code for fast lookup from UI
+        db.Index('ix_data_imports_code', 'code'),
+
         # Fast lookup by company and status
         db.Index('ix_data_imports_company_status', 'company_id', 'status'),
         # Fast lookup by doctype and status

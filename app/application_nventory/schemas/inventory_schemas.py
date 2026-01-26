@@ -1,9 +1,7 @@
-
-# app/application_nventory/inventory_schemas.py
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Literal
 from pydantic import BaseModel, Field, validator
 
 from app.application_nventory.inventory_models import ItemTypeEnum
@@ -105,20 +103,17 @@ class ItemCreate(BaseModel):
     asset_category_id: Optional[int] = None
     status: StatusEnum = StatusEnum.ACTIVE
 
-    @validator('base_uom_id')
+    @validator("base_uom_id")
     def validate_base_uom_for_stock_item(cls, v, values):
-        if values.get('item_type') == ItemTypeEnum.STOCK_ITEM and not v:
+        if values.get("item_type") == ItemTypeEnum.STOCK_ITEM and not v:
             raise ValueError("Base UOM is required for a Stock Item.")
         return v
 
-    @validator('asset_category_id', always=True)
+    @validator("asset_category_id", always=True)
     def validate_fixed_asset_requires_category(cls, v, values):
-        if values.get('is_fixed_asset') and not v:
+        if values.get("is_fixed_asset") and not v:
             raise ValueError("Please select an Asset Category.")
         return v
-
-
-
 
 
 class ItemMinimalOut(BaseModel):
@@ -163,7 +158,7 @@ class PriceBatchItemIn(BaseModel):
 
 
 class PriceBatchLookupRequest(BaseModel):
-    items: List[PriceBatchItemIn] = Field(..., min_items=1)
+    items: List[PriceBatchItemIn] = Field(..., min_length=1)
     posting_date: Optional[datetime] = None
     price_list_id: Optional[int] = None
 
@@ -172,26 +167,30 @@ class PriceBatchLookupOut(BaseModel):
     results: List[PriceLookupOut]
 
 
-
 class UOMConvChange(BaseModel):
     uom_id: int
-    conversion_factor: Optional[float] = None     # no gt=0 here
+    conversion_factor: Optional[float] = None
     is_active: Optional[bool] = None
 
-    @validator('conversion_factor')
+    @validator("conversion_factor")
     def conversion_factor_must_be_positive(cls, v):
         if v is not None and v <= 0:
-            # short, ERP-style message
             raise ValueError("Conversion factor must be greater than 0.")
         return v
 
+
 class ItemUpdate(BaseModel):
-    # allowed fields (all optional)
     name: Optional[str] = None
     brand_id: Optional[int] = None
     status: Optional[StatusEnum] = None
     item_group_id: Optional[int] = None
     base_uom_id: Optional[int] = None
-
-    # batch UOM conversion changes (upsert / toggle / delete)
     uom_conversions: Optional[List[UOMConvChange]] = None
+
+
+# --- Bulk Delete Schemas (UPDATED) ---
+BulkDeleteDoctype = Literal["Brand", "UOM", "Item", "Item Group", "Price List"]
+
+class GenericBulkDelete(BaseModel):
+    doctype: BulkDeleteDoctype
+    ids: List[int] = Field(..., min_items=1)

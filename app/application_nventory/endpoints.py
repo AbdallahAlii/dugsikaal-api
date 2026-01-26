@@ -6,16 +6,18 @@ from werkzeug.exceptions import HTTPException
 
 from app.application_nventory.schemas.inventory_schemas import BrandCreate, UOMCreate, ItemCreate, ItemUpdate, UOMConversionCreate, \
     BranchItemPricingCreate, BranchItemPricingUpdate, PriceBatchLookupOut, PriceLookupOut, PriceBatchLookupRequest, \
-    PriceLookupRequest
+    PriceLookupRequest, GenericBulkDelete
 from app.application_nventory.inventory_services import InventoryLogicError, InventoryService, DuplicateRecordError
+from app.application_nventory.schemas.item_group_schemas import ItemGroupCreate, ItemGroupUpdate
 from app.application_nventory.schemas.pricing_schemas import PriceListCreate, ItemPriceUpdate, ItemPriceCreate, \
     PriceListUpdate
+from app.application_nventory.services.item_group_service import ItemGroupService
 from app.application_nventory.services.item_pricing_services import PricingAdminService
 from app.application_nventory.services.pricing_service import get_selling_rate_batch, get_selling_rate_basic
 from app.business_validation.error_handling import format_validation_error
 from app.business_validation.item_validation import BizValidationError
 from app.common.api_response import api_success, api_error
-from app.security.rbac_guards import require_permission
+from app.security.rbac_guards import require_permission, check_permission
 from app.security.rbac_effective import AffiliationContext
 from app.auth.deps import get_current_user
 
@@ -24,7 +26,7 @@ bp = Blueprint("inventory", __name__, url_prefix="/api/inventory")
 svc = InventoryService()
 
 svc_pricing = PricingAdminService()
-
+svc_groups = ItemGroupService()
 def _get_ctx():
     _ = get_current_user()
     ctx: AffiliationContext = getattr(g, "auth", None)
@@ -51,6 +53,32 @@ def create_brand():
         return api_error(f"An unexpected server error occurred: {e}", status_code=500)
 
 
+@bp.post("/bulk-delete")
+def bulk_delete_generic():
+    try:
+        ctx = _get_ctx()
+        payload = GenericBulkDelete.model_validate(request.get_json(silent=True) or {})
+
+        # permission (dynamic): must match your RBAC doctype names
+        check_permission(ctx, payload.doctype, "DELETE")
+
+        out = svc.delete_document_bulk(doctype=payload.doctype, ids=payload.ids, context=ctx)
+        return api_success(message="Success", data=out, status_code=200)
+
+    except ValidationError as e:
+        return api_error(str(e), status_code=422)
+
+    except Forbidden as e:
+        return api_error(getattr(e, "description", str(e)), status_code=403)
+
+    except HTTPException as e:
+        # if anything bubbles up, keep message clean
+        return api_error(getattr(e, "description", str(e)), status_code=getattr(e, "code", 400))
+
+    except Exception:
+        return api_error("An unexpected server error occurred.", status_code=500)
+
+
 @bp.post("/uoms/create")
 @require_permission("UOM", "CREATE")
 def create_uom():
@@ -68,6 +96,31 @@ def create_uom():
         return api_error(e.description, status_code=e.code)
     except Exception as e:
         return api_error(f"An unexpected server error occurred: {e}", status_code=500)
+
+
+
+
+
+@bp.post("/item-groups/create")
+@require_permission("Item Group", "CREATE")
+def create_item_group():
+    ctx = _get_ctx()
+    payload = ItemGroupCreate.model_validate(request.get_json(silent=True) or {})
+    ok, msg, ig = svc_groups.create_item_group(payload=payload, context=ctx)
+    if not ok:
+        return api_error(msg, status_code=422)
+    return api_success(message=msg, data={"code": ig.code, "name": ig.name}, status_code=201)
+
+
+@bp.put("/item-groups/<int:item_group_id>/update")
+@require_permission("Item Group", "UPDATE")
+def update_item_group(item_group_id: int):
+    ctx = _get_ctx()
+    payload = ItemGroupUpdate.model_validate(request.get_json(silent=True) or {})
+    ok, msg, ig = svc_groups.update_item_group(item_group_id=item_group_id, payload=payload, context=ctx)
+    if not ok:
+        return api_error(msg, status_code=422)
+    return api_success(message=msg, data={"code": ig.code, "name": ig.name}, status_code=200)
 
 
 
@@ -116,6 +169,9 @@ def update_item(item_id: int):
         return api_error(e.description, status_code=e.code)
     except Exception as e:
         return api_error(f"An unexpected server error occurred: {e}", status_code=500)
+
+
+
 
 
 
@@ -244,6 +300,9 @@ def update_price_list(price_list_id: int):
 
 
 # ------------------------- Item Price -------------------------
+
+
+
 @bp.post("/item-prices/create")
 @require_permission("Item Price", "CREATE")
 def create_item_price():

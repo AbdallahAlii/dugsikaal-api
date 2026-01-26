@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime
 from typing import Dict, Iterable, List, Optional, Set
 
 from sqlalchemy import select, or_, and_, func
 from sqlalchemy.orm import Session, joinedload, selectinload
 
+from app.navigation_workspace.models.workspace_roles import WorkspaceRole
 from config.database import db
 
 from app.navigation_workspace.models.nav_links import (
@@ -40,7 +42,23 @@ class NavRepository:
     # ---------------------------------------------------------
     # Workspaces + sections + page links tree
     # ---------------------------------------------------------
+    def workspace_roles_map(self) -> dict[int, set[str]]:
+        """
+        Returns:
+            { workspace_id: {role_name_lower, ...} }
 
+        If workspace has no roles → workspace is PUBLIC.
+        """
+        rows = self.s.execute(   # ✅ FIX: use self.s
+            select(WorkspaceRole.workspace_id, WorkspaceRole.role_name)
+        ).all()
+
+        result: dict[int, set[str]] = defaultdict(set)
+        for ws_id, role in rows:
+            if role:
+                result[ws_id].add(" ".join(role.strip().split()).casefold())
+
+        return dict(result)
     def load_workspaces_tree(self) -> List[Workspace]:
         """
         Load all workspaces with sections + page links + pages.
@@ -362,3 +380,6 @@ class NavRepository:
             row.reason = reason
         self.s.flush()
         return row
+
+
+

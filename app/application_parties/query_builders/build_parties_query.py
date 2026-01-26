@@ -1,48 +1,44 @@
 from __future__ import annotations
-from typing import Optional, Iterable
 
-from sqlalchemy import select, and_, or_, func, false
+from typing import Optional
+
+from sqlalchemy import select, and_, func, false
 from sqlalchemy.orm import Session, aliased
+from werkzeug.exceptions import Forbidden
 
 from app.application_org.models.company import City
 from app.application_parties.parties_models import Party, PartyRoleEnum
 from app.security.rbac_effective import AffiliationContext
+from app.security.rbac_guards import ensure_scope_by_ids
 from app.common.models.base import StatusEnum  # type hints only
-
-
-def _branch_scope_predicate(branch_ids: Iterable[int] | None):
-    """
-    Global parties (branch_id IS NULL) are visible to everyone in the company.
-    Branch-scoped parties are visible only if the caller belongs to that branch.
-    """
-    if branch_ids:
-        return or_(Party.branch_id.is_(None), Party.branch_id.in_(list(branch_ids)))
-    # no branch scope provided -> show only global parties
-    return Party.branch_id.is_(None)
 
 
 def build_parties_query(session: Session, context: AffiliationContext, *, role: PartyRoleEnum):
     """
     Company-scoped list of parties (Customer/Supplier).
 
-    Columns returned:
-        id, code, name, status, territory_name (City.name)
+    ✅ Scope rules:
+      - User in Company X (any branch) can see ALL parties in Company X
+        (both company-level and branch-level parties).
+      - User in Company Y cannot see Company X data.
+      - No hard-coded branch filtering here.
 
-    Scoping:
-      - Requires context.company_id
-      - Always shows global parties (branch_id IS NULL) for that company
-      - Shows branch-scoped parties (branch_id IN context.branch_ids) only if user belongs to those branches
+    ERP-style ordering:
+      - Newest first (created_at desc)
+      - Then name asc
     """
     co_id: Optional[int] = getattr(context, "company_id", None)
     if co_id is None:
-        # No tenant context -> empty query
+        return select(Party.id).where(false())
+
+    # Enforce company scope (System Admin bypass is inside ensure_scope_by_ids)
+    try:
+        ensure_scope_by_ids(context=context, target_company_id=co_id, target_branch_id=None)
+    except Forbidden:
         return select(Party.id).where(false())
 
     c = aliased(City, name="city")
-
     territory_expr = func.coalesce(c.name, "").label("territory_name")
-
-    branch_ids = list(getattr(context, "branch_ids", []) or [])
 
     q = (
         select(
@@ -58,12 +54,14 @@ def build_parties_query(session: Session, context: AffiliationContext, *, role: 
             and_(
                 Party.company_id == co_id,
                 Party.role == role,
-                _branch_scope_predicate(branch_ids),
             )
         )
         # one row per party; explicit group_by makes ORM happy across dialects
-        .group_by(
-            Party.id, Party.code, Party.name, Party.status, c.name
+        .group_by(Party.id, Party.code, Party.name, Party.status, c.name)
+        .order_by(
+            Party.created_at.desc(),  # ✅ newest first
+            Party.name.asc(),
+            Party.id.desc(),          # tie-breaker (safe)
         )
     )
 
