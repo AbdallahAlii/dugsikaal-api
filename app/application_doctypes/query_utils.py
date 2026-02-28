@@ -17,15 +17,7 @@ def apply_search(query: Select, search_columns: Sequence[Any], search_value: str
         return query
     return query.where(or_(*[c.ilike(like_expr) for c in cols if hasattr(c, "ilike")]))
 
-# def apply_sort(query: Select, sort_key: str | None, sort_order: str | None, sort_fields: Dict[str, Any]) -> Select:
-#     col = sort_fields.get((sort_key or "").strip())
-#     if not col:
-#         if sort_fields:
-#             col = next(iter(sort_fields.values()))
-#         else:
-#             return query
-#     direction = desc if (sort_order or "").strip().lower() == "desc" else asc
-#     return query.order_by(direction(col))
+
 def apply_sort(q: Select, sort_key: Optional[str], sort_order: Optional[str],
                sort_fields: Dict[str, ClauseElement],
                default_sort: Optional[List[ClauseElement]] = None) -> Select:
