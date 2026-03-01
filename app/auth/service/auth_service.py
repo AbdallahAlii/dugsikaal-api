@@ -12,12 +12,8 @@ from app.auth.repo.user_repo import AuthRepository
 from app.common.models.base import StatusEnum
 from app.common.security.passwords import verify_password
 from app.common.cache.cache import get_or_build_user_profile
-from app.common.cache.cache_invalidator import bump_user_profile
-from app.common.cache.session_manager import (
-    index_current_session,
-    set_cached_user_status,
-    remove_session,
-)
+from app.common.cache.invalidation import bump_user_profile
+from app.common.cache.session_manager import index_current_session, set_cached_user_status, remove_session
 
 # Import the RBAC calculator
 from app.security.effective_permissions import get_effective_permissions_from_db

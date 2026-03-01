@@ -10,7 +10,7 @@ from app.security.rbac_guards import ensure_scope_by_ids
 from config.database import db
 
 from app.application_rbac.repo import RbacRepository
-from app.common.cache.cache_invalidator import bump_user_profile
+from app.common.cache.invalidation import bump_user_profile
 from app.security.rbac_effective import AffiliationContext
 
 log = logging.getLogger(__name__)

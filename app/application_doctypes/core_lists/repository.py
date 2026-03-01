@@ -13,11 +13,11 @@ from sqlalchemy.engine import Row, MappingResult
 from sqlalchemy.sql.schema import Column
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.common.cache import api as cache_api
+
 from config.database import db
 from .config import get_list_config
 from .cache import build_list_scope_key
-from app.common.cache import api as cache
+from app.common.cache.cache import get_or_build_list, get_or_build_detail
 from .. import query_utils
 from app.security.rbac_effective import AffiliationContext
 from .config import get_detail_config, DetailConfig
@@ -215,14 +215,15 @@ class ListRepository:
                       module_name, entity_name, len(data), total_items)
             return {"data": data, "total": total_items}
 
-        return cache.get_doctype_list(
-            module_name=module_name,
-            entity_name=entity_name,
-            scope_key=scope_key,
+        if not cfg.cache_enabled:
+            return _build_from_db()
+
+        entity_scope = f"{module_name}:{entity_name}:scope:{scope_key}"
+        return get_or_build_list(
+            entity_scope=entity_scope,
             params=params_for_cache,
             builder=_build_from_db,
             ttl=cfg.cache_ttl,
-            enabled=cfg.cache_enabled,
         )
 
 list_repository = ListRepository()
@@ -275,13 +276,12 @@ class DetailRepository:
         if not cfg.cache_enabled or fresh:
             return _builder()
 
-        return cache_api.get_doctype_detail(
-            module_name=module_name,
-            entity_name=entity_name,
+        entity = f"{module_name}:{entity_name}"
+        return get_or_build_detail(
+            entity=entity,
             record_id=record_id,
             builder=_builder,
             ttl=cfg.cache_ttl,
-            enabled=cfg.cache_enabled,
         )
 
 detail_repository = DetailRepository()

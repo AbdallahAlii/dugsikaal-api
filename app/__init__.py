@@ -11,10 +11,11 @@ from werkzeug.exceptions import HTTPException
 from sqlalchemy.exc import IntegrityError
 from app.common.api_response import api_error
 from app.common.cache.local_cache import clear_local_cache
+from app.common.cache.redis_client import redis_kv
 from app.logging_config import configure_logging
 from config.settings import settings
 from config.database import db, migrate, db_healthcheck
-from config.redis_config import get_redis_raw, ping_redis
+
 from app.application_media.utils import ensure_local_media_folders
 from core.middleware.request_id import before_request_request_id, after_request_request_id
 # from core.middleware.session_auth import before_request_session_user
@@ -42,19 +43,13 @@ def create_app() -> Flask:
     # ---- Sessions (Redis-backed) ----
 
     app.config.update(
-        SESSION_TYPE="redis",
-        SESSION_REDIS=get_redis_raw(),
-        SESSION_PERMANENT=True,
-        SESSION_USE_SIGNER=True,
-        SESSION_KEY_PREFIX="erp_session:",
         PERMANENT_SESSION_LIFETIME=timedelta(seconds=settings.SESSION_COOKIE_MAX_AGE),
         SESSION_COOKIE_NAME=settings.SESSION_COOKIE_NAME,
         SESSION_COOKIE_HTTPONLY=settings.SESSION_COOKIE_HTTPONLY,
-        SESSION_COOKIE_SECURE=settings.cookie_secure_effective,  # false in dev
-        SESSION_COOKIE_SAMESITE=settings.cookie_samesite_effective,  # "lax" in your env
+        SESSION_COOKIE_SECURE=settings.cookie_secure_effective,
+        SESSION_COOKIE_SAMESITE=settings.cookie_samesite_effective,
         SESSION_COOKIE_DOMAIN=settings.SESSION_COOKIE_DOMAIN,
     )
-    Session(app)
 
 
     app.logger.info("✓ All models imported via central registry")
@@ -122,7 +117,7 @@ def create_app() -> Flask:
 
     @app.get("/ready")
     def ready():
-        return jsonify({"status": "ready", "db": db_healthcheck(), "redis": ping_redis()}), 200
+        return jsonify({"status": "ready", "db": db_healthcheck(), "redis": redis_kv.ping()}), 200
 
     # ---- Register blueprints here  ----
     from app.auth.endpoints import bp as auth_bp

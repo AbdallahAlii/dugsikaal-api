@@ -1,4 +1,6 @@
+# app/application_accounting/chart_of_accounts/services/account_service.py
 from __future__ import annotations
+
 import logging
 from typing import Optional
 
@@ -14,23 +16,51 @@ from app.application_accounting.chart_of_accounts.schemas.account_schemas import
 )
 from app.application_accounting.chart_of_accounts.validators.account_validators import (
     AccountValidator,
-    ERR_ACCOUNT_EXISTS, ERR_PARENT_REQUIRED, ERR_ACCOUNT_NAME_EXISTS,
+    ERR_ACCOUNT_EXISTS,
+    ERR_PARENT_REQUIRED,
+    ERR_ACCOUNT_NAME_EXISTS,
 )
 from app.business_validation.item_validation import BizValidationError
 from app.security.rbac_effective import AffiliationContext
 from app.security.rbac_guards import ensure_scope_by_ids
 from config.database import db
 
-from app.common.cache.cache_invalidator import (
-    bump_accounts_list_company,
-    bump_account_detail,
-    bump_coa_structure_company,
+# ✅ NEW cache invalidation (best-effort, Redis optional)
+from app.common.cache.invalidation import (
+    bump_detail,
+    bump_company_list,
 )
+from app.common.cache.cache import bump_version
+from app.common.cache import keys
+
 from app.application_reports.hook.invalidation import (
     invalidate_financial_reports_for_company,
 )
 
 log = logging.getLogger(__name__)
+
+# ---- Cache entities (namespace stable) ----
+# These should match what your endpoints use in entity_scope:
+#   "accounting:<entity>:scope:co:<company_id>"
+ACCOUNTS_LIST_ENTITY = "accounts_list"
+COA_TREE_ENTITY = "coa_tree"
+COA_CHILDREN_ENTITY = "coa_children"
+COA_STRUCTURE_ENTITY = "coa_structure"  # if you have any cached structure endpoints
+
+
+def coa_balance_version_key(company_id: int) -> str:
+    """
+    Replacement for old cache_keys.coa_balance_version_key(company_id).
+
+    This version key should be included in any COA response whose output depends
+    on balances, so that a simple bump invalidates all those cached variants.
+    """
+    return keys.v_list(f"accounting:coa_balance:scope:co:{int(company_id)}")
+
+
+def bump_coa_balance(company_id: int) -> int:
+    """Best-effort bump for balance-dependent caches."""
+    return bump_version(coa_balance_version_key(company_id))
 
 
 class AccountService:
@@ -38,8 +68,7 @@ class AccountService:
         self.repo = repo or AccountRepository(session or db.session)
         self.s = self.repo.s
 
-        # --- Create ---
-
+    # --- Create ---
     def create_account(self, payload: AccountCreate, ctx: AffiliationContext) -> AccountOut:
         """
         Business rules:
@@ -64,10 +93,7 @@ class AccountService:
         if payload.parent_account_id is None:
             raise BizValidationError(ERR_PARENT_REQUIRED)
 
-        log.info(
-            "AccountService.create_account: looking up parent_account_id=%s",
-            payload.parent_account_id,
-        )
+        log.info("AccountService.create_account: looking up parent_account_id=%s", payload.parent_account_id)
         parent = self.repo.get_by_id(payload.parent_account_id)
         if parent is None:
             raise BizValidationError("Parent account not found.")
@@ -78,13 +104,10 @@ class AccountService:
         AccountValidator.validate_report_type(payload.account_type, payload.report_type)
 
         # 3) Enforce name uniqueness per company
-        # (name already stripped by Pydantic, but we normalize anyway)
         name = payload.name.strip()
         existing_by_name = self.repo.get_by_name(ctx.company_id, name)
         if existing_by_name:
-            raise BizValidationError(
-                ERR_ACCOUNT_NAME_EXISTS.format(name=name)
-            )
+            raise BizValidationError(ERR_ACCOUNT_NAME_EXISTS.format(name=name))
 
         # 4) Resolve / generate account code
         code: Optional[str] = (payload.code or None)
@@ -94,9 +117,7 @@ class AccountService:
 
             existing = self.repo.get_by_code(ctx.company_id, code)
             if existing:
-                raise BizValidationError(
-                    ERR_ACCOUNT_EXISTS.format(code=code, name=existing.name)
-                )
+                raise BizValidationError(ERR_ACCOUNT_EXISTS.format(code=code, name=existing.name))
         else:
             child_codes = self.repo.get_child_codes(ctx.company_id, parent.id)
             code = AccountValidator.generate_next_code(
@@ -107,9 +128,7 @@ class AccountService:
 
             existing = self.repo.get_by_code(ctx.company_id, code)
             if existing:
-                raise BizValidationError(
-                    ERR_ACCOUNT_EXISTS.format(code=code, name=existing.name)
-                )
+                raise BizValidationError(ERR_ACCOUNT_EXISTS.format(code=code, name=existing.name))
 
         try:
             acc = Account(
@@ -126,9 +145,24 @@ class AccountService:
             self.repo.add(acc)
             self.s.commit()
 
-            bump_accounts_list_company(ctx.company_id)
-            bump_account_detail(acc.id)
-            bump_coa_structure_company(ctx.company_id)
+            # ✅ Cache invalidation (best-effort, after commit)
+            try:
+                # Any “accounts list” views you have (if cached)
+                bump_company_list("accounting", ACCOUNTS_LIST_ENTITY, ctx, ctx.company_id)
+
+                # COA tree/children views cached in endpoints
+                bump_company_list("accounting", COA_TREE_ENTITY, ctx, ctx.company_id)
+                bump_company_list("accounting", COA_CHILDREN_ENTITY, ctx, ctx.company_id)
+
+                # If you cache any “structure” endpoint separately
+                bump_company_list("accounting", COA_STRUCTURE_ENTITY, ctx, ctx.company_id)
+
+                # Detail cache (only matters if you enabled detail caching for Account)
+                bump_detail("account", int(acc.id))
+            except Exception:
+                log.exception("[cache] failed to bump accounting caches after create_account")
+
+            # Reports invalidation (your existing hook)
             invalidate_financial_reports_for_company(ctx.company_id)
 
             log.info("Account created: id=%s code=%s", acc.id, acc.code)
@@ -138,9 +172,7 @@ class AccountService:
             self.s.rollback()
             existing = self.repo.get_by_code(ctx.company_id, code)
             if existing:
-                raise BizValidationError(
-                    ERR_ACCOUNT_EXISTS.format(code=code, name=existing.name)
-                )
+                raise BizValidationError(ERR_ACCOUNT_EXISTS.format(code=code, name=existing.name))
             log.exception("IntegrityError while creating account")
             raise BizValidationError("Database error while creating account.")
         except BizValidationError:
@@ -151,8 +183,7 @@ class AccountService:
             log.exception("Unexpected error creating account")
             raise BizValidationError("Unexpected error while creating account.")
 
-        # --- Update ---
-
+    # --- Update ---
     def update_account(self, account_id: int, payload: AccountUpdate, ctx: AffiliationContext) -> AccountOut:
         acc = self.repo.get_by_id(account_id)
         if not acc:
@@ -168,9 +199,7 @@ class AccountService:
             AccountValidator.validate_code_format_and_prefix(new_code, acc.account_type)
             existing = self.repo.get_by_code(acc.company_id, new_code)
             if existing and existing.id != acc.id:
-                raise BizValidationError(
-                    ERR_ACCOUNT_EXISTS.format(code=new_code, name=existing.name)
-                )
+                raise BizValidationError(ERR_ACCOUNT_EXISTS.format(code=new_code, name=existing.name))
             updates["code"] = new_code
 
         # name change (must be unique per company)
@@ -178,9 +207,7 @@ class AccountService:
             new_name = payload.name.strip()
             existing_by_name = self.repo.get_by_name(acc.company_id, new_name)
             if existing_by_name and existing_by_name.id != acc.id:
-                raise BizValidationError(
-                    ERR_ACCOUNT_NAME_EXISTS.format(name=new_name)
-                )
+                raise BizValidationError(ERR_ACCOUNT_NAME_EXISTS.format(name=new_name))
             updates["name"] = new_name
 
         if payload.account_type is not None and payload.account_type != acc.account_type:
@@ -223,9 +250,19 @@ class AccountService:
             self.repo.update(acc, updates)
             self.s.commit()
 
-            bump_accounts_list_company(acc.company_id)
-            bump_account_detail(acc.id)
-            bump_coa_structure_company(acc.company_id)
+            # ✅ Cache invalidation (best-effort, after commit)
+            try:
+                co = int(acc.company_id)
+
+                bump_company_list("accounting", ACCOUNTS_LIST_ENTITY, ctx, co)
+                bump_company_list("accounting", COA_TREE_ENTITY, ctx, co)
+                bump_company_list("accounting", COA_CHILDREN_ENTITY, ctx, co)
+                bump_company_list("accounting", COA_STRUCTURE_ENTITY, ctx, co)
+
+                bump_detail("account", int(acc.id))
+            except Exception:
+                log.exception("[cache] failed to bump accounting caches after update_account")
+
             invalidate_financial_reports_for_company(acc.company_id)
 
             log.info("Account updated: id=%s", acc.id)
@@ -236,15 +273,11 @@ class AccountService:
             if "code" in updates:
                 existing = self.repo.get_by_code(acc.company_id, updates["code"])
                 if existing and existing.id != acc.id:
-                    raise BizValidationError(
-                        ERR_ACCOUNT_EXISTS.format(code=updates["code"], name=existing.name)
-                    )
+                    raise BizValidationError(ERR_ACCOUNT_EXISTS.format(code=updates["code"], name=existing.name))
             if "name" in updates:
                 existing_by_name = self.repo.get_by_name(acc.company_id, updates["name"])
                 if existing_by_name and existing_by_name.id != acc.id:
-                    raise BizValidationError(
-                        ERR_ACCOUNT_NAME_EXISTS.format(name=updates["name"])
-                    )
+                    raise BizValidationError(ERR_ACCOUNT_NAME_EXISTS.format(name=updates["name"]))
             raise BizValidationError("Database error while updating account.")
         except BizValidationError:
             self.s.rollback()
@@ -253,8 +286,8 @@ class AccountService:
             self.s.rollback()
             log.exception("Unexpected error updating account: %s", e)
             raise BizValidationError("Unexpected error while updating account.")
-    # --- Delete --- (as you already had, just kept) ---
 
+    # --- Delete ---
     def delete_account(self, account_id: int, ctx: AffiliationContext) -> None:
         acc = self.repo.get_by_id(account_id)
         if not acc:
@@ -270,17 +303,28 @@ class AccountService:
             has_transactions=has_txn,
         )
 
-        company_id = acc.company_id
+        company_id = int(acc.company_id)
 
         try:
             self.repo.delete(acc)
             self.s.commit()
 
-            bump_accounts_list_company(company_id)
-            bump_coa_structure_company(company_id)
+            # ✅ Cache invalidation (best-effort, after commit)
+            try:
+                bump_company_list("accounting", ACCOUNTS_LIST_ENTITY, ctx, company_id)
+                bump_company_list("accounting", COA_TREE_ENTITY, ctx, company_id)
+                bump_company_list("accounting", COA_CHILDREN_ENTITY, ctx, company_id)
+                bump_company_list("accounting", COA_STRUCTURE_ENTITY, ctx, company_id)
+
+                # detail bump optional
+                bump_detail("account", int(account_id))
+            except Exception:
+                log.exception("[cache] failed to bump accounting caches after delete_account")
+
             invalidate_financial_reports_for_company(company_id)
 
             log.info("Account deleted: id=%s", account_id)
+
         except IntegrityError:
             self.s.rollback()
             raise BizValidationError("Account with existing transaction can not be deleted.")

@@ -30,12 +30,14 @@ class Settings(BaseSettings):
             f"@{self.DATABASE_HOST}:{self.DATABASE_PORT}/{self.DATABASE_NAME}"
         )
 
-    REDIS_HOST: str
-    REDIS_PORT: int
+    REDIS_HOST: Optional[str] = None
+    REDIS_PORT: Optional[int] = None
     REDIS_DB: int = 0
 
     @property
     def REDIS_URL(self) -> str:
+        if not self.REDIS_HOST or not self.REDIS_PORT:
+            return "redis://localhost:6379/0"  # safe default
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
 
     CORS_ALLOWED_ORIGINS: List[str] = Field(default_factory=lambda: ["http://localhost:5173"])

@@ -1,35 +1,24 @@
 # app/common/decorators.py
 from __future__ import annotations
 
-from functools import wraps
-from typing import Callable, Optional
 import logging
+import time
+from functools import wraps
+from typing import Callable
 
 from flask import request, jsonify
-from config.redis_config import get_redis_kv
+from app.common.cache.redis_client import redis_kv
 
 log = logging.getLogger(__name__)
-
-# Small Lua to INCR and set TTL only when the key is new; returns [count, ttl]
-# This avoids “sliding” window and doesn’t keep extending the TTL on each hit.
-_LUA_INCR_WITH_TTL = """
-local count = redis.call('INCR', KEYS[1])
-if count == 1 then
-  redis.call('EXPIRE', KEYS[1], ARGV[1])
-end
-local ttl = redis.call('TTL', KEYS[1])
-return {count, ttl}
-"""
 
 
 def _client_ip() -> str:
     """
-    Best-effort client IP extractor. Works fine behind proxies if your reverse proxy
-    sets X-Forwarded-For / X-Real-IP correctly.
+    Best-effort client IP extractor. Works behind proxies if they set
+    X-Forwarded-For / X-Real-IP correctly.
     """
     hdr = request.headers.get("X-Forwarded-For", "")
     if hdr:
-        # take first IP in the chain
         ip = hdr.split(",")[0].strip()
         if ip:
             return ip
@@ -37,6 +26,20 @@ def _client_ip() -> str:
     if ip:
         return ip.strip()
     return (request.remote_addr or "unknown").strip()
+
+
+def _bucket_key(*, key_prefix: str, client_id: str, username: str, window: int) -> tuple[str, int]:
+    """
+    Fixed window bucket key:
+      rl:<prefix>:<client>:u:<username>:<bucket>
+    TTL is the remaining seconds in current window.
+    """
+    now = int(time.time())
+    bucket = now // int(window)
+    ttl = int(window) - (now % int(window))
+    uname_part = f":u:{username}" if username else ""
+    key = f"rl:{key_prefix}:{client_id}{uname_part}:{bucket}"
+    return key, ttl
 
 
 def rate_limit(
@@ -47,50 +50,54 @@ def rate_limit(
     include_username: bool = False,
 ) -> Callable:
     """
-    Simple fixed-window rate limiter.
+    Fixed-window rate limiter (Redis optional; fail-open).
 
-    - Uses Redis key: rl:{key_prefix}:{client_id}[:{username}]
-    - `limit` requests per `window` seconds (fixed window).
-    - Adds `Retry-After` header when blocked (HTTP 429).
+    - Key is bucketed by time => no sliding window.
+    - TTL is set to the remaining seconds in the bucket.
+    - If Redis is down, request is allowed (fail-open).
+    - Adds Retry-After on 429.
 
-    Recommended defaults:
-      - login: limit=10, window=60
-      - other write endpoints: limit=60, window=60
+    Recommended:
+      - login: limit=10, window=60, include_username=True
+      - write endpoints: limit=60, window=60
     """
     def decorator(view_func: Callable):
         @wraps(view_func)
         def wrapper(*args, **kwargs):
-            r = get_redis_kv()
             cid = _client_ip()
 
-            # Optionally fold in a username to reduce username spraying from a single IP.
-            uname_part = ""
+            uname = ""
             if include_username:
                 try:
                     json_body = request.get_json(silent=True) or {}
                     uname = (json_body.get("username") or "").strip().lower()
-                    if uname:
-                        uname_part = f":u:{uname}"
                 except Exception:
-                    pass
+                    uname = ""
 
-            key = f"rl:{key_prefix}:{cid}{uname_part}"
+            key, ttl = _bucket_key(
+                key_prefix=key_prefix,
+                client_id=cid,
+                username=uname,
+                window=window,
+            )
 
             try:
-                res = r.eval(_LUA_INCR_WITH_TTL, 1, key, str(int(window)))
-                count, ttl = int(res[0]), int(res[1])
+                # Best-effort: if Redis is down, these return 0/False and we allow.
+                count = redis_kv.incr(key)
 
-                if count > limit:
-                    resp = jsonify({
-                        "ok": False,
-                        "message": "Too many requests. Please try again later."
-                    })
-                    # helpful for clients
+                # If key is new (count == 1), set expiry to window remainder.
+                # If expire fails, we still proceed (worst case: key persists longer).
+                if count == 1 and ttl > 0:
+                    redis_kv.expire(key, ttl)
+
+                if count > int(limit):
+                    resp = jsonify({"ok": False, "message": "Too many requests. Please try again later."})
                     if ttl > 0:
                         resp.headers["Retry-After"] = str(ttl)
                     return resp, 429
+
             except Exception:
-                # Fail-open: if Redis is down, don’t block the request.
+                # Fail-open: do not block if limiter fails
                 log.exception("Rate limit check failed (key=%s). Allowing request.", key)
 
             return view_func(*args, **kwargs)

@@ -1,23 +1,43 @@
+# app/application_accounting/chart_of_accounts/services/policies_service.py
 from __future__ import annotations
+
 import logging
 from typing import Optional
+
 from sqlalchemy.exc import IntegrityError
 from werkzeug.exceptions import NotFound
 
 from app.business_validation.item_validation import BizValidationError
-from app.common.cache.cache_invalidator import bump_mop_list_company, bump_mop_detail, bump_list_cache_company
 from app.security.rbac_effective import AffiliationContext
 from config.database import db
 
 from app.application_accounting.chart_of_accounts.account_policies import (
-    ModeOfPayment, ModeOfPaymentAccount, AccountAccessPolicy
+    ModeOfPayment,
+    ModeOfPaymentAccount,
+    AccountAccessPolicy,
 )
 from app.application_accounting.chart_of_accounts.schemas.account_policies_schemas import (
-    ModeOfPaymentCreate, ModeOfPaymentUpdate, AccountAccessPolicyCreate, AccountAccessPolicyUpdate
+    ModeOfPaymentCreate,
+    ModeOfPaymentUpdate,
+    AccountAccessPolicyCreate,
+    AccountAccessPolicyUpdate,
 )
 from app.application_accounting.chart_of_accounts.Repository.account_policies_repo import PoliciesRepository
 
+# ✅ NEW cache invalidation (best-effort, Redis optional)
+from app.common.cache.invalidation import (
+    bump_detail,
+    bump_company_list,
+)
+
 log = logging.getLogger(__name__)
+
+# ---- Cache entities (keep these consistent with how your endpoints cache) ----
+# Lists are cached via: entity_scope = "<module>:<entity>:scope:<scope_key>"
+# For company scope_key we use: "co:<company_id>"
+MOP_LIST_ENTITY = "mode_of_payments"
+MOP_DETAIL_ENTITY = "mode_of_payment"  # used for bump_detail namespace only (if detail caching enabled)
+AAP_LIST_ENTITY = "account_access_policies"
 
 
 class PoliciesService:
@@ -57,20 +77,25 @@ class PoliciesService:
                     mode_of_payment_id=mop.id,
                     account_id=acc.account_id,
                     is_default=acc.is_default,
-                    enabled=acc.enabled
+                    enabled=acc.enabled,
                 )
                 self.repo.add_mop_account(mop_acc)
 
             self.s.commit()
-            # 🔄 Cache bumps: list (company) and detail
-            bump_mop_list_company(ctx.company_id)
-            bump_mop_detail(mop.id)
+
+            # 🔄 Cache bumps (best effort, after commit)
+            try:
+                bump_company_list("accounting", MOP_LIST_ENTITY, ctx, ctx.company_id)
+                # only useful if you cache MoP detail endpoints; harmless otherwise
+                bump_detail(MOP_DETAIL_ENTITY, int(mop.id))
+            except Exception:
+                log.exception("[cache] failed to bump MoP caches after create")
+
             return mop
 
-        except BizValidationError as e:
+        except BizValidationError:
             self.s.rollback()
-            # Let the precise validation message reach the API response layer
-            raise e
+            raise
         except IntegrityError:
             self.s.rollback()
             raise BizValidationError("Duplicate account mapping")
@@ -79,8 +104,7 @@ class PoliciesService:
             log.exception("Create MoP failed: %s", str(e))
             raise BizValidationError("Failed to create Mode of Payment")
 
-    def update_mode_of_payment(self, mop_id: int, payload: ModeOfPaymentUpdate,
-                               ctx: AffiliationContext) -> ModeOfPayment:
+    def update_mode_of_payment(self, mop_id: int, payload: ModeOfPaymentUpdate, ctx: AffiliationContext) -> ModeOfPayment:
         mop = self.repo.get_mop_by_id(mop_id)
         if not mop or mop.company_id != ctx.company_id:
             raise NotFound("Mode of Payment not found")
@@ -125,20 +149,24 @@ class PoliciesService:
                         mode_of_payment_id=mop_id,
                         account_id=acc.account_id,
                         is_default=acc.is_default,
-                        enabled=acc.enabled
+                        enabled=acc.enabled,
                     )
                     self.repo.add_mop_account(mop_acc)
 
             self.s.commit()
-            # 🔄 Cache bumps: list (company) and detail
-            bump_mop_list_company(ctx.company_id)
-            bump_mop_detail(mop.id)
+
+            # 🔄 Cache bumps (best effort, after commit)
+            try:
+                bump_company_list("accounting", MOP_LIST_ENTITY, ctx, ctx.company_id)
+                bump_detail(MOP_DETAIL_ENTITY, int(mop.id))
+            except Exception:
+                log.exception("[cache] failed to bump MoP caches after update")
+
             return mop
 
-        except BizValidationError as e:
+        except BizValidationError:
             self.s.rollback()
-            # Preserve exact validation message (e.g., "Account must be a leaf account")
-            raise e
+            raise
         except IntegrityError:
             self.s.rollback()
             raise BizValidationError("Duplicate account mapping")
@@ -177,12 +205,18 @@ class PoliciesService:
             )
             self.repo.create_access_policy(policy)
             self.s.commit()
-            bump_list_cache_company("accounting", "account_access_policies", ctx.company_id)
+
+            # 🔄 Cache bumps (best effort, after commit)
+            try:
+                bump_company_list("accounting", AAP_LIST_ENTITY, ctx, ctx.company_id)
+            except Exception:
+                log.exception("[cache] failed to bump account_access_policies list cache after create")
+
             return policy
 
-        except BizValidationError as e:
+        except BizValidationError:
             self.s.rollback()
-            raise e
+            raise
         except IntegrityError:
             self.s.rollback()
             raise BizValidationError("Duplicate policy")
@@ -191,8 +225,12 @@ class PoliciesService:
             log.exception("Create policy failed: %s", str(e))
             raise BizValidationError("Failed to create policy")
 
-    def update_access_policy(self, policy_id: int, payload: AccountAccessPolicyUpdate,
-                             ctx: AffiliationContext) -> AccountAccessPolicy:
+    def update_access_policy(
+        self,
+        policy_id: int,
+        payload: AccountAccessPolicyUpdate,
+        ctx: AffiliationContext,
+    ) -> AccountAccessPolicy:
         policy = self.repo.get_access_policy_by_id(policy_id)
         if not policy or policy.company_id != ctx.company_id:
             raise NotFound("Policy not found")
@@ -216,13 +254,18 @@ class PoliciesService:
                 self.repo.update_access_policy_fields(policy, updates)
 
             self.s.commit()
-            # 🔄 Cache bumps: list only
-            bump_list_cache_company("accounting", "account_access_policies", ctx.company_id)
+
+            # 🔄 Cache bumps (best effort, after commit)
+            try:
+                bump_company_list("accounting", AAP_LIST_ENTITY, ctx, ctx.company_id)
+            except Exception:
+                log.exception("[cache] failed to bump account_access_policies list cache after update")
+
             return policy
 
-        except BizValidationError as e:
+        except BizValidationError:
             self.s.rollback()
-            raise e
+            raise
         except IntegrityError:
             self.s.rollback()
             raise BizValidationError("Duplicate policy")

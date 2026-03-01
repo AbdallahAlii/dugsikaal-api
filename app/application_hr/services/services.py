@@ -51,10 +51,7 @@ from app.common.generate_code.service import (
     preview_next_username_for_company,
     bump_username_counter_for_company,
 )
-from app.common.cache.cache_invalidator import (
-    bump_list_cache_company,
-    bump_list_cache_branch,
-)
+from app.common.cache.invalidation import bump_company_list, bump_dropdown_for_context, bump_detail
 from app.business_validation.hr_validation import (
     validate_employee_basic,
     validate_employee_assignments,
@@ -351,7 +348,7 @@ class HrService:
                     target_branch_id=a.branch_id,
                 )
 
-            # ---- Validate linked Holiday List + Shift Type ----
+            # ---- Validate linked Holiday List + Shift Type ---
             self._validate_employee_links(
                 company_id=company_id,
                 holiday_list_id=payload.holiday_list_id,
@@ -497,16 +494,22 @@ class HrService:
 
             # ---- Cache bumps (best effort) ----
             try:
-                bump_list_cache_company("hr", "employees", company_id)
-                if primary_branch_id:
-                    bump_list_cache_branch(
-                        "hr",
-                        "employees",
-                        company_id,
-                        int(primary_branch_id),
-                    )
+                # Company-scoped list (your HR_LIST_CONFIGS sets cache_scope="COMPANY")
+                bump_company_list("hr", "employees", context, company_id)
+
+                # Dropdown also COMPANY-scoped (HR_DROPDOWN_CONFIGS employees cache_scope=COMPANY)
+                bump_dropdown_for_context(
+                    "hr",
+                    "employees",
+                    context,
+                    params={"company_id": company_id},
+                )
+
+                # If you cache employee detail anywhere:
+                bump_detail("hr:employees", emp.id)
+
             except Exception:
-                log.exception("[cache] failed to bump employees list cache after create")
+                log.exception("[cache] failed to bump HR employee caches after create")
 
             resp = EmployeeCreateResponse(
                 employee=EmployeeMinimalOut(
@@ -720,18 +723,19 @@ class HrService:
 
             # ---- Cache bumps (best effort) ----
             try:
-                bump_list_cache_company("hr", "employees", emp.company_id)
-                if emp.primary_assignment and getattr(
-                    emp.primary_assignment, "branch_id", None
-                ):
-                    bump_list_cache_branch(
-                        "hr",
-                        "employees",
-                        emp.company_id,
-                        int(emp.primary_assignment.branch_id),
-                    )
+                bump_company_list("hr", "employees", context, emp.company_id)
+
+                bump_dropdown_for_context(
+                    "hr",
+                    "employees",
+                    context,
+                    params={"company_id": emp.company_id},
+                )
+
+                bump_detail("hr:employees", emp.id)
+
             except Exception:
-                log.exception("[cache] failed to bump employees list cache after update")
+                log.exception("[cache] failed to bump HR employee caches after update")
 
             resp = EmployeeCreateResponse(
                 employee=EmployeeMinimalOut(

@@ -12,7 +12,7 @@ from app.auth.models.users import User
 from app.common.models.base import StatusEnum
 from app.common.security.passwords import hash_password, verify_password
 from app.common.security.password_rules import ensure_password_ok
-from app.common.cache.cache_invalidator import bump_user_profile
+from app.common.cache.invalidation import bump_user_profile
 from app.common.cache.session_manager import remove_session, set_cached_user_status
 from app.security.rbac_guards import ensure_scope_by_ids
 from app.security.rbac_effective import AffiliationContext

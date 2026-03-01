@@ -7,20 +7,18 @@ from typing import Optional, Dict, List
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.common.cache import keys
+from app.common.cache.cache import bump_version
 from app.common.generate_code.service import ensure_manual_code_is_next_and_bump, generate_next_code
 from config.database import db
 from app.common.timezone.service import get_company_timezone
 from app.application_stock.engine.posting_clock import resolve_posting_dt
 from app.business_validation.posting_date_validation import PostingDateValidator
-from app.common.cache.cache_invalidator import (
-    # list/detail bumpers
-    bump_list_cache_company,
-    bump_list_cache_branch,
-    bump_accounting_detail,
-    # dropdown bumpers
-    bump_dropdown_company,
-    # accounting balance bump (after posting/unposting)
-    bump_coa_balance_company,
+from app.common.cache.invalidation import (
+    bump_company_list,
+    bump_branch_list,
+    bump_dropdown_for_context,
+    bump_detail,
 )
 from app.application_stock.stock_models import DocumentType, DocStatusEnum
 from app.application_accounting.engine.posting_service import PostingService, PostingContext
@@ -36,6 +34,14 @@ from app.application_accounting.chart_of_accounts.Repository.expense_repo import
 
 log = logging.getLogger(__name__)
 
+def bump_coa_balance_company(company_id: int) -> int:
+    """
+    ✅ New-style COA balance bump.
+    Make sure your COA balance read path uses:
+      entity_scope = "accounting:coa_balance:scope:co:<company_id>"
+    """
+    entity_scope = f"accounting:coa_balance:scope:co:{int(company_id)}"
+    return bump_version(keys.v_list(entity_scope))
 
 class ExpenseService:
     EXP_PREFIX = "EXP"
@@ -77,39 +83,51 @@ class ExpenseService:
         return generate_next_code(prefix=self.EXP_PREFIX, company_id=company_id, branch_id=branch_id)
 
     # ---- cache helpers -------------------------------------------------
-    def _bump_expense_type_caches(self, *, company_id: int, expense_type_id: Optional[int] = None) -> None:
+    def _bump_expense_type_caches(
+            self,
+            *,
+            context: AffiliationContext,
+            company_id: int,
+            expense_type_id: Optional[int] = None,
+    ) -> None:
         """
-        ExpenseType is company-scoped. Also bump related dropdowns.
-        Detail bump uses namespaced key via bump_accounting_detail().
+        ExpenseType is company-scoped + affects dropdowns.
         """
         try:
-            # LIST
-            bump_list_cache_company("accounting", "expense_types", company_id)
+            # LIST (company)
+            bump_company_list("accounting", "expense_types", context, company_id)
 
-            # DETAIL (id-based)
+            # DROPDOWNS (company)
+            bump_dropdown_for_context("accounting", "expense_types", context, params={"company_id": company_id})
+            bump_dropdown_for_context("accounting", "expense_type_default_account", context,
+                                      params={"company_id": company_id})
+            bump_dropdown_for_context("accounting", "expense_type_accounts", context, params={"company_id": company_id})
+
+            # DETAIL (only if you cache it anywhere)
             if expense_type_id:
-                bump_accounting_detail("expense_types", expense_type_id)
+                bump_detail("accounting:expense_types", int(expense_type_id))
 
-            # DROPDOWNS
-            bump_dropdown_company("accounting", "expense_types", company_id)
-            bump_dropdown_company("accounting", "expense_type_default_account", company_id)
-            bump_dropdown_company("accounting", "expense_type_accounts", company_id)
         except Exception:
             log.exception("[cache] failed to bump expense_type caches")
 
-    def _bump_expense_caches(self, *, company_id: int, branch_id: int, expense_id: Optional[int] = None) -> None:
+    def _bump_expense_caches(
+            self,
+            *,
+            context: AffiliationContext,
+            company_id: int,
+            branch_id: int,
+            expense_id: Optional[int] = None,
+    ) -> None:
         """
-        Expenses may be read with company or branch scope; bump both.
-        Detail bump uses namespaced key via bump_accounting_detail().
+        Expenses may be read with COMPANY or BRANCH list scope; bump both.
         """
         try:
-            # LIST
-            bump_list_cache_company("accounting", "expenses", company_id)
-            bump_list_cache_branch("accounting", "expenses", company_id, branch_id)
+            bump_company_list("accounting", "expenses", context, company_id)
+            bump_branch_list("accounting", "expenses", context, company_id, branch_id)
 
-            # DETAIL
             if expense_id:
-                bump_accounting_detail("expenses", expense_id)
+                bump_detail("accounting:expenses", int(expense_id))
+
         except Exception:
             log.exception("[cache] failed to bump expense caches")
 
