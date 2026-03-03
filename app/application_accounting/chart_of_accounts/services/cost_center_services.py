@@ -10,8 +10,11 @@ from app.application_accounting.chart_of_accounts.schemas.cost_center_schemas im
     CostCenterOut
 from app.application_accounting.chart_of_accounts.validators.cost_center_validators import CostCenterValidator
 from app.business_validation.item_validation import BizValidationError
-from app.common.cache.cache_invalidator import bump_list_cache_company, bump_list_cache_branch, \
-    bump_cost_centers_list_company, bump_cost_centers_list_branch, bump_cost_center_detail
+from app.common.cache.invalidation import (
+    bump_company_list,
+    bump_branch_list,
+    bump_detail,
+)
 from app.security.rbac_guards import ensure_scope_by_ids
 from app.security.rbac_effective import AffiliationContext
 from config.database import db
@@ -65,9 +68,12 @@ class CostCenterService:
             self.s.commit()
 
             # 🔄 Cache bumps: list (company + branch) and detail
-            bump_cost_centers_list_company(context.company_id)
-            bump_cost_centers_list_branch(context.company_id, branch_id)
-            bump_cost_center_detail(cost_center.id)
+            try:
+                bump_company_list("accounting", "cost_centers", context, context.company_id)
+                bump_branch_list("accounting", "cost_centers", context, context.company_id, branch_id)
+                bump_detail("accounting:cost_centers", int(cost_center.id))
+            except Exception:
+                log.exception("[cache] failed to bump cost_center caches")
 
             log.info("Cost center created successfully: id=%d, name='%s'", cost_center.id, cost_center.name)
             return CostCenterOut.model_validate(cost_center)
@@ -120,9 +126,18 @@ class CostCenterService:
             self.s.commit()
 
             # 🔄 Cache bumps: list (company + branch) and detail
-            bump_cost_centers_list_company(cost_center.company_id)
-            bump_cost_centers_list_branch(cost_center.company_id, cost_center.branch_id)
-            bump_cost_center_detail(cost_center.id)
+            try:
+                bump_company_list("accounting", "cost_centers", context, int(cost_center.company_id))
+                bump_branch_list(
+                    "accounting",
+                    "cost_centers",
+                    context,
+                    int(cost_center.company_id),
+                    int(cost_center.branch_id),
+                )
+                bump_detail("accounting:cost_centers", int(cost_center.id))
+            except Exception:
+                log.exception("[cache] failed to bump cost_center caches")
 
             log.info("Cost center updated successfully: id=%d", cost_center_id)
             return CostCenterOut.model_validate(cost_center)

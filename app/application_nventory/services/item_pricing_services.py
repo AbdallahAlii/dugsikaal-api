@@ -1,33 +1,43 @@
+# app/application_nventory/services/pricing_admin_service.py
 from __future__ import annotations
+
 import logging
 import re
 from uuid import uuid4
-from typing import Optional
+from typing import Optional, Dict, Any, List
 from datetime import datetime as dt_datetime, time as dt_time
 
 from sqlalchemy.exc import IntegrityError
-from werkzeug.exceptions import Forbidden, NotFound
+from werkzeug.exceptions import NotFound
 
 from config.database import db
 from app.business_validation.item_validation import BizValidationError
-from app.common.cache.cache_invalidator import bump_list_cache_company
 from app.security.rbac_guards import ensure_scope_by_ids
 from app.security.rbac_effective import AffiliationContext
 
+from app.common.cache.invalidation import (
+    bump_company_list,
+    bump_dropdown_for_context,
+    bump_detail,
+)
+
 from app.application_org.models.company import Branch
-from app.application_nventory.inventory_models import Item, UnitOfMeasure, PriceList, ItemPrice, PriceListType
-from app.application_nventory.repo.pricing_repo  import PricingRepository
+from app.application_nventory.inventory_models import Item, UnitOfMeasure, PriceList, ItemPrice
+from app.application_nventory.repo.pricing_repo import PricingRepository
 from app.application_nventory.schemas.pricing_schemas import (
-    PriceListCreate, PriceListUpdate, PriceListOut,
-    ItemPriceCreate, ItemPriceUpdate, ItemPriceOut,
+    PriceListCreate,
+    PriceListUpdate,
+    PriceListOut,
+    ItemPriceCreate,
+    ItemPriceUpdate,
+    ItemPriceOut,
 )
 from app.application_nventory.validators.pricing_validators import (
-    PriceListValidator, ItemPriceValidator,
+    PriceListValidator,
+    ItemPriceValidator,
 )
 
 log = logging.getLogger(__name__)
-
-PRICING_MANAGER_ROLES = {"Super Admin", "Sales Manager", "Purchase Manager", "Accountant"}
 
 
 def _sanitize_code(raw: str) -> str:
@@ -48,13 +58,16 @@ class PricingAdminService:
 
     # ---------------- Price List ----------------
     def create_price_list(self, payload: PriceListCreate, context: AffiliationContext) -> PriceListOut:
-        if not PRICING_MANAGER_ROLES.intersection(context.roles):
-            raise Forbidden("Not authorized.")
+        company_id = int(context.company_id or 0)
+        if not company_id:
+            raise BizValidationError("Company context is required.")
 
-        company_id = context.company_id
         ensure_scope_by_ids(context=context, target_company_id=company_id)
 
-        PriceListValidator.validate_name_and_type(payload.name, payload.list_type.value if payload.list_type else None)
+        PriceListValidator.validate_name_and_type(
+            payload.name,
+            payload.list_type.value if payload.list_type else None,
+        )
 
         if self.repo.get_price_list_by_name(company_id, payload.name):
             # Short ERP toast
@@ -70,8 +83,16 @@ class PricingAdminService:
             self.repo.create_price_list(pl)
             self.s.commit()
 
-            bump_list_cache_company("inventory", "price_lists", company_id)
+            # ---- Cache bumps (best effort) ----
+            try:
+                bump_company_list("inventory", "price_lists", context, company_id)
+                bump_detail("inventory:price_lists", int(pl.id))
+                bump_dropdown_for_context("inventory", "price_lists", context, params={"company_id": company_id})
+            except Exception:
+                log.exception("[cache] failed to bump price_list caches after create")
+
             return PriceListOut.model_validate(pl)
+
         except IntegrityError:
             self.s.rollback()
             raise BizValidationError(f"Price List {payload.name} already exists")
@@ -85,10 +106,7 @@ class PricingAdminService:
         if not pl:
             raise NotFound("Price List not found")
 
-        if not PRICING_MANAGER_ROLES.intersection(context.roles):
-            raise Forbidden("Not authorized.")
-
-        ensure_scope_by_ids(context=context, target_company_id=pl.company_id)
+        ensure_scope_by_ids(context=context, target_company_id=int(pl.company_id))
 
         updates: dict = {}
 
@@ -111,8 +129,18 @@ class PricingAdminService:
         try:
             self.repo.update_price_list(pl, updates)
             self.s.commit()
-            bump_list_cache_company("inventory", "price_lists", pl.company_id)
+
+            # ---- Cache bumps (best effort) ----
+            try:
+                company_id = int(pl.company_id)
+                bump_company_list("inventory", "price_lists", context, company_id)
+                bump_detail("inventory:price_lists", int(pl.id))
+                bump_dropdown_for_context("inventory", "price_lists", context, params={"company_id": company_id})
+            except Exception:
+                log.exception("[cache] failed to bump price_list caches after update")
+
             return PriceListOut.model_validate(pl)
+
         except IntegrityError:
             self.s.rollback()
             raise BizValidationError("Duplicate Price List")
@@ -126,16 +154,18 @@ class PricingAdminService:
         pl = self.repo.get_price_list_by_id(price_list_id)
         if not pl:
             raise NotFound("Price List not found")
-        return pl.company_id
+        return int(pl.company_id)
 
     def _ensure_same_company(self, company_id: int, item_id: int, uom_id: Optional[int], branch_id: Optional[int]) -> None:
         it = self.s.get(Item, item_id)
         if not it or int(it.company_id) != int(company_id):
             raise NotFound("Item not found")
+
         if uom_id:
             uom = self.s.get(UnitOfMeasure, uom_id)
             if not uom or int(uom.company_id) != int(company_id):
                 raise NotFound("UOM not found")
+
         if branch_id:
             br = self.s.get(Branch, branch_id)
             if not br or int(br.company_id) != int(company_id):
@@ -204,11 +234,18 @@ class PricingAdminService:
             self.repo.create_item_price(ip)
             self.s.commit()
 
-            bump_list_cache_company("inventory", "item_prices", company_id)
+            # ---- Cache bumps (best effort) ----
+            try:
+                bump_company_list("inventory", "item_prices", context, company_id)
+                bump_detail("inventory:item_prices", int(ip.id))
+                bump_dropdown_for_context("inventory", "item_prices", context, params={"company_id": company_id})
+            except Exception:
+                log.exception("[cache] failed to bump item_price caches after create")
+
             return ItemPriceOut.model_validate(ip)
+
         except IntegrityError:
             self.s.rollback()
-            # Index/unique overlap cases
             raise BizValidationError("Item Price already exists")
         except Exception as e:
             self.s.rollback()
@@ -224,7 +261,8 @@ class PricingAdminService:
         if not pl:
             raise NotFound("Price List not found")
 
-        ensure_scope_by_ids(context=context, target_company_id=pl.company_id)
+        company_id = int(pl.company_id)
+        ensure_scope_by_ids(context=context, target_company_id=company_id)
 
         updates: dict = {}
 
@@ -236,7 +274,7 @@ class PricingAdminService:
         new_branch_id = ip.branch_id if payload.branch_id is None else payload.branch_id
 
         if payload.uom_id is not None or payload.branch_id is not None:
-            self._ensure_same_company(pl.company_id, ip.item_id, new_uom_id, new_branch_id)
+            self._ensure_same_company(company_id, ip.item_id, new_uom_id, new_branch_id)
             dup = self.repo.find_duplicate_item_price(
                 price_list_id=ip.price_list_id,
                 item_id=ip.item_id,
@@ -262,8 +300,17 @@ class PricingAdminService:
         try:
             self.repo.update_item_price(ip, updates)
             self.s.commit()
-            bump_list_cache_company("inventory", "item_prices", pl.company_id)
+
+            # ---- Cache bumps (best effort) ----
+            try:
+                bump_company_list("inventory", "item_prices", context, company_id)
+                bump_detail("inventory:item_prices", int(ip.id))
+                bump_dropdown_for_context("inventory", "item_prices", context, params={"company_id": company_id})
+            except Exception:
+                log.exception("[cache] failed to bump item_price caches after update")
+
             return ItemPriceOut.model_validate(ip)
+
         except IntegrityError:
             self.s.rollback()
             raise BizValidationError("Item Price already exists")
@@ -271,35 +318,47 @@ class PricingAdminService:
             self.s.rollback()
             log.exception("Update Item Price failed: %s", str(e))
             raise BizValidationError("Failed to update Item Price")
-    def delete_price_lists_bulk(self, ids: List[int], context: AffiliationContext) -> Dict[str, Any]:
-        deleted = []
-        blocked = []
-        touched_companies = set()
 
-        for pl_id in ids:
+    def delete_price_lists_bulk(self, ids: List[int], context: AffiliationContext) -> Dict[str, Any]:
+        deleted: List[int] = []
+        blocked: List[Dict[str, Any]] = []
+        touched_companies: set[int] = set()
+
+        unique_ids = sorted(set(int(x) for x in (ids or [])))
+
+        for pl_id in unique_ids:
             with self.s.begin_nested():
                 try:
                     pl = self.repo.get_price_list_by_id(pl_id)
                     if not pl:
                         raise NotFound("Price List not found.")
-                    
-                    if not PRICING_MANAGER_ROLES.intersection(context.roles):
-                        raise Forbidden("Not authorized.")
-                    
-                    ensure_scope_by_ids(context=context, target_company_id=pl.company_id)
 
-                    link = self.repo.find_first_linked_document_price_list(pl.company_id, pl_id)
+                    ensure_scope_by_ids(context=context, target_company_id=int(pl.company_id))
+
+                    link = self.repo.find_first_linked_document_price_list(int(pl.company_id), int(pl_id))
                     if link:
-                        # Use a generic exception or logic error
-                        raise BizValidationError(f"Cannot delete: linked with {link['doctype']} {link['code']}.")
+                        # ERP-ish message
+                        code = str(link.get("code", "") or "").strip()
+                        doctype = str(link.get("doctype", "Document") or "Document").strip()
+                        if code:
+                            raise BizValidationError(f"Cannot delete: linked with {doctype} {code}.")
+                        raise BizValidationError(f"Cannot delete: linked with {doctype}.")
 
                     self.repo.delete_price_list(pl)
                     deleted.append(pl_id)
-                    touched_companies.add(pl.company_id)
+                    touched_companies.add(int(pl.company_id))
+
                 except Exception as e:
                     blocked.append({"id": pl_id, "reason": str(e)})
 
         self.s.commit()
-        for cid in touched_companies:
-            bump_list_cache_company("inventory", "price_lists", cid)
+
+        # ---- Cache bumps (best effort) ----
+        try:
+            for cid in touched_companies:
+                bump_company_list("inventory", "price_lists", context, int(cid))
+                bump_dropdown_for_context("inventory", "price_lists", context, params={"company_id": int(cid)})
+        except Exception:
+            log.exception("[cache] failed to bump price_list caches after bulk  b ")
+
         return {"deleted": deleted, "blocked": blocked}

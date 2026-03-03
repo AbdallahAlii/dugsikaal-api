@@ -133,3 +133,26 @@ def bump_branch_list(module_name: str, entity_name: str, context: AffiliationCon
         context,
         filters={"company_id": int(company_id), "branch_id": int(branch_id)},
     )
+
+
+
+
+def bump_company_namespace(entity: str, company_id: int) -> int:
+    """
+    Bump a company-scoped namespace version.
+    Use for caches that are not list-config driven:
+      - COA balances
+      - COA tree computed balances
+      - dashboards / aggregates
+    """
+    v = bump_version(keys.v_company(entity, int(company_id)))
+    log.info("[cache] bump company namespace %s co=%s -> v%s", entity, company_id, v)
+    return v
+
+
+def bump_coa_balance_company(company_id: int) -> int:
+    """
+    COA balance cache invalidation after posting/unposting.
+    Naming is stable and explicit so callers stay readable.
+    """
+    return bump_company_namespace("coa_balance", int(company_id))

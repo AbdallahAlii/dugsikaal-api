@@ -27,3 +27,10 @@ def k_list(entity_scope: str, *, epoch: int, version: int, params: Mapping[str, 
 
 def k_user_profile(user_id: int, *, epoch: int, version: int) -> str:
     return f"user_profile:e{epoch}:v{version}:{user_id}"
+
+def v_company(entity: str, company_id: int) -> str:
+    """
+    Company-scoped version key for non-list special namespaces
+    e.g. balances, trees, dashboards.
+    """
+    return f"v:co:{entity}:co{int(company_id)}"

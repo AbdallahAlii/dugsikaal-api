@@ -21,14 +21,15 @@ from app.application_nventory.schemas.inventory_schemas import BrandCreate, Bran
     UOMConversionCreate, UOMConversionOut, BranchItemPricingCreate, BranchItemPricingOut, BranchItemPricingUpdate, \
     ItemUpdate
 from app.application_stock.helpers.warehouse_validation import MSG_LINKED_DOC
-from app.common.cache.cache_invalidator import bump_list_cache_company, bump_list_cache_branch, bump_inventory_dropdowns
+
 from config.database import db
 from app.security.rbac_effective import AffiliationContext
 from app.security.rbac_guards import ensure_scope_by_ids
-from app.common.cache.cache_invalidator import (
-    bump_list_cache_company,
-    bump_list_cache_branch,
-    bump_dropdown_company  # ADD THIS IMPORT
+from app.common.cache.invalidation import (
+    bump_company_list,
+    bump_branch_list,
+    bump_dropdown_for_context,
+    bump_detail,
 )
 log = logging.getLogger(__name__)
 
@@ -177,8 +178,18 @@ class InventoryService:
             self.repo.create_brand(brand)
             self.s.commit()
             # ✅ INVALIDATE BOTH LIST AND DROPDOWN CACHES
-            bump_list_cache_company("inventory", "items", context.company_id)
-            bump_inventory_dropdowns("inventory", "items", context.company_id)
+            # ---- Cache bumps (best effort) ----
+            try:
+                company_id = int(context.company_id)
+
+                # If your UI needs items list refreshed when a brand changes:
+                bump_company_list("inventory", "items", context, company_id)
+
+                # Brand dropdown (recommended)
+                bump_dropdown_for_context("inventory", "brands", context, params={"company_id": company_id})
+
+            except Exception:
+                log.exception("[cache] failed to bump inventory brand caches after create")
 
             return BrandOut.model_validate(brand)
         except IntegrityError:
@@ -197,9 +208,15 @@ class InventoryService:
             uom = UnitOfMeasure(company_id=context.company_id, name=payload.name, symbol=payload.symbol)
             self.repo.create_uom(uom)
             self.s.commit()
-            # ✅ INVALIDATE BOTH LIST AND DROPDOWN CACHES
-            bump_list_cache_company("inventory", "items", context.company_id)
-            bump_inventory_dropdowns("inventory", "items", context.company_id)
+            # ---- Cache bumps (best effort) ----
+            try:
+                company_id = int(context.company_id)
+
+                bump_company_list("inventory", "items", context, company_id)
+                bump_dropdown_for_context("inventory", "uoms", context, params={"company_id": company_id})
+
+            except Exception:
+                log.exception("[cache] failed to bump inventory uom caches after create")
 
             return UOMOut.model_validate(uom)
         except IntegrityError:
@@ -326,8 +343,19 @@ class InventoryService:
             try:
                 self.repo.create_item(item)
                 self.s.commit()
-                bump_list_cache_company("inventory", "items", context.company_id)
-                bump_inventory_dropdowns("inventory", "items", context.company_id)
+                # ---- Cache bumps (best effort) ----
+                try:
+                    company_id = int(context.company_id)
+
+                    bump_company_list("inventory", "items", context, company_id)
+                    bump_dropdown_for_context("inventory", "items", context, params={"company_id": company_id})
+                    bump_dropdown_for_context("inventory", "active_items", context, params={"company_id": company_id})
+
+                    # If you cache item detail anywhere:
+                    bump_detail("inventory:items", int(item.id))
+
+                except Exception:
+                    log.exception("[cache] failed to bump inventory item caches after create")
                 return ItemMinimalOut.model_validate(item)
             except IntegrityError:
                 self.s.rollback()
@@ -343,8 +371,20 @@ class InventoryService:
                 try:
                     self.repo.create_item(item)
                     self.s.commit()
-                    bump_list_cache_company("inventory", "items", context.company_id)
-                    bump_inventory_dropdowns("inventory", "items", context.company_id)
+                    # ---- Cache bumps (best effort) ----
+                    try:
+                        company_id = int(context.company_id)
+
+                        bump_company_list("inventory", "items", context, company_id)
+                        bump_dropdown_for_context("inventory", "items", context, params={"company_id": company_id})
+                        bump_dropdown_for_context("inventory", "active_items", context,
+                                                  params={"company_id": company_id})
+
+                        # If you cache item detail anywhere:
+                        bump_detail("inventory:items", int(item.id))
+
+                    except Exception:
+                        log.exception("[cache] failed to bump inventory item caches after create")
                     return ItemMinimalOut.model_validate(item)
                 except IntegrityError:
                     self.s.rollback()
@@ -428,11 +468,21 @@ class InventoryService:
             raise DuplicateRecordError("Update would result in a duplicate record.")
 
         # Cache bumps
-        bump_list_cache_company("inventory", "items", context.company_id)
-        bump_dropdown_company("inventory", "items", context.company_id)
-        bump_dropdown_company("inventory", "active_items", context.company_id)
-        if conv_changes is not None:
-            bump_list_cache_company("inventory", "uom_conversions", context.company_id)
+        # ---- Cache bumps (best effort) ----
+        try:
+            company_id = int(item.company_id)
+
+            bump_company_list("inventory", "items", context, company_id)
+            bump_dropdown_for_context("inventory", "items", context, params={"company_id": company_id})
+            bump_dropdown_for_context("inventory", "active_items", context, params={"company_id": company_id})
+
+            bump_detail("inventory:items", int(item.id))
+
+            if conv_changes is not None:
+                bump_company_list("inventory", "uom_conversions", context, company_id)
+
+        except Exception:
+            log.exception("[cache] failed to bump inventory caches after update_item")
 
         return ItemMinimalOut.model_validate(item)
 
@@ -473,7 +523,11 @@ class InventoryService:
             )
             self.repo.create_uom_conversion(conversion)
             self.s.commit()
-            bump_list_cache_company("inventory", "uom_conversions", conversion.company_id)
+            try:
+                company_id = int(conversion.company_id)
+                bump_company_list("inventory", "uom_conversions", context, company_id)
+            except Exception:
+                log.exception("[cache] failed to bump uom_conversions caches after create")
             return UOMConversionOut.model_validate(conversion)
         except IntegrityError:
             self.s.rollback()
@@ -623,23 +677,32 @@ class InventoryService:
         # Single commit for all operations
         self.s.commit()
 
-        # === OPTIMIZED CACHE INVALIDATION ===
+        # === OPTIMIZED CACHE INVALIDATION (new cache system) ===
         try:
-            from app.common.cache.cache_invalidator import bump_list_cache_company, bump_inventory_dropdowns
-
             for cid in touched_companies:
-                # Invalidate relevant caches based on doctype
-                bump_list_cache_company("inventory", "items", cid)
-                bump_inventory_dropdowns("inventory", "items", cid)
+                company_id = int(cid)
 
-                # Additional cache invalidation for item groups
-                if doctype == "Item Group":
-                    bump_list_cache_company("inventory", "item_groups", cid)
-                    bump_inventory_dropdowns("inventory", "item_groups", cid)
+                # Core lists that are affected
+                bump_company_list("inventory", "items", context, company_id)
 
-                # Additional cache invalidation for price lists
-                if doctype == "Price List":
-                    bump_list_cache_company("pricing", "price_lists", cid)
+                # Dropdowns affected depend on doctype
+                if doctype == "Brand":
+                    bump_dropdown_for_context("inventory", "brands", context, params={"company_id": company_id})
+
+                elif doctype == "UOM":
+                    bump_dropdown_for_context("inventory", "uoms", context, params={"company_id": company_id})
+
+                elif doctype == "Item":
+                    bump_dropdown_for_context("inventory", "items", context, params={"company_id": company_id})
+                    bump_dropdown_for_context("inventory", "active_items", context, params={"company_id": company_id})
+
+                elif doctype == "Item Group":
+                    bump_company_list("inventory", "item_groups", context, company_id)
+                    bump_dropdown_for_context("inventory", "item_groups", context, params={"company_id": company_id})
+
+                elif doctype == "Price List":
+                    # If you have list config under inventory/pricing:
+                    bump_company_list("inventory", "price_lists", context, company_id)
 
         except Exception:
             log.exception("[cache] cache bump failed after bulk delete")

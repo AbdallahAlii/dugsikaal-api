@@ -10,7 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.application_reports.hook.invalidation import invalidate_financial_reports_for_company
-from app.common.cache.cache_invalidator import bump_list_cache_company, bump_accounting_detail, bump_coa_balance_company
+from app.common.cache.invalidation import (
+    bump_company_list,
+    bump_detail,
+    bump_coa_balance_company,
+)
 from config.database import db
 from app.common.generate_code.service import ensure_manual_code_is_next_and_bump, generate_next_code
 from app.application_stock.stock_models import DocumentType, DocStatusEnum
@@ -390,13 +394,25 @@ class PaymentEntryService:
 
             # 🔥 Invalidate financial reports ONLY (payments never affect stock)
             try:
+                # Reports (unchanged)
                 invalidate_financial_reports_for_company(pe.company_id)
-                # Optional cache bumps for UI
-                bump_list_cache_company("accounting", "payment_entries", pe.company_id)
-                bump_accounting_detail("payment_entries", pe.id)
-                bump_coa_balance_company(pe.company_id)
+
+                # ---- Cache bumps (best effort) ----
+                # List is COMPANY-scoped (like your HR pattern)
+                bump_company_list("accounting", "payment_entries", context, int(pe.company_id))
+
+                # Detail namespace (pick ONE stable entity name and keep it consistent across the app)
+                bump_detail("accounting:payment_entries", int(pe.id))
+
+                # COA balances changed due to posting
+                bump_coa_balance_company(int(pe.company_id))
+
             except Exception:
-                log.warning("Post-commit cache invalidation failed for payment %s", pe.id, exc_info=True)
+                log.warning(
+                    "Post-commit cache invalidation failed for payment %s",
+                    pe.id,
+                    exc_info=True,
+                )
 
             return pe
 
@@ -468,12 +484,17 @@ class PaymentEntryService:
             # 🔥 Invalidate after commit
             try:
                 invalidate_financial_reports_for_company(pe.company_id)
-                bump_list_cache_company("accounting", "payment_entries", pe.company_id)
-                bump_accounting_detail("payment_entries", pe.id)
-                bump_coa_balance_company(pe.company_id)
+
+                # ---- Cache bumps (best effort) ----
+                bump_company_list("accounting", "payment_entries", context, int(pe.company_id))
+                bump_detail("accounting:payment_entries", int(pe.id))
+
+                # COA balances changed due to posting
+                bump_coa_balance_company(int(pe.company_id))
+
             except Exception:
                 log.warning(
-                    "Post-commit cache invalidation failed for cancel payment %s",
+                    "Post-commit cache invalidation failed for payment %s",
                     pe.id,
                     exc_info=True,
                 )
